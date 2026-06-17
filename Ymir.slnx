@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ymir-daemon/ymir-daemon.csproj" />
+    <Project Path="src/Ymir.Core/Ymir.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Ymir.Tests/Ymir.Tests.csproj" />
+  </Folder>
+  <Project Path="../CultMath/src/CultMath/CultMath.csproj" />
+</Solution>

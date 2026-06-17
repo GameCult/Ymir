@@ -1,0 +1,17 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\CultMath\src\CultMath\CultMath.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Ymir.Core</RootNamespace>
+    <AssemblyName>Ymir.Core</AssemblyName>
+    <Description>GameCult physics/world substrate engine built on CultMath.</Description>
+    <Authors>GameCult</Authors>
+  </PropertyGroup>
+
+</Project>
