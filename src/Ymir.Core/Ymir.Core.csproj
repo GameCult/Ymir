@@ -1,6 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
+    <ProjectReference Include="..\..\..\CultLib\src\GameCult.Caching\GameCult.Caching.csproj" />
+    <ProjectReference Include="..\..\..\CultLib\src\GameCult.Caching.MessagePack\GameCult.Caching.MessagePack.csproj" />
     <ProjectReference Include="..\..\..\CultMath\src\CultMath\CultMath.csproj" />
   </ItemGroup>
 

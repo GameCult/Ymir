@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using CultMath;
 using Ymir.Core;
 
 namespace Ymir.Daemon;
@@ -26,6 +27,9 @@ internal static class Program
                 return 0;
             case "step-sample":
                 WriteJson(new YmirSimulator().Step(SampleRequest()));
+                return 0;
+            case "save-sample":
+                await SaveSampleAsync(ValueAfter(args, "--path") ?? ".ymir/worlds.cc");
                 return 0;
             case "step":
                 return RunStep(args);
@@ -143,7 +147,8 @@ internal static class Program
                 "body integration",
                 "field acceleration",
                 "contact generation",
-                "collision query semantics"
+                "collision query semantics",
+                "SoA CultCache world-state persistence"
             },
             doesNotOwn = new[]
             {
@@ -170,6 +175,8 @@ internal static class Program
         status = "mvp",
         stateOwner = "Ymir.Core step result; JSON is compatibility witness only",
         numericSubstrate = "CultMath",
+        batchKernel = $"CultMath.BatchMath lanes={BatchMath.LaneCount}, hardwareAccelerated={BatchMath.IsHardwareAccelerated}",
+        persistence = "CultCache MessagePack directory store for gamecult.ymir.world_state.v0",
         updatedAt = DateTimeOffset.UtcNow
     };
 
@@ -190,6 +197,8 @@ internal static class Program
                     new { type = "stat", label = "Status", value = "mvp" },
                     new { type = "stat", label = "Owner", value = "physics simulation truth" },
                     new { type = "stat", label = "Math", value = "CultMath" },
+                    new { type = "stat", label = "Batch lanes", value = BatchMath.LaneCount.ToString() },
+                    new { type = "stat", label = "Persistence", value = "CultCache SoA world_state.v0" },
                     new { type = "route", label = "Step", value = "POST /simulate/step" }
                 }
             }
@@ -209,6 +218,23 @@ internal static class Program
             {
                 new RadialField("gravity-well", new Vec2(0.0f, 1.0f), 2.0f, 8.0f)
             }));
+
+    private static async Task SaveSampleAsync(string path)
+    {
+        var result = new YmirSimulator().Step(new SoASimulationStepRequest(
+            SampleRequest().DeltaTime,
+            YmirSoAWorld.FromWorld(SampleRequest().World)));
+        await YmirCultCacheStore.SaveWorldAsync(path, "sample", result.World);
+        WriteJson(new
+        {
+            ok = true,
+            path,
+            record = "ymir:world:sample",
+            schema = "gamecult.ymir.world_state.v0",
+            bodyCount = result.World.BodyCount,
+            fieldCount = result.World.FieldCount
+        });
+    }
 
     private static async Task WriteResponseAsync(HttpListenerContext context, object value)
     {
@@ -249,6 +275,7 @@ internal static class Program
           provider
           operator-state
           step-sample
+          save-sample [--path .ymir/worlds.cc]
           step --request <path>
           serve [--port 8877]
         """);

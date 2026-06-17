@@ -10,11 +10,16 @@ and future Verse surfaces.
 
 The MVP has one pure core and one daemon:
 
-- `Ymir.Core` receives a `YmirWorld` and a fixed `deltaTime`.
-- The core computes radial field acceleration, integrates dynamic bodies, tests
-  circle overlaps, resolves simple collision response, and emits contact events.
+- `Ymir.Core` receives a `YmirSoAWorld` and a fixed `deltaTime`.
+- Compatibility callers may still submit a `YmirWorld`, but it is immediately
+  lowered into SoA buffers before simulation.
+- The core computes radial field acceleration with CultMath `BatchMath`, uses
+  vectorized semi-implicit Euler integration over SoA arrays, tests circle
+  overlaps, resolves simple collision response, and emits contact events.
 - `ymir-daemon` publishes provider/operator state and exposes the core through a
   small HTTP compatibility surface.
+- `YmirWorldStateDocument` persists the same SoA world as
+  `gamecult.ymir.world_state.v0` through CultCache MessagePack.
 
 ## Owner
 
@@ -23,8 +28,9 @@ physics state and which contacts occurred.
 
 ## Inputs
 
-- body id, position, velocity, radius, mass, restitution, static flag
-- radial field id, position, strength, radius
+- SoA body columns: id, position x/y, velocity x/y, radius, mass, dynamic mask,
+  restitution
+- SoA radial field columns: id, position x/y, strength, radius
 - fixed `deltaTime`
 
 ## Outputs
@@ -35,6 +41,7 @@ physics state and which contacts occurred.
 
 ## Derived State
 
+- `YmirWorld` DTO records are compatibility views over `YmirSoAWorld`.
 - HTTP health, provider advertisement, operator state, and Eve surface are
   derived compatibility views.
 - Unity GameObjects are derived render/adapter state.

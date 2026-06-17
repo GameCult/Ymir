@@ -36,6 +36,11 @@ The MVP is deliberately small:
 - radial fields for Aetheria-style gravity wells
 - semi-implicit Euler integration
 - circle collision detection and simple impulse response
+- SoA world buffers as the simulation authority
+- CultCache MessagePack persistence for `gamecult.ymir.world_state.v0`, using
+  the directory store to avoid rewriting cold records
+- CultMath `BatchMath` SIMD kernels for radial field acceleration and
+  semi-implicit Euler integration
 - deterministic contact events
 - CLI smoke commands
 - local HTTP daemon with `/simulate/step`

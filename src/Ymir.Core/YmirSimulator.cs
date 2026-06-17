@@ -10,81 +10,66 @@ public sealed class YmirSimulator
 
     public SimulationStepResult Step(SimulationStepRequest request)
     {
+        var result = Step(new SoASimulationStepRequest(
+            request.DeltaTime,
+            YmirSoAWorld.FromWorld(request.World)));
+
+        return new SimulationStepResult(result.World.ToWorld(), result.Contacts);
+    }
+
+    public SoASimulationStepResult Step(SoASimulationStepRequest request)
+    {
         if (request.DeltaTime <= 0.0f)
         {
             throw new ArgumentOutOfRangeException(nameof(request), "DeltaTime must be positive.");
         }
 
-        var bodies = request.World.Bodies
-            .OrderBy(body => body.Id, StringComparer.Ordinal)
-            .Select(body => Integrate(body, request.World.Fields, request.DeltaTime))
-            .ToList();
+        var world = request.World.Clone();
+        world.Validate();
+
+        var accelerationX = new float[world.BodyCount];
+        var accelerationY = new float[world.BodyCount];
+        for (var i = 0; i < world.FieldCount; i++)
+        {
+            BatchMath.AddRadialFalloffAcceleration2D(
+                world.PositionX,
+                world.PositionY,
+                world.FieldPositionX[i],
+                world.FieldPositionY[i],
+                world.FieldStrength[i],
+                world.FieldRadius[i],
+                accelerationX,
+                accelerationY);
+        }
+
+        BatchMath.IntegrateSemiImplicitEuler2D(
+            request.DeltaTime,
+            world.DynamicMask,
+            world.PositionX,
+            world.PositionY,
+            world.VelocityX,
+            world.VelocityY,
+            accelerationX,
+            accelerationY);
 
         var contacts = new List<ContactEvent>();
-        ResolveCircleContacts(bodies, contacts);
+        ResolveCircleContacts(world, contacts);
 
-        return new SimulationStepResult(
-            request.World with
-            {
-                Time = request.World.Time + request.DeltaTime,
-                Bodies = bodies
-            },
+        world.Time += request.DeltaTime;
+        return new SoASimulationStepResult(
+            world,
             contacts);
     }
 
-    private static PhysicsBody Integrate(PhysicsBody body, IReadOnlyList<RadialField> fields, float deltaTime)
+    private static void ResolveCircleContacts(YmirSoAWorld world, List<ContactEvent> contacts)
     {
-        ValidateBody(body);
-
-        if (body.IsStatic)
+        for (var i = 0; i < world.BodyCount; i++)
         {
-            return body;
-        }
-
-        var position = body.Position.ToCultMath();
-        var velocity = body.Velocity.ToCultMath();
-        var acceleration = float2(0.0f);
-
-        foreach (var field in fields.OrderBy(field => field.Id, StringComparer.Ordinal))
-        {
-            if (field.Radius <= 0.0f || field.Strength == 0.0f)
+            for (var j = i + 1; j < world.BodyCount; j++)
             {
-                continue;
-            }
-
-            var offset = field.Position.ToCultMath() - position;
-            var distance = max(length(offset), MinimumDistance);
-            if (distance > field.Radius)
-            {
-                continue;
-            }
-
-            var direction = offset / distance;
-            var falloff = saturate(1.0f - distance / field.Radius);
-            acceleration += direction * field.Strength * falloff;
-        }
-
-        velocity += acceleration * deltaTime;
-        position += velocity * deltaTime;
-
-        return body with
-        {
-            Position = Vec2.FromCultMath(position),
-            Velocity = Vec2.FromCultMath(velocity)
-        };
-    }
-
-    private static void ResolveCircleContacts(List<PhysicsBody> bodies, List<ContactEvent> contacts)
-    {
-        for (var i = 0; i < bodies.Count; i++)
-        {
-            for (var j = i + 1; j < bodies.Count; j++)
-            {
-                var left = bodies[i];
-                var right = bodies[j];
-                var delta = right.Position.ToCultMath() - left.Position.ToCultMath();
+                var delta = world.PositionAt(j) - world.PositionAt(i);
                 var distance = length(delta);
-                var combinedRadius = left.Radius + right.Radius;
+                var combinedRadius = world.Radius[i] + world.Radius[j];
                 var penetration = combinedRadius - distance;
 
                 if (penetration <= 0.0f)
@@ -93,34 +78,33 @@ public sealed class YmirSimulator
                 }
 
                 var normal = distance <= MinimumDistance ? float2(1.0f, 0.0f) : delta / distance;
-                var point = left.Position.ToCultMath() + normal * (left.Radius - penetration * 0.5f);
-                var relativeVelocity = right.Velocity.ToCultMath() - left.Velocity.ToCultMath();
+                var point = world.PositionAt(i) + normal * (world.Radius[i] - penetration * 0.5f);
+                var relativeVelocity = world.VelocityAt(j) - world.VelocityAt(i);
                 var relativeSpeed = dot(relativeVelocity, normal);
 
                 contacts.Add(new ContactEvent(
-                    left.Id,
-                    right.Id,
+                    world.BodyIds[i],
+                    world.BodyIds[j],
                     Vec2.FromCultMath(point),
                     Vec2.FromCultMath(normal),
                     penetration,
                     relativeSpeed));
 
-                ResolveImpulse(ref left, ref right, normal, penetration, relativeSpeed);
-                bodies[i] = left;
-                bodies[j] = right;
+                ResolveImpulse(world, i, j, normal, penetration, relativeSpeed);
             }
         }
     }
 
     private static void ResolveImpulse(
-        ref PhysicsBody left,
-        ref PhysicsBody right,
+        YmirSoAWorld world,
+        int left,
+        int right,
         float2 normal,
         float penetration,
         float relativeSpeed)
     {
-        var leftInvMass = left.IsStatic ? 0.0f : 1.0f / max(left.Mass, MinimumMass);
-        var rightInvMass = right.IsStatic ? 0.0f : 1.0f / max(right.Mass, MinimumMass);
+        var leftInvMass = world.DynamicMask[left] <= 0.0f ? 0.0f : 1.0f / max(world.Mass[left], MinimumMass);
+        var rightInvMass = world.DynamicMask[right] <= 0.0f ? 0.0f : 1.0f / max(world.Mass[right], MinimumMass);
         var invMassSum = leftInvMass + rightInvMass;
         if (invMassSum <= 0.0f)
         {
@@ -128,14 +112,14 @@ public sealed class YmirSimulator
         }
 
         var correction = normal * (penetration / invMassSum);
-        if (!left.IsStatic)
+        if (leftInvMass > 0.0f)
         {
-            left = left with { Position = Vec2.FromCultMath(left.Position.ToCultMath() - correction * leftInvMass) };
+            world.SetPosition(left, world.PositionAt(left) - correction * leftInvMass);
         }
 
-        if (!right.IsStatic)
+        if (rightInvMass > 0.0f)
         {
-            right = right with { Position = Vec2.FromCultMath(right.Position.ToCultMath() + correction * rightInvMass) };
+            world.SetPosition(right, world.PositionAt(right) + correction * rightInvMass);
         }
 
         if (relativeSpeed >= 0.0f)
@@ -143,36 +127,18 @@ public sealed class YmirSimulator
             return;
         }
 
-        var restitution = min(left.Restitution, right.Restitution);
+        var restitution = min(world.Restitution[left], world.Restitution[right]);
         var impulseMagnitude = -(1.0f + restitution) * relativeSpeed / invMassSum;
         var impulse = normal * impulseMagnitude;
 
-        if (!left.IsStatic)
+        if (leftInvMass > 0.0f)
         {
-            left = left with { Velocity = Vec2.FromCultMath(left.Velocity.ToCultMath() - impulse * leftInvMass) };
+            world.SetVelocity(left, world.VelocityAt(left) - impulse * leftInvMass);
         }
 
-        if (!right.IsStatic)
+        if (rightInvMass > 0.0f)
         {
-            right = right with { Velocity = Vec2.FromCultMath(right.Velocity.ToCultMath() + impulse * rightInvMass) };
-        }
-    }
-
-    private static void ValidateBody(PhysicsBody body)
-    {
-        if (string.IsNullOrWhiteSpace(body.Id))
-        {
-            throw new ArgumentException("Physics bodies must have stable ids.");
-        }
-
-        if (body.Radius <= 0.0f)
-        {
-            throw new ArgumentOutOfRangeException(nameof(body), "Body radius must be positive.");
-        }
-
-        if (!body.IsStatic && body.Mass <= 0.0f)
-        {
-            throw new ArgumentOutOfRangeException(nameof(body), "Dynamic body mass must be positive.");
+            world.SetVelocity(right, world.VelocityAt(right) + impulse * rightInvMass);
         }
     }
 }
