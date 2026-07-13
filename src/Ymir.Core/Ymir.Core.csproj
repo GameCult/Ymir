@@ -2,11 +2,13 @@
 
   <PropertyGroup>
     <CultLibRoot Condition="'$(CultLibRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\CultLib</CultLibRoot>
+    <EveUnityRoot Condition="'$(EveUnityRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\EveUnity</EveUnityRoot>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="$(CultLibRoot)\src\GameCult.Caching\GameCult.Caching.csproj" />
     <ProjectReference Include="$(CultLibRoot)\src\GameCult.Caching.MessagePack\GameCult.Caching.MessagePack.csproj" />
+    <ProjectReference Include="$(EveUnityRoot)\packages\org.gamecult.eve.surface\GameCult.Eve.Surface.csproj" />
     <ProjectReference Include="..\..\..\CultMath\src\CultMath\CultMath.csproj" />
   </ItemGroup>
 

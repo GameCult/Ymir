@@ -1,5 +1,3 @@
-using System.Net;
-using System.Text;
 using System.Text.Json;
 using CultMath;
 using Ymir.Core;
@@ -19,11 +17,8 @@ internal static class Program
 
         switch (command)
         {
-            case "provider":
-                WriteJson(ProviderAdvertisement());
-                return 0;
-            case "operator-state":
-                WriteJson(OperatorState());
+            case "publish-service":
+                await PublishServiceAsync(ValueAfter(args, "--path") ?? ".ymir/service.cc");
                 return 0;
             case "step-sample":
                 WriteJson(new YmirSimulator().Step(SampleRequest()));
@@ -33,9 +28,6 @@ internal static class Program
                 return 0;
             case "step":
                 return RunStep(args);
-            case "serve":
-                await ServeAsync(ParsePort(args, 8877));
-                return 0;
             default:
                 PrintHelp();
                 return command is "help" or "-h" or "--help" ? 0 : 1;
@@ -64,146 +56,6 @@ internal static class Program
         WriteJson(new YmirSimulator().Step(request));
         return 0;
     }
-
-    private static async Task ServeAsync(int port)
-    {
-        using var listener = new HttpListener();
-        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
-        listener.Start();
-        Console.WriteLine($"Ymir serving on http://127.0.0.1:{port}/");
-
-        while (true)
-        {
-            var context = await listener.GetContextAsync();
-            _ = Task.Run(() => HandleRequestAsync(context));
-        }
-    }
-
-    private static async Task HandleRequestAsync(HttpListenerContext context)
-    {
-        try
-        {
-            var path = context.Request.Url?.AbsolutePath ?? "/";
-            var method = context.Request.HttpMethod;
-
-            if (method == "GET" && path == "/health")
-            {
-                await WriteResponseAsync(context, new { ok = true, service = "ymir", checkedAt = DateTimeOffset.UtcNow });
-                return;
-            }
-
-            if (method == "GET" && path == "/provider-advertisement")
-            {
-                await WriteResponseAsync(context, ProviderAdvertisement());
-                return;
-            }
-
-            if (method == "GET" && path == "/operator-state")
-            {
-                await WriteResponseAsync(context, OperatorState());
-                return;
-            }
-
-            if (method == "GET" && path == "/eve/operator")
-            {
-                await WriteResponseAsync(context, EveOperatorSurface());
-                return;
-            }
-
-            if (method == "POST" && path == "/simulate/step")
-            {
-                using var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding);
-                var body = await reader.ReadToEndAsync();
-                var request = JsonSerializer.Deserialize<SimulationStepRequest>(body, JsonOptions);
-                if (request is null)
-                {
-                    await WriteErrorAsync(context, 400, "Invalid simulation request.");
-                    return;
-                }
-
-                await WriteResponseAsync(context, new YmirSimulator().Step(request));
-                return;
-            }
-
-            await WriteErrorAsync(context, 404, "No such Ymir route.");
-        }
-        catch (Exception error)
-        {
-            await WriteErrorAsync(context, 500, error.Message);
-        }
-    }
-
-    private static object ProviderAdvertisement() => new
-    {
-        schema = "gamecult.provider_advertisement.v1",
-        providerId = "ymir.physics",
-        title = "Ymir Physics",
-        description = "GameCult physics/world substrate engine built on CultMath.",
-        authority = new
-        {
-            owns = new[]
-            {
-                "physics simulation truth",
-                "body integration",
-                "field acceleration",
-                "contact generation",
-                "collision query semantics",
-                "SoA CultCache world-state persistence"
-            },
-            doesNotOwn = new[]
-            {
-                "Unity scene truth",
-                "rendering",
-                "gameplay damage policy",
-                "editor authoring truth"
-            }
-        },
-        routes = new
-        {
-            health = "/health",
-            providerAdvertisement = "/provider-advertisement",
-            operatorState = "/operator-state",
-            operatorSurface = "/eve/operator",
-            step = "/simulate/step"
-        }
-    };
-
-    private static object OperatorState() => new
-    {
-        schema = "gamecult.ymir.operator_state.v0",
-        providerId = "ymir.physics",
-        status = "mvp",
-        stateOwner = "Ymir.Core step result; JSON is compatibility witness only",
-        numericSubstrate = "CultMath",
-        batchKernel = $"CultMath.BatchMath lanes={BatchMath.LaneCount}, hardwareAccelerated={BatchMath.IsHardwareAccelerated}",
-        persistence = "CultCache MessagePack directory store for gamecult.ymir.world_state.v0",
-        updatedAt = DateTimeOffset.UtcNow
-    };
-
-    private static object EveOperatorSurface() => new
-    {
-        schema = "gamecult.eve.surface.v1",
-        providerId = "ymir.physics",
-        title = "Ymir Physics",
-        updatedAt = DateTimeOffset.UtcNow,
-        surface = new
-        {
-            root = new
-            {
-                type = "panel",
-                title = "Ymir Physics",
-                children = new object[]
-                {
-                    new { type = "stat", label = "Status", value = "mvp" },
-                    new { type = "stat", label = "Owner", value = "physics simulation truth" },
-                    new { type = "stat", label = "Math", value = "CultMath" },
-                    new { type = "stat", label = "Batch lanes", value = BatchMath.LaneCount.ToString() },
-                    new { type = "stat", label = "Persistence", value = "CultCache SoA world_state.v0" },
-                    new { type = "route", label = "Step", value = "POST /simulate/step" }
-                }
-            }
-        }
-    };
 
     private static SimulationStepRequest SampleRequest() => new(
         0.1f,
@@ -236,29 +88,23 @@ internal static class Program
         });
     }
 
-    private static async Task WriteResponseAsync(HttpListenerContext context, object value)
+    private static async Task PublishServiceAsync(string path)
     {
-        var json = JsonSerializer.Serialize(value, JsonOptions);
-        var bytes = Encoding.UTF8.GetBytes(json);
-        context.Response.ContentType = "application/json; charset=utf-8";
-        context.Response.ContentLength64 = bytes.Length;
-        await context.Response.OutputStream.WriteAsync(bytes);
-        context.Response.Close();
-    }
-
-    private static Task WriteErrorAsync(HttpListenerContext context, int statusCode, string message)
-    {
-        context.Response.StatusCode = statusCode;
-        return WriteResponseAsync(context, new { ok = false, error = message });
+        await YmirServicePublicationStore.RegenerateDerivedStoreAsync(path, DateTimeOffset.UtcNow);
+        WriteJson(new
+        {
+            ok = true,
+            path,
+            records = new[]
+            {
+                "ymir:provider:ymir.physics",
+                "ymir:operator:ymir.physics",
+                "surface:ymir.physics.operator"
+            }
+        });
     }
 
     private static void WriteJson(object value) => Console.WriteLine(JsonSerializer.Serialize(value, JsonOptions));
-
-    private static int ParsePort(string[] args, int defaultPort)
-    {
-        var raw = ValueAfter(args, "--port");
-        return int.TryParse(raw, out var port) ? port : defaultPort;
-    }
 
     private static string? ValueAfter(string[] args, string key)
     {
@@ -272,12 +118,10 @@ internal static class Program
         Ymir physics daemon
 
         Commands:
-          provider
-          operator-state
+          publish-service [--path .ymir/service.cc]  Regenerate the derived service publication.
           step-sample
           save-sample [--path .ymir/worlds.cc]
           step --request <path>
-          serve [--port 8877]
         """);
     }
 }
