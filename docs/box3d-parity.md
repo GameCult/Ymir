@@ -51,8 +51,9 @@ is retained in the pinned submodule.
 ## Cut Line
 
 The current managed collision formulas are transitional. They may exist only
-while differential tests prove compatibility. The remaining parity slice
-covers retained world sessions, end-contact lifecycle, continuous collision,
-and replay. Once those facts are projected through a stable Ymir native port,
-the managed solver, query geometry, and spatial indexes are deleted rather
-than retained as fallback authority.
+until differential coverage and production-session witnesses prove the public
+cutover contract. Missing production coverage includes retained world
+sessions, end/hit contact lifecycle, continuous collision, replay, checkpoint
+restart, and RID packaging. Once those facts are projected through a stable
+Ymir native port, the managed solver, query geometry, and spatial indexes are
+deleted rather than retained as fallback authority.

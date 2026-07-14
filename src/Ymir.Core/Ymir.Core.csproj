@@ -18,7 +18,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>Ymir.Core</RootNamespace>
     <AssemblyName>Ymir.Core</AssemblyName>
-    <Description>GameCult physics/world substrate engine built on CultMath.</Description>
+    <Description>GameCult physics cutover contracts and parity boundary for pinned Box3D.</Description>
     <Authors>GameCult</Authors>
   </PropertyGroup>
 

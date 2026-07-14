@@ -17,7 +17,7 @@ public sealed class YmirProviderAdvertisementDocument
     public string Title { get; set; } = "Ymir Physics";
 
     [Key(2)]
-    public string Description { get; set; } = "GameCult authoritative Box3D session wrapper and physics daemon.";
+    public string Description { get; set; } = "GameCult cutover CLI and service-record publisher for the planned Box3D wrapper.";
 
     [Key(3)]
     public string[] Owns { get; set; } = [];
@@ -41,13 +41,13 @@ public sealed class YmirOperatorStateDocument
     public string ProviderId { get; set; } = "ymir.physics";
 
     [Key(1)]
-    public string Status { get; set; } = "mvp";
+    public string Status { get; set; } = "box3d-cutover";
 
     [Key(2)]
-    public string StateOwner { get; set; } = "Ymir world sessions and typed GameCult projections";
+    public string StateOwner { get; set; } = "Stateless managed step/query DTOs and derived service records";
 
     [Key(3)]
-    public string NumericSubstrate { get; set; } = "Box3D v0.1.0 (C17)";
+    public string NumericSubstrate { get; set; } = "Active: CultMath managed solver; target oracle: pinned Box3D v0.1.0 (C17)";
 
     [Key(4)]
     public string BatchKernel { get; set; } = "";
@@ -81,20 +81,22 @@ public static class YmirServicePublication
     {
         ProviderId = "ymir.physics",
         Title = "Ymir Physics",
-        Description = "GameCult authoritative Box3D session wrapper and physics daemon.",
+        Description = "GameCult cutover CLI and service-record publisher for the planned Box3D wrapper.",
         Owns =
         [
-            "authoritative physics session lifecycle",
-            "stable GameCult id to Box3D handle projection",
-            "typed physics commands and facts",
+            "stateless managed step and query request handling",
+            "stable GameCult physics identity",
+            "typed physics request and result DTOs",
             "deterministic result ordering",
-            "CultCache checkpoint reconstruction",
-            "CultMesh and Eve service publication"
+            "CultCache world and service record emission",
+            "Eve operator surface projection"
         ],
         DoesNotOwn =
         [
             "physics algorithm invention",
             "Box3D solver and collision semantics",
+            "retained Box3D production sessions during cutover",
+            "CultMesh provider sessions or discovery during cutover",
             "Unity scene truth",
             "rendering",
             "gameplay damage policy",
@@ -107,10 +109,10 @@ public static class YmirServicePublication
     public static YmirOperatorStateDocument OperatorState(DateTimeOffset now) => new()
     {
         ProviderId = "ymir.physics",
-        Status = "mvp",
-        StateOwner = "Ymir world sessions and typed GameCult projections",
-        NumericSubstrate = "Box3D v0.1.0 (C17)",
-        BatchKernel = "Box3D native solver; Ymir does not own physics algorithms",
+        Status = "box3d-cutover",
+        StateOwner = "Stateless managed step/query DTOs and derived service records",
+        NumericSubstrate = "Active: CultMath managed solver; target oracle: pinned Box3D v0.1.0 (C17)",
+        BatchKernel = "Transitional managed solver; no retained Box3D session",
         Persistence = "CultCache gamecult.ymir.world_state.v0 legacy checkpoint during Box3D cutover",
         UpdatedAtUtc = FormatUtc(now)
     };

@@ -5,11 +5,12 @@
 Expose Box3D as authoritative, typed, persistent GameCult physics without
 leaking an alpha native API into products, clients, or durable state.
 
-Ymir is a wrapper and daemon, not an independent physics-engine research
-project. Box3D supplies the physics mind. Ymir supplies the memory, nerves,
-names, and service boundary.
+Ymir's target is a stable embedded wrapper around retained Box3D worlds, not an
+independent physics-engine research project. Box3D supplies the physics mind.
+Ymir supplies the memory, nerves, names, and session boundary. The same
+boundary may optionally be hosted as a standalone daemon.
 
-## Owner
+## Target Owner
 
 A long-lived Box3D `b3World` owns the physical decision: given the current
 world plus commands for a fixed step, what transforms, velocities, overlaps,
@@ -23,11 +24,32 @@ Ymir owns the enclosing session and contract:
   commands;
 - project Box3D outputs into typed, deterministically ordered Ymir facts;
 - reconstruct sessions from CultCache checkpoints;
-- publish provider, operator, command, receipt, and Eve surfaces through
-  CultMesh;
+- return typed state, contacts, queries, and receipts to an embedding product;
+- when running standalone, publish Ymir's own physics provider and operator
+  surfaces through CultMesh;
 - supervise world lifetime, failure, replay, and observability.
 
-## Inputs
+## Deployment Boundary
+
+For Aetheria, Ymir is an embedded library. Aetheria owns the outer daemon,
+gameplay session, fixed tick, product commands and receipts, asset catalog, and
+advertised Eve/CultMesh surface. Generic Eve clients connect directly to the
+Aetheria daemon. They never import Ymir internals and do not route gameplay
+through a standalone Ymir or discovery service.
+
+A standalone Ymir daemon is a second hosting mode for physics tooling and
+other products. It hosts the same Ymir session primitive; it is not an
+Aetheria relay and cannot own a shadow copy of Aetheria's world.
+
+## Current Mechanism
+
+The native facade currently exists only as a bounded parity oracle. Each world
+step witness creates and destroys a short-lived Box3D world. Production
+`ymir-daemon` commands still call the transitional managed `YmirSimulator`; no
+retained Box3D world or live CultMesh provider session exists yet. The owner,
+dataflow, and persistence sections below describe the cutover target.
+
+## Target Inputs
 
 - stable body and shape definitions
 - fixed time step and explicit substep count
@@ -39,7 +61,7 @@ Ymir owns the enclosing session and contract:
 Aetheria chooses physical intent and gameplay eligibility. Box3D decides
 geometry membership and contact. Ymir carries the typed handoff.
 
-## Outputs
+## Target Outputs
 
 - body transforms and linear/angular velocities
 - begin, end, and hit contact facts with stable Ymir ids
@@ -87,7 +109,7 @@ solver.
 - transport endpoints or dashboards owning world state;
 - Box3D opaque ids stored as durable GameCult identity.
 
-## Shared Paths
+## Target Shared Paths
 
 Direct player commands, agent commands, programmatic spawns, server ticks,
 imports, reconnects, replay, and checkpoint recovery all enter one Ymir world
@@ -113,12 +135,22 @@ The native facade must remain boring:
 - no public exposure of Box3D internal handles;
 - first-class RID packaging before production consumers depend on it.
 
-## Persistence
+## Target Persistence Contract
 
-The canonical checkpoint schema must contain enough typed definitions and
-state to reconstruct the accepted Box3D world: stable ids, 3D transforms,
-linear and angular velocity, body/shape/material/filter definitions, session
-tuning, and provenance.
+Canonical deterministic replay starts from the same initial definitions and
+creation order, then applies the complete command stream under the pinned
+Box3D build and accepted runtime configuration.
+
+A checkpoint restart is a different promise. Its schema must contain enough
+typed definitions and state to reconstruct an equivalent Box3D world: stable
+ids, 3D transforms, linear and angular velocity,
+body/shape/material/filter definitions, session tuning, and provenance. Box3D
+does not expose every internal solver cache, so arbitrary mid-world checkpoint
+restart is tested against named numeric state tolerances rather than claimed as
+bit-identical continuation. Contact membership, ordering, and exactly-once
+lifecycle identity are binary contracts, not tolerance checks. Authoritative
+contact facts resume only after canonical history has been replayed through the
+checkpoint tick; a checkpoint alone cannot emit gameplay contact facts.
 
 Transient forces and torques are commands, not durable body state. Derived
 mass and inertia are published only when useful for inspection. Old checkpoint
@@ -141,7 +173,7 @@ deleted when retained Box3D sessions prove:
 There is no managed fallback after that cut. A native load or compatibility
 failure fails closed and reports the missing capability.
 
-## Verification
+## Required Verification
 
 - Box3D parity tests record released upstream law at the native boundary.
 - Ymir differential tests compare public projections with the same Box3D

@@ -17,7 +17,11 @@ Unity physics use.
 - A projectile with a Unity collider disabled still travels and hits through
   Ymir.
 - A Unity `OnCollisionEnter` callback cannot apply damage independently.
-- Reloading or replaying the same Ymir world produces the same contact order.
+- Replaying from the same canonical creation order and command stream under the
+  accepted Box3D build produces the same ordered Ymir facts.
+- Restarting from a checkpoint matches named numeric state tolerances. It emits
+  no authoritative gameplay contact facts until canonical history has replayed
+  through the checkpoint tick and restored exact contact lifecycle identity.
 - Mid-flight visible projectile position matches the Ymir snapshot within a
   named tolerance.
 

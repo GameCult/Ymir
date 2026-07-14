@@ -19,8 +19,8 @@ Architecture constraints:
 
 - Do not reimplement Box3D integration, collision geometry, broadphase,
   queries, solver behavior, contact lifecycle, or numeric tolerances.
-  Physics edge cases follow the pinned Box3D release and executable parity
-  tests.
+  Physics edge cases follow the pinned Box3D release. Executable parity tests
+  witness selected released behaviors; they are not a second specification.
 - `Ymir.Core` owns typed contracts, stable-id projection, session commands,
   deterministic ordering, persistence reconstruction, and publication. The
   native Ymir wrapper owns Box3D ABI isolation. Daemon, Unity, and future Rust
@@ -34,6 +34,12 @@ Architecture constraints:
   publication.
 - Keep adapters boring. A Unity adapter may submit commands, receive snapshots,
   and render them; it must not silently repair or override Ymir state.
+- During cutover, provider advertisements and operator state must describe the
+  running implementation. Target Box3D/CultMesh capabilities are not live
+  capabilities until their production paths exist.
+- Aetheria embeds Ymir. Eve clients connect directly to Aetheria's advertised
+  CultMesh provider; standalone Ymir and rendezvous services are not in the
+  Aetheria gameplay path.
 - Add tests at the layer where the invariant lives. State invariants belong in
   `Ymir.Core`; daemon route shape belongs in daemon smokes; Unity visual timing
   bugs need Unity-side probes.

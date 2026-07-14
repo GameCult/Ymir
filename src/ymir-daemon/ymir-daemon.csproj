@@ -11,6 +11,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>ymir-daemon</AssemblyName>
+    <Description>Ymir cutover CLI; the retained Box3D daemon session is not active yet.</Description>
   </PropertyGroup>
 
 </Project>

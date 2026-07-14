@@ -1,24 +1,31 @@
 # Ymir
 
-Ymir is the GameCult Box3D wrapper and authoritative physics daemon for
-Aetheria and future world-bearing projects. The name means **Not Invented
-Here**. We are taking the hint.
+Ymir is the GameCult library and service boundary around a pinned Box3D
+release, being cut over into Aetheria's authoritative embedded physics
+substrate. The name means **Not Invented Here**. We are taking the hint.
 
 Box3D owns physics algorithms. Ymir owns the service boundary that makes those
 algorithms usable as durable, typed GameCult world truth. Unity, renderers, and
 game products consume Ymir state and contact facts; they do not become physics
 authorities.
 
-## Ownership
+The Box3D parity facade currently witnesses a bounded released-behavior slice.
+The production command path still runs the transitional managed solver and is
+not Box3D-authoritative until one retained Box3D session embedded in the
+Aetheria daemon owns every step, query, and contact fact.
+
+## Target Ownership
 
 - Box3D owns rigid-body integration, collision geometry, broadphase, solver
   behavior, continuous collision, overlap and cast semantics, contact
-  lifecycle, force and torque lifetime, tolerances, and deterministic step
-  behavior for identical recorded inputs.
+  lifecycle, force and torque lifetime, tolerances, and step behavior for an
+  identical creation order and command stream under the accepted build and
+  runtime configuration.
 - Ymir owns the pinned Box3D version, stable GameCult entity ids, native ABI
   isolation, long-lived world sessions, typed commands and facts,
-  deterministic result ordering, checkpoint reconstruction, CultCache state,
-  CultMesh publication, and daemon lifecycle.
+  deterministic result ordering, checkpoint reconstruction, and the embedded
+  session boundary. Its optional standalone service owns only its own
+  publication and lifecycle.
 - Aetheria owns gameplay policy and supplies typed physical intent: bodies,
   fields, tractor targets, forces, projectiles, filters, and the gameplay
   consequences of Ymir contact facts.
@@ -29,6 +36,24 @@ authorities.
 
 Box3D opaque handles are process-local derived state. They are never durable
 entity ids and never cross the public contract boundary.
+
+Ymir does not promise bit-identical continuation from an arbitrary mid-world
+snapshot. Replay starts from canonical creation order plus the complete command
+stream. Checkpoints may accelerate numeric state recovery within named
+tolerances, but authoritative contact lifecycle facts resume only after that
+canonical history has been replayed through the checkpoint tick.
+
+## Aetheria Deployment Boundary
+
+Aetheria embeds the Ymir library and native Box3D wrapper in its own daemon.
+The Aetheria daemon owns gameplay ticks, world policy, player sessions,
+commands, receipts, assets, and the Eve/CultMesh provider advertisement.
+Generic Eve clients connect directly to Aetheria; they do not connect through
+Ymir or a rendezvous service.
+
+A future standalone Ymir daemon may expose the same physics contract for
+tooling or other products. It is not an intermediary in Aetheria's gameplay
+path and must never become a competing copy of Aetheria world truth.
 
 ## Current Cutover State
 

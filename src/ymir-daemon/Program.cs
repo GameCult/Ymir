@@ -115,7 +115,7 @@ internal static class Program
     private static void PrintHelp()
     {
         Console.WriteLine("""
-        Ymir physics daemon
+        Ymir physics cutover CLI
 
         Commands:
           publish-service [--path .ymir/service.cc]  Regenerate the derived service publication.
