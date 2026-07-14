@@ -2,13 +2,13 @@
 
 ## Authority
 
-Box3D v0.1.0 is Ymir's collision-semantics oracle while the native cutover is
-under construction. The exact upstream source is pinned as the
+Box3D v0.1.0 is Ymir's physics implementation and executable semantics oracle.
+The production session cutover is still under construction. The exact upstream source is pinned as the
 `extern/box3d` submodule at commit
 `8441b4a06d6d09dcfb0b0f704df4d847d1437b92`.
 
-The oracle does not own GameCult entity ids, gameplay policy, persistence, or
-result ordering. Ymir projects Box3D facts into those contracts. Box3D owns
+Box3D does not own GameCult entity ids, gameplay policy, persistence, or result
+ordering. Ymir projects Box3D facts into those contracts. Box3D owns
 shape overlap, shape cast, solver, broadphase, contact lifecycle, force and
 torque lifetime, and numeric tolerances.
 

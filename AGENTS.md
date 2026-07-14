@@ -1,7 +1,9 @@
 # Ymir Agent Instructions
 
-Ymir owns physics truth. Treat Unity, renderers, editor tools, and dashboards as
-clients or adapters unless a document explicitly transfers authority.
+Ymir owns authoritative physics sessions and their GameCult contracts. Box3D
+owns the physics algorithms inside those sessions. Treat Unity, products,
+renderers, editor tools, and dashboards as clients or adapters unless a
+document explicitly transfers authority.
 
 Before substantial implementation, state:
 
@@ -15,10 +17,18 @@ Before substantial implementation, state:
 
 Architecture constraints:
 
-- Build physics primitives in `Ymir.Core` first. Daemon, Unity, and future Rust
-  or CultMesh surfaces are presentation/transport clients.
-- Use CultMath for numeric work. Do not copy Unity.Mathematics helpers into
-  Ymir.
+- Do not reimplement Box3D integration, collision geometry, broadphase,
+  queries, solver behavior, contact lifecycle, or numeric tolerances.
+  Physics edge cases follow the pinned Box3D release and executable parity
+  tests.
+- `Ymir.Core` owns typed contracts, stable-id projection, session commands,
+  deterministic ordering, persistence reconstruction, and publication. The
+  native Ymir wrapper owns Box3D ABI isolation. Daemon, Unity, and future Rust
+  or CultMesh surfaces consume those boundaries without importing Box3D
+  internals.
+- Use CultMath for GameCult-side numeric projections and force preparation. It
+  must not become a second integration or collision engine. Do not copy
+  Unity.Mathematics helpers into Ymir.
 - JSON is allowed at HTTP/CLI compatibility boundaries. It is not durable truth.
   Durable state should move toward CultCache `.cc` documents and CultMesh
   publication.

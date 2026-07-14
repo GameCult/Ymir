@@ -1,75 +1,79 @@
 # Ymir
 
-Ymir is the GameCult physics/world substrate engine for Aetheria and future
-world-bearing projects.
+Ymir is the GameCult Box3D wrapper and authoritative physics daemon for
+Aetheria and future world-bearing projects. The name means **Not Invented
+Here**. We are taking the hint.
 
-Unity made the first playable body move. It does not get to keep physics truth.
-Ymir owns simulation state: bodies, fields, projectiles, collision, contact
-events, integration, and deterministic queries. Renderers and engines lower
-Ymir state into visible worlds; they do not become the world.
+Box3D owns physics algorithms. Ymir owns the service boundary that makes those
+algorithms usable as durable, typed GameCult world truth. Unity, renderers, and
+game products consume Ymir state and contact facts; they do not become physics
+authorities.
 
-## Authority
+## Ownership
 
-- Ymir owns physics simulation truth, step semantics, contact generation,
-  collision queries, and physics debug/operator state.
-- CultMath owns the numeric substrate Ymir uses for vector math and shared
-  shader-shaped primitives.
-- Aetheria owns gameplay policy: damage, faction meaning, weapon selection,
-  ship fitting, and player-visible consequence.
-- Unity owns rendering, authoring affordances, GameObject presentation, VFX,
-  audio, and temporary adapter code during cutover.
-- Brokkr may expose Unity editor state to the Verse, but it does not own Ymir
-  simulation truth.
-- Odin discovers Ymir as a Verse provider; Odin does not own Ymir state.
-- CultCache is the target durable state substrate. Current JSON surfaces are
-  compatibility witnesses for Aetheria cutover and HTTP inspection.
+- Box3D owns rigid-body integration, collision geometry, broadphase, solver
+  behavior, continuous collision, overlap and cast semantics, contact
+  lifecycle, force and torque lifetime, tolerances, and deterministic step
+  behavior for identical recorded inputs.
+- Ymir owns the pinned Box3D version, stable GameCult entity ids, native ABI
+  isolation, long-lived world sessions, typed commands and facts,
+  deterministic result ordering, checkpoint reconstruction, CultCache state,
+  CultMesh publication, and daemon lifecycle.
+- Aetheria owns gameplay policy and supplies typed physical intent: bodies,
+  fields, tractor targets, forces, projectiles, filters, and the gameplay
+  consequences of Ymir contact facts.
+- CultMath remains available for GameCult-side numeric projections and force
+  preparation. It is not a second collision or integration engine.
+- Unity and Eve lowerers render world state and submit commands. They never
+  repair, override, or independently simulate authoritative physics.
 
-## First Body
+Box3D opaque handles are process-local derived state. They are never durable
+entity ids and never cross the public contract boundary.
 
-`Ymir.Core` targets `net8.0` to stay compatible with CultMath and likely
-Aetheria integration paths. The daemon and tests target `net10.0` because this
-machine currently has the .NET 10 runtime installed.
+## Current Cutover State
 
-The MVP is deliberately small:
+Box3D v0.1.0 is pinned at commit
+`8441b4a06d6d09dcfb0b0f704df4d847d1437b92`. A Ymir-owned native shim and
+parity suite already witness released Box3D behavior for:
 
-- circle bodies in a 2D physics plane
-- radial fields for Aetheria-style gravity wells
-- semi-implicit Euler integration
-- circle collision detection and simple impulse response
-- SoA world buffers as the simulation authority
-- CultCache MessagePack persistence for `gamecult.ymir.world_state.v0`, using
-  the directory store to avoid rewriting cold records
-- CultMath `BatchMath` SIMD kernels for radial field acceleration and
-  semi-implicit Euler integration
-- deterministic contact events
-- CLI smoke commands
-- local HTTP daemon with `/simulate/step`
+- sphere overlap and shape casts
+- tractor capsule membership and rounded caps
+- numeric overlap and cast slop
+- planar sphere-world stepping
+- contact-begin facts
+- restitution mixing
+- transient torque lifetime
 
-This is not pretending to be a finished physics engine. It is the first clean
-owner, and therefore already better than collider callbacks wearing a crown.
+The legacy managed Ymir solver remains temporarily live while retained Box3D
+world sessions, end-contact lifecycle, continuous collision, replay, and
+checkpoint reconstruction are connected. It is compatibility scaffolding, not
+the target architecture. It will be deleted, along with Ymir's custom geometry
+and spatial indexes, once the Box3D-backed path proves the public contract.
 
-## Smoke
+See [the architecture map](docs/architecture.md) and
+[the executable parity contract](docs/box3d-parity.md).
+
+## Build And Test
+
+Initialize the pinned dependency and run the solution:
 
 ```powershell
-dotnet test
-dotnet run --project src\ymir-daemon -- step-sample
-dotnet run --project src\ymir-daemon -- provider
-dotnet run --project src\ymir-daemon -- serve --port 8877
+git submodule update --init --recursive
+dotnet test Ymir.slnx
 ```
 
-HTTP endpoints:
+The parity project builds the native shim from source and requires CMake plus a
+C17 compiler:
 
-- `GET /health`
-- `GET /provider-advertisement`
-- `GET /operator-state`
-- `GET /eve/operator`
-- `POST /simulate/step`
+```powershell
+dotnet test tests\Ymir.Box3D.Parity\Ymir.Box3D.Parity.csproj
+```
 
-`POST /simulate/step` accepts the same shape emitted by `step-sample`.
+Box3D is MIT licensed. Its license is retained in `extern/box3d`.
 
 ## Cutover Rule
 
-Aetheria should first route projectile travel and hit discovery through Ymir
-while keeping Unity as renderer/presenter. The old Unity collider path becomes a
-visual witness and adapter path only. If manual collision callbacks can still
-decide gameplay damage after the cutover, the cutover is not done.
+A Ymir cutover is complete only when all runtime stepping, collision queries,
+and contact facts come from a retained Box3D world through one Ymir session
+primitive. Manual Unity callbacks, Aetheria geometry tests, and the managed
+Ymir solver must be structurally unable to decide the result.
