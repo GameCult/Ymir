@@ -15,6 +15,9 @@ add_library(ymir_box3d SHARED ymir_box3d.c)
 target_link_libraries(ymir_box3d PRIVATE box3d::box3d)
 target_include_directories(ymir_box3d PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../extern/box3d/include")
 target_compile_features(ymir_box3d PRIVATE c_std_17)
+if(MSVC)
+    set_property(TARGET ymir_box3d PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 set_target_properties(ymir_box3d PROPERTIES
     C_VISIBILITY_PRESET hidden
