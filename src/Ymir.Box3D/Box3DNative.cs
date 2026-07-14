@@ -28,7 +28,8 @@ internal static partial class Box3DNative
         out uint bodyInputSize,
         out uint fieldInputSize,
         out uint bodyOutputSize,
-        out uint contactOutputSize);
+        out uint contactOutputSize,
+        out uint contactEventOutputSize);
 
     [LibraryImport(LibraryName)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -74,6 +75,60 @@ internal static partial class Box3DNative
 
     [LibraryImport(LibraryName)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static unsafe partial Box3DStatus ymir_box3d_session_spawn(
+        Box3DSessionHandle session,
+        Box3DBodyInput* body);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial Box3DStatus ymir_box3d_session_remove(Box3DSessionHandle session, ulong stableId);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial Box3DStatus ymir_box3d_session_teleport(
+        Box3DSessionHandle session,
+        ulong stableId,
+        float positionX,
+        float positionZ,
+        float directionX,
+        float directionZ);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial Box3DStatus ymir_box3d_session_set_velocity(
+        Box3DSessionHandle session,
+        ulong stableId,
+        float velocityX,
+        float velocityZ,
+        float angularVelocity);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial Box3DStatus ymir_box3d_session_configure(
+        Box3DSessionHandle session,
+        ulong stableId,
+        float radius,
+        float mass,
+        float restitution,
+        uint isStatic);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial Box3DStatus ymir_box3d_session_apply_force(
+        Box3DSessionHandle session,
+        ulong stableId,
+        float forceX,
+        float forceZ);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial Box3DStatus ymir_box3d_session_apply_torque(
+        Box3DSessionHandle session,
+        ulong stableId,
+        float torque);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static unsafe partial Box3DStatus ymir_box3d_session_step(
         Box3DSessionHandle session,
         float deltaTime,
@@ -102,6 +157,18 @@ internal static partial class Box3DNative
     internal static unsafe partial Box3DStatus ymir_box3d_session_copy_contacts(
         Box3DSessionHandle session,
         Box3DContactOutput* output,
+        int capacity,
+        out int written);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int ymir_box3d_session_get_contact_event_count(Box3DSessionHandle session);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static unsafe partial Box3DStatus ymir_box3d_session_copy_contact_events(
+        Box3DSessionHandle session,
+        Box3DContactEventOutput* output,
         int capacity,
         out int written);
 }
@@ -157,6 +224,22 @@ internal readonly record struct Box3DBodyOutput(
 
 [StructLayout(LayoutKind.Sequential)]
 internal readonly record struct Box3DContactOutput(
+    ulong StableIdA,
+    ulong StableIdB,
+    float PointX,
+    float PointZ,
+    float NormalX,
+    float NormalZ,
+    float Penetration,
+    float RelativeSpeed);
+
+[StructLayout(LayoutKind.Sequential)]
+internal readonly record struct Box3DContactEventOutput(
+    int Kind,
+    uint HasDetails,
+    uint ContactId0,
+    uint ContactId1,
+    uint ContactId2,
     ulong StableIdA,
     ulong StableIdB,
     float PointX,

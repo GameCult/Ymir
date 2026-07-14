@@ -17,7 +17,7 @@ public sealed class YmirProviderAdvertisementDocument
     public string Title { get; set; } = "Ymir Physics";
 
     [Key(2)]
-    public string Description { get; set; } = "GameCult Box3D snapshot wrapper and physics-daemon cutover surface.";
+    public string Description { get; set; } = "GameCult Box3D retained-session library and physics-daemon cutover surface.";
 
     [Key(3)]
     public string[] Owns { get; set; } = [];
@@ -44,7 +44,7 @@ public sealed class YmirOperatorStateDocument
     public string Status { get; set; } = "mvp";
 
     [Key(2)]
-    public string StateOwner { get; set; } = "Isolated Box3D snapshot steps and typed diagnostic projections";
+    public string StateOwner { get; set; } = "In-process retained Box3D sessions, isolated snapshot steps, and diagnostic projections";
 
     [Key(3)]
     public string NumericSubstrate { get; set; } = "Box3D v0.1.0 (C17)";
@@ -81,10 +81,12 @@ public static class YmirServicePublication
     {
         ProviderId = "ymir.physics",
         Title = "Ymir Physics",
-        Description = "GameCult Box3D snapshot wrapper and physics-daemon cutover surface.",
+        Description = "GameCult Box3D retained-session library and physics-daemon cutover surface.",
         Owns =
         [
             "Box3D-only isolated snapshot stepping",
+            "public in-process retained sessions with explicit mutation receipts",
+            "typed Begin, Hit, and End contact facts for retained steps",
             "stable GameCult id to transient Box3D handle projection",
             "Box3D-backed circle overlap and cast queries over submitted bodies",
             "deterministic result ordering",
@@ -93,8 +95,7 @@ public static class YmirServicePublication
         ],
         DoesNotOwn =
         [
-            "public retained session lifecycle yet",
-            "typed command receipts or begin/end/hit lifecycle facts yet",
+            "daemon-owned named session registry or CultMesh command lowering yet",
             "complete checkpoint reconstruction yet",
             "physics algorithm invention",
             "Box3D solver and collision semantics",
@@ -111,7 +112,7 @@ public static class YmirServicePublication
     {
         ProviderId = "ymir.physics",
         Status = "mvp",
-        StateOwner = "Isolated Box3D snapshot steps and typed diagnostic projections",
+        StateOwner = "In-process retained Box3D sessions, isolated snapshot steps, and diagnostic projections",
         NumericSubstrate = "Box3D v0.1.0 (C17)",
         BatchKernel = "Box3D native solver; Ymir does not own physics algorithms",
         Persistence = "CultCache gamecult.ymir.world_state.v1; explicit v0 read migration",

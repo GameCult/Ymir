@@ -131,6 +131,40 @@ typedef struct ymir_box3d_session_contact_output
     float relative_speed;
 } ymir_box3d_session_contact_output;
 
+typedef enum ymir_box3d_contact_kind
+{
+    YMIR_BOX3D_CONTACT_BEGIN = 1,
+    YMIR_BOX3D_CONTACT_HIT = 2,
+    YMIR_BOX3D_CONTACT_END = 3,
+} ymir_box3d_contact_kind;
+
+typedef struct ymir_box3d_session_contact_event_output
+{
+    int32_t kind;
+    uint32_t has_details;
+    uint32_t contact_id[3];
+    uint64_t stable_id_a;
+    uint64_t stable_id_b;
+    float point_x;
+    float point_y;
+    float normal_x;
+    float normal_y;
+    float penetration;
+    float relative_speed;
+} ymir_box3d_session_contact_event_output;
+
+typedef struct ymir_box3d_retired_shape
+{
+    uint64_t shape_id;
+    uint64_t stable_id;
+} ymir_box3d_retired_shape;
+
+typedef struct ymir_box3d_drained_event
+{
+    int32_t kind;
+    uint32_t contact_id[3];
+} ymir_box3d_drained_event;
+
 typedef struct ymir_box3d_session_body
 {
     uint64_t stable_id;
@@ -157,6 +191,18 @@ typedef struct ymir_box3d_session
     ymir_box3d_session_body* bodies;
     int body_count;
     int body_capacity;
+    ymir_box3d_session_contact_event_output* contact_events;
+    int contact_event_count;
+    int contact_event_capacity;
+    ymir_box3d_session_contact_event_output* pending_events;
+    int pending_event_count;
+    int pending_event_capacity;
+    ymir_box3d_retired_shape* retired_shapes;
+    int retired_shape_count;
+    int retired_shape_capacity;
+    ymir_box3d_drained_event* drained_events;
+    int drained_event_count;
+    int drained_event_capacity;
 } ymir_box3d_session;
 
 _Static_assert(sizeof(ymir_box3d_status) == sizeof(int32_t), "Ymir Box3D status ABI must be 32-bit");
@@ -164,6 +210,7 @@ _Static_assert(sizeof(ymir_box3d_session_body_input) == 56, "Unexpected Ymir Box
 _Static_assert(sizeof(ymir_box3d_radial_field_input) == 16, "Unexpected Ymir Box3D field layout");
 _Static_assert(sizeof(ymir_box3d_session_body_output) == 40, "Unexpected Ymir Box3D body output layout");
 _Static_assert(sizeof(ymir_box3d_session_contact_output) == 40, "Unexpected Ymir Box3D contact layout");
+_Static_assert(sizeof(ymir_box3d_session_contact_event_output) == 64, "Unexpected Ymir Box3D contact event layout");
 
 static b3Vec3 ymir_vec(float x, float y)
 {
@@ -242,6 +289,76 @@ static ymir_box3d_status ymir_session_reserve_bodies(ymir_box3d_session* session
 
     session->bodies = bodies;
     session->body_capacity = new_capacity;
+    return YMIR_BOX3D_OK;
+}
+
+static ymir_box3d_status ymir_session_reserve_contact_events(
+    ymir_box3d_session_contact_event_output** events,
+    int* current_capacity,
+    int capacity)
+{
+    if (capacity <= *current_capacity)
+    {
+        return YMIR_BOX3D_OK;
+    }
+
+    int new_capacity = *current_capacity > 0 ? *current_capacity : 16;
+    while (new_capacity < capacity)
+    {
+        new_capacity *= 2;
+    }
+    ymir_box3d_session_contact_event_output* resized = (ymir_box3d_session_contact_event_output*)realloc(
+        *events, (size_t)new_capacity * sizeof(ymir_box3d_session_contact_event_output));
+    if (resized == NULL)
+    {
+        return YMIR_BOX3D_OUT_OF_MEMORY;
+    }
+    *events = resized;
+    *current_capacity = new_capacity;
+    return YMIR_BOX3D_OK;
+}
+
+static ymir_box3d_status ymir_session_reserve_retired_shapes(ymir_box3d_session* session, int capacity)
+{
+    if (capacity <= session->retired_shape_capacity)
+    {
+        return YMIR_BOX3D_OK;
+    }
+    int new_capacity = session->retired_shape_capacity > 0 ? session->retired_shape_capacity * 2 : 16;
+    while (new_capacity < capacity)
+    {
+        new_capacity *= 2;
+    }
+    ymir_box3d_retired_shape* resized = (ymir_box3d_retired_shape*)realloc(
+        session->retired_shapes, (size_t)new_capacity * sizeof(ymir_box3d_retired_shape));
+    if (resized == NULL)
+    {
+        return YMIR_BOX3D_OUT_OF_MEMORY;
+    }
+    session->retired_shapes = resized;
+    session->retired_shape_capacity = new_capacity;
+    return YMIR_BOX3D_OK;
+}
+
+static ymir_box3d_status ymir_session_reserve_drained_events(ymir_box3d_session* session, int capacity)
+{
+    if (capacity <= session->drained_event_capacity)
+    {
+        return YMIR_BOX3D_OK;
+    }
+    int new_capacity = session->drained_event_capacity > 0 ? session->drained_event_capacity * 2 : 16;
+    while (new_capacity < capacity)
+    {
+        new_capacity *= 2;
+    }
+    ymir_box3d_drained_event* resized = (ymir_box3d_drained_event*)realloc(
+        session->drained_events, (size_t)new_capacity * sizeof(ymir_box3d_drained_event));
+    if (resized == NULL)
+    {
+        return YMIR_BOX3D_OUT_OF_MEMORY;
+    }
+    session->drained_events = resized;
+    session->drained_event_capacity = new_capacity;
     return YMIR_BOX3D_OK;
 }
 
@@ -483,6 +600,217 @@ static int ymir_session_contact_from_manifolds(
         .relative_speed = selected_point->normalVelocity,
     };
     return 1;
+}
+
+static uint64_t ymir_session_resolve_event_shape(
+    const ymir_box3d_session* session,
+    b3ShapeId shape_id)
+{
+    if (b3Shape_IsValid(shape_id))
+    {
+        return ymir_session_shape_stable_id(shape_id);
+    }
+
+    uint64_t stored_shape_id = b3StoreShapeId(shape_id);
+    for (int i = 0; i < session->retired_shape_count; ++i)
+    {
+        if (session->retired_shapes[i].shape_id == stored_shape_id)
+        {
+            return session->retired_shapes[i].stable_id;
+        }
+    }
+    return 0;
+}
+
+static int ymir_session_event_was_drained(
+    const ymir_box3d_session* session,
+    int32_t kind,
+    b3ContactId contact_id)
+{
+    uint32_t stored[3];
+    b3StoreContactId(contact_id, stored);
+    for (int i = 0; i < session->drained_event_count; ++i)
+    {
+        const ymir_box3d_drained_event* event = session->drained_events + i;
+        if (event->kind == kind && event->contact_id[0] == stored[0] &&
+            event->contact_id[1] == stored[1] && event->contact_id[2] == stored[2])
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static ymir_box3d_status ymir_session_mark_event_drained(
+    ymir_box3d_session* session,
+    int32_t kind,
+    b3ContactId contact_id)
+{
+    ymir_box3d_status status = ymir_session_reserve_drained_events(session, session->drained_event_count + 1);
+    if (status != YMIR_BOX3D_OK)
+    {
+        return status;
+    }
+    ymir_box3d_drained_event* stored = session->drained_events + session->drained_event_count++;
+    stored->kind = kind;
+    b3StoreContactId(contact_id, stored->contact_id);
+    return YMIR_BOX3D_OK;
+}
+
+static ymir_box3d_status ymir_session_append_typed_event(
+    ymir_box3d_session* session,
+    int pending,
+    const ymir_box3d_session_contact_event_output* event)
+{
+    ymir_box3d_session_contact_event_output** events = pending ? &session->pending_events : &session->contact_events;
+    int* count = pending ? &session->pending_event_count : &session->contact_event_count;
+    int* capacity = pending ? &session->pending_event_capacity : &session->contact_event_capacity;
+    ymir_box3d_status status = ymir_session_reserve_contact_events(events, capacity, *count + 1);
+    if (status != YMIR_BOX3D_OK)
+    {
+        return status;
+    }
+    (*events)[(*count)++] = *event;
+    return YMIR_BOX3D_OK;
+}
+
+enum
+{
+    YMIR_DRAIN_BEGIN = 1,
+    YMIR_DRAIN_HIT = 2,
+    YMIR_DRAIN_END = 4,
+};
+
+static ymir_box3d_status ymir_session_drain_contact_events(
+    ymir_box3d_session* session,
+    int event_mask,
+    int pending)
+{
+    b3ContactEvents events = b3World_GetContactEvents(session->world_id);
+    if ((event_mask & YMIR_DRAIN_BEGIN) != 0)
+    {
+        for (int i = 0; i < events.beginCount; ++i)
+        {
+            const b3ContactBeginTouchEvent* source = events.beginEvents + i;
+            if (ymir_session_event_was_drained(session, YMIR_BOX3D_CONTACT_BEGIN, source->contactId))
+            {
+                continue;
+            }
+            uint64_t stable_id_a = ymir_session_resolve_event_shape(session, source->shapeIdA);
+            uint64_t stable_id_b = ymir_session_resolve_event_shape(session, source->shapeIdB);
+            if (stable_id_a == 0 || stable_id_b == 0)
+            {
+                continue;
+            }
+
+            ymir_box3d_session_contact_event_output event = {
+                .kind = YMIR_BOX3D_CONTACT_BEGIN,
+                .stable_id_a = stable_id_a,
+                .stable_id_b = stable_id_b,
+            };
+            b3StoreContactId(source->contactId, event.contact_id);
+            if (b3Contact_IsValid(source->contactId))
+            {
+                b3ContactData data = b3Contact_GetData(source->contactId);
+                ymir_box3d_session_contact_output details;
+                if (ymir_session_contact_from_manifolds(&data, &details))
+                {
+                    event.has_details = 1;
+                    event.point_x = details.point_x;
+                    event.point_y = details.point_y;
+                    event.normal_x = details.normal_x;
+                    event.normal_y = details.normal_y;
+                    event.penetration = details.penetration;
+                    event.relative_speed = details.relative_speed;
+                }
+            }
+            ymir_box3d_status status = ymir_session_append_typed_event(session, pending, &event);
+            if (status != YMIR_BOX3D_OK)
+            {
+                return status;
+            }
+            status = ymir_session_mark_event_drained(session, YMIR_BOX3D_CONTACT_BEGIN, source->contactId);
+            if (status != YMIR_BOX3D_OK)
+            {
+                return status;
+            }
+        }
+    }
+
+    if ((event_mask & YMIR_DRAIN_HIT) != 0)
+    {
+        for (int i = 0; i < events.hitCount; ++i)
+        {
+            const b3ContactHitEvent* source = events.hitEvents + i;
+            if (ymir_session_event_was_drained(session, YMIR_BOX3D_CONTACT_HIT, source->contactId))
+            {
+                continue;
+            }
+            uint64_t stable_id_a = ymir_session_resolve_event_shape(session, source->shapeIdA);
+            uint64_t stable_id_b = ymir_session_resolve_event_shape(session, source->shapeIdB);
+            if (stable_id_a == 0 || stable_id_b == 0)
+            {
+                continue;
+            }
+            ymir_box3d_session_contact_event_output event = {
+                .kind = YMIR_BOX3D_CONTACT_HIT,
+                .has_details = 1,
+                .stable_id_a = stable_id_a,
+                .stable_id_b = stable_id_b,
+                .point_x = source->point.x,
+                .point_y = source->point.z,
+                .normal_x = source->normal.x,
+                .normal_y = source->normal.z,
+                .relative_speed = -source->approachSpeed,
+            };
+            b3StoreContactId(source->contactId, event.contact_id);
+            ymir_box3d_status status = ymir_session_append_typed_event(session, pending, &event);
+            if (status != YMIR_BOX3D_OK)
+            {
+                return status;
+            }
+            status = ymir_session_mark_event_drained(session, YMIR_BOX3D_CONTACT_HIT, source->contactId);
+            if (status != YMIR_BOX3D_OK)
+            {
+                return status;
+            }
+        }
+    }
+
+    if ((event_mask & YMIR_DRAIN_END) != 0)
+    {
+        for (int i = 0; i < events.endCount; ++i)
+        {
+            const b3ContactEndTouchEvent* source = events.endEvents + i;
+            if (ymir_session_event_was_drained(session, YMIR_BOX3D_CONTACT_END, source->contactId))
+            {
+                continue;
+            }
+            uint64_t stable_id_a = ymir_session_resolve_event_shape(session, source->shapeIdA);
+            uint64_t stable_id_b = ymir_session_resolve_event_shape(session, source->shapeIdB);
+            if (stable_id_a == 0 || stable_id_b == 0)
+            {
+                continue;
+            }
+            ymir_box3d_session_contact_event_output event = {
+                .kind = YMIR_BOX3D_CONTACT_END,
+                .stable_id_a = stable_id_a,
+                .stable_id_b = stable_id_b,
+            };
+            b3StoreContactId(source->contactId, event.contact_id);
+            ymir_box3d_status status = ymir_session_append_typed_event(session, pending, &event);
+            if (status != YMIR_BOX3D_OK)
+            {
+                return status;
+            }
+            status = ymir_session_mark_event_drained(session, YMIR_BOX3D_CONTACT_END, source->contactId);
+            if (status != YMIR_BOX3D_OK)
+            {
+                return status;
+            }
+        }
+    }
+    return YMIR_BOX3D_OK;
 }
 
 static ymir_box3d_status ymir_session_emit_contact(
@@ -822,16 +1150,18 @@ YMIR_EXPORT ymir_box3d_torque_result YMIR_CALL ymir_box3d_torque_lifetime(float 
 
 YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_get_abi_version(void)
 {
-    return 2;
+    return 3;
 }
 
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_get_abi_layout(
     uint32_t* body_input_size,
     uint32_t* field_input_size,
     uint32_t* body_output_size,
-    uint32_t* contact_output_size)
+    uint32_t* contact_output_size,
+    uint32_t* contact_event_output_size)
 {
-    if (body_input_size == NULL || field_input_size == NULL || body_output_size == NULL || contact_output_size == NULL)
+    if (body_input_size == NULL || field_input_size == NULL || body_output_size == NULL ||
+        contact_output_size == NULL || contact_event_output_size == NULL)
     {
         return YMIR_BOX3D_INVALID_ARGUMENT;
     }
@@ -840,6 +1170,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_get_abi_layout(
     *field_input_size = (uint32_t)sizeof(ymir_box3d_radial_field_input);
     *body_output_size = (uint32_t)sizeof(ymir_box3d_session_body_output);
     *contact_output_size = (uint32_t)sizeof(ymir_box3d_session_contact_output);
+    *contact_event_output_size = (uint32_t)sizeof(ymir_box3d_session_contact_event_output);
     return YMIR_BOX3D_OK;
 }
 
@@ -884,6 +1215,10 @@ YMIR_EXPORT void YMIR_CALL ymir_box3d_session_destroy(ymir_box3d_session* sessio
         b3DestroyWorld(session->world_id);
     }
     free(session->bodies);
+    free(session->contact_events);
+    free(session->pending_events);
+    free(session->retired_shapes);
+    free(session->drained_events);
     free(session);
 }
 
@@ -956,6 +1291,198 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_sync_bodies(
     return YMIR_BOX3D_OK;
 }
 
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_spawn(
+    ymir_box3d_session* session,
+    const ymir_box3d_session_body_input* body_input)
+{
+    if (session == NULL || !ymir_session_body_input_is_valid(body_input))
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    if (ymir_session_find_body(session, body_input->stable_id) >= 0)
+    {
+        return YMIR_BOX3D_DUPLICATE_ID;
+    }
+    ymir_box3d_status status = ymir_session_reserve_bodies(session, session->body_count + 1);
+    if (status != YMIR_BOX3D_OK)
+    {
+        return status;
+    }
+    ymir_box3d_session_body body;
+    status = ymir_session_create_body(session, body_input, &body);
+    if (status == YMIR_BOX3D_OK)
+    {
+        session->bodies[session->body_count++] = body;
+    }
+    return status;
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_remove(ymir_box3d_session* session, uint64_t stable_id)
+{
+    if (session == NULL || stable_id == 0)
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    int index = ymir_session_find_body(session, stable_id);
+    if (index < 0)
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    ymir_box3d_status status = ymir_session_reserve_retired_shapes(session, session->retired_shape_count + 1);
+    if (status != YMIR_BOX3D_OK)
+    {
+        return status;
+    }
+    session->retired_shapes[session->retired_shape_count++] = (ymir_box3d_retired_shape){
+        .shape_id = b3StoreShapeId(session->bodies[index].shape_id),
+        .stable_id = stable_id,
+    };
+    b3DestroyBody(session->bodies[index].body_id);
+    session->bodies[index] = session->bodies[session->body_count - 1];
+    session->body_count -= 1;
+    return ymir_session_drain_contact_events(session, YMIR_DRAIN_END, 1);
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_teleport(
+    ymir_box3d_session* session,
+    uint64_t stable_id,
+    float position_x,
+    float position_y,
+    float direction_x,
+    float direction_y)
+{
+    float direction_length_squared = direction_x * direction_x + direction_y * direction_y;
+    if (session == NULL || !ymir_is_finite(position_x) || !ymir_is_finite(position_y) ||
+        !ymir_is_finite(direction_x) || !ymir_is_finite(direction_y) || direction_length_squared <= 1.0e-8f)
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    int index = ymir_session_find_body(session, stable_id);
+    if (index < 0)
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    ymir_box3d_session_body* body = session->bodies + index;
+    b3Body_SetTransform(body->body_id, ymir_vec(position_x, position_y), ymir_session_rotation(direction_x, direction_y));
+    body->last_position_x = position_x;
+    body->last_position_y = position_y;
+    body->last_direction_x = direction_x;
+    body->last_direction_y = direction_y;
+    return ymir_session_drain_contact_events(session, YMIR_DRAIN_END, 1);
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_set_velocity(
+    ymir_box3d_session* session,
+    uint64_t stable_id,
+    float velocity_x,
+    float velocity_y,
+    float angular_velocity)
+{
+    if (session == NULL || !ymir_is_finite(velocity_x) || !ymir_is_finite(velocity_y) ||
+        !ymir_is_finite(angular_velocity))
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    int index = ymir_session_find_body(session, stable_id);
+    if (index < 0)
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    ymir_box3d_session_body* body = session->bodies + index;
+    b3Body_SetLinearVelocity(body->body_id, ymir_vec(velocity_x, velocity_y));
+    b3Body_SetAngularVelocity(body->body_id, (b3Vec3){0.0f, angular_velocity, 0.0f});
+    body->last_velocity_x = velocity_x;
+    body->last_velocity_y = velocity_y;
+    body->last_angular_velocity = angular_velocity;
+    return YMIR_BOX3D_OK;
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_configure(
+    ymir_box3d_session* session,
+    uint64_t stable_id,
+    float radius,
+    float mass,
+    float restitution,
+    uint32_t is_static)
+{
+    if (session == NULL || !ymir_is_finite(radius) || radius <= 0.0f || !ymir_is_finite(mass) ||
+        (is_static == 0 && mass <= 0.0f) || !ymir_is_finite(restitution) || restitution < 0.0f)
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    int index = ymir_session_find_body(session, stable_id);
+    if (index < 0)
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    ymir_box3d_session_body* body = session->bodies + index;
+    int type_changed = body->is_static != (is_static != 0);
+    int radius_changed = body->radius != radius;
+    int mass_changed = body->mass != mass;
+    if (type_changed)
+    {
+        b3Body_SetType(body->body_id, is_static != 0 ? b3_staticBody : b3_dynamicBody);
+    }
+    if (radius_changed)
+    {
+        b3Sphere sphere = {{0.0f, 0.0f, 0.0f}, radius};
+        b3Shape_SetSphere(body->shape_id, &sphere);
+    }
+    if (type_changed || radius_changed || mass_changed)
+    {
+        float density = is_static != 0 ? 0.0f : ymir_session_density(mass, radius);
+        b3Shape_SetDensity(body->shape_id, density, false);
+        b3Body_ApplyMassFromShapes(body->body_id);
+    }
+    if (body->restitution != restitution)
+    {
+        b3Shape_SetRestitution(body->shape_id, restitution);
+    }
+    body->radius = radius;
+    body->mass = mass;
+    body->restitution = restitution;
+    body->is_static = is_static != 0;
+    ymir_box3d_status status = ymir_session_drain_contact_events(session, YMIR_DRAIN_END, 1);
+    return status;
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_apply_force(
+    ymir_box3d_session* session,
+    uint64_t stable_id,
+    float force_x,
+    float force_y)
+{
+    if (session == NULL || !ymir_is_finite(force_x) || !ymir_is_finite(force_y))
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    int index = ymir_session_find_body(session, stable_id);
+    if (index < 0)
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    b3Body_ApplyForceToCenter(session->bodies[index].body_id, ymir_vec(force_x, force_y), true);
+    return YMIR_BOX3D_OK;
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_apply_torque(
+    ymir_box3d_session* session,
+    uint64_t stable_id,
+    float torque)
+{
+    if (session == NULL || !ymir_is_finite(torque))
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    int index = ymir_session_find_body(session, stable_id);
+    if (index < 0)
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    b3Body_ApplyTorque(session->bodies[index].body_id, (b3Vec3){0.0f, torque, 0.0f}, true);
+    return YMIR_BOX3D_OK;
+}
+
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_step(
     ymir_box3d_session* session,
     float time_step,
@@ -977,6 +1504,23 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_step(
         {
             return YMIR_BOX3D_INVALID_ARGUMENT;
         }
+    }
+
+    session->contact_event_count = 0;
+    ymir_box3d_status event_status = ymir_session_reserve_contact_events(
+        &session->contact_events, &session->contact_event_capacity, session->pending_event_count);
+    if (event_status != YMIR_BOX3D_OK)
+    {
+        return event_status;
+    }
+    if (session->pending_event_count > 0)
+    {
+        memcpy(
+            session->contact_events,
+            session->pending_events,
+            (size_t)session->pending_event_count * sizeof(ymir_box3d_session_contact_event_output));
+        session->contact_event_count = session->pending_event_count;
+        session->pending_event_count = 0;
     }
 
     for (int body_index = 0; body_index < session->body_count; ++body_index)
@@ -1033,6 +1577,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_step(
     }
 
     b3World_Step(session->world_id, time_step, sub_step_count);
+    session->drained_event_count = 0;
     for (int i = 0; i < session->body_count; ++i)
     {
         b3Pos position = b3Body_GetPosition(session->bodies[i].body_id);
@@ -1046,6 +1591,14 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_step(
         session->bodies[i].last_direction_x = direction.x;
         session->bodies[i].last_direction_y = direction.z;
         session->bodies[i].last_angular_velocity = angular_velocity.y;
+    }
+
+    event_status = ymir_session_drain_contact_events(
+        session, YMIR_DRAIN_BEGIN | YMIR_DRAIN_HIT | YMIR_DRAIN_END, 0);
+    session->retired_shape_count = 0;
+    if (event_status != YMIR_BOX3D_OK)
+    {
+        return event_status;
     }
 
     return YMIR_BOX3D_OK;
@@ -1116,4 +1669,34 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_copy_contacts(
     }
     *written = 0;
     return ymir_session_visit_contacts(session, output, capacity, written);
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_get_contact_event_count(const ymir_box3d_session* session)
+{
+    return session != NULL ? session->contact_event_count : -YMIR_BOX3D_INVALID_ARGUMENT;
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_copy_contact_events(
+    const ymir_box3d_session* session,
+    ymir_box3d_session_contact_event_output* output,
+    int32_t capacity,
+    int32_t* written)
+{
+    if (session == NULL || written == NULL || capacity < 0 || (capacity > 0 && output == NULL))
+    {
+        return YMIR_BOX3D_INVALID_ARGUMENT;
+    }
+    *written = session->contact_event_count;
+    if (capacity < session->contact_event_count)
+    {
+        return YMIR_BOX3D_BUFFER_TOO_SMALL;
+    }
+    if (session->contact_event_count > 0)
+    {
+        memcpy(
+            output,
+            session->contact_events,
+            (size_t)session->contact_event_count * sizeof(ymir_box3d_session_contact_event_output));
+    }
+    return YMIR_BOX3D_OK;
 }

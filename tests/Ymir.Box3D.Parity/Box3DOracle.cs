@@ -59,6 +59,47 @@ internal static partial class Box3DOracle
     [LibraryImport(LibraryName)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial Box3DTorqueResult ymir_box3d_torque_lifetime(float torque, float timeStep, int subStepCount);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial uint ymir_box3d_get_abi_version();
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int ymir_box3d_session_create(out nint session);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial void ymir_box3d_session_destroy(nint session);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static unsafe partial int ymir_box3d_session_spawn(nint session, Box3DSessionBodyInput* body);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int ymir_box3d_session_remove(nint session, ulong stableId);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static unsafe partial int ymir_box3d_session_step(
+        nint session,
+        float deltaTime,
+        int substepCount,
+        void* fields,
+        int fieldCount);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int ymir_box3d_session_get_contact_event_count(nint session);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static unsafe partial int ymir_box3d_session_copy_contact_events(
+        nint session,
+        Box3DSessionContactEvent* events,
+        int capacity,
+        out int written);
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -109,3 +150,35 @@ internal readonly record struct Box3DPairStepResult(
 internal readonly record struct Box3DTorqueResult(
     float AngularVelocityAfterAppliedStep,
     float AngularVelocityAfterUnforcedStep);
+
+[StructLayout(LayoutKind.Sequential)]
+internal readonly record struct Box3DSessionBodyInput(
+    ulong StableId,
+    float PositionX,
+    float PositionY,
+    float VelocityX,
+    float VelocityY,
+    float DirectionX,
+    float DirectionY,
+    float AngularVelocity,
+    float Torque,
+    float Radius,
+    float Mass,
+    float Restitution,
+    uint IsStatic);
+
+[StructLayout(LayoutKind.Sequential)]
+internal readonly record struct Box3DSessionContactEvent(
+    int Kind,
+    uint HasDetails,
+    uint ContactId0,
+    uint ContactId1,
+    uint ContactId2,
+    ulong StableIdA,
+    ulong StableIdB,
+    float PointX,
+    float PointY,
+    float NormalX,
+    float NormalY,
+    float Penetration,
+    float RelativeSpeed);

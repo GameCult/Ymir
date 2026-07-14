@@ -16,12 +16,13 @@ authorities.
   lifecycle, force and torque lifetime, tolerances, and deterministic step
   behavior for identical recorded inputs.
 - Ymir currently owns the pinned Box3D version, stable GameCult entity ids,
-  native ABI isolation, snapshot lowering, deterministic result ordering,
-  versioned CultCache snapshots, and a diagnostic Eve publication.
-- The Ymir daemon will own long-lived world sessions, typed commands and
-  receipts, contact lifecycle facts, checkpoint reconstruction, CultMesh
-  publication, and process supervision. Those are the cutover contract, not a
-  claim that the current CLI already exposes them.
+  native ABI isolation, public in-process retained sessions, explicit mutation
+  receipts, typed contact facts, snapshot lowering, deterministic result
+  ordering, versioned CultCache snapshots, and a diagnostic Eve publication.
+- The Ymir daemon will own named session routing, durable command receipts,
+  checkpoint reconstruction, CultMesh command/fact publication, and process
+  supervision. Those are the daemon cutover contract, not a claim that the
+  current CLI already exposes them.
 - Aetheria owns gameplay policy and supplies typed physical intent: bodies,
   fields, tractor targets, forces, projectiles, filters, and the gameplay
   consequences of Ymir contact facts.
@@ -53,16 +54,19 @@ projects the result, and disposes it. It contains no managed integrator,
 collision loop, or impulse solver.
 
 That snapshot facade deliberately does not pretend to own long-lived world
-identity. The retained native session exists behind an internal managed port;
-there is not yet a public session registry or command contract. Aetheria will
-name one Ymir session per run and zone when that contract is exposed. Its old
-process-wide simulator objects are not session identifiers. Planar heading,
-angular velocity, and transient torque already pass through Box3D. Typed
-begin/end/hit lifecycle facts, checkpoint reconstruction, and non-Windows RID
-artifacts remain cutover work.
+identity. The public in-process `YmirSession` now exposes explicit body
+mutations, force and torque commands, revisioned receipts, retained stepping,
+and typed Begin/Hit/End facts. It never treats omission as removal. The daemon
+still lacks a named session registry and CultMesh command lowering. Aetheria
+will name one session per run and zone through that daemon contract; its old
+process-wide simulator objects are not session identifiers. Retained-world
+queries, checkpoint reconstruction, and non-Windows RID artifacts remain
+cutover work.
 
 See [the architecture map](docs/architecture.md) and
-[the executable parity contract](docs/box3d-parity.md).
+[the executable parity contract](docs/box3d-parity.md). The
+[retained-session contract](docs/retained-session-contract.md) records the
+current ownership cut and the public daemon boundary being built.
 
 ## Build And Test
 

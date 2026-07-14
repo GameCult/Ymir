@@ -36,12 +36,17 @@ an isolated internal session for one complete snapshot, projects its output,
 and disposes it. Public circle overlap and cast APIs invoke Box3D geometry over
 caller-supplied bodies.
 
-The retained native session and its managed wrapper are internal. The current
-CLI has no named session registry, public mutation commands, command receipts,
-retained-world queries, or begin/end/hit lifecycle contract. Its CultCache and
-Eve output is a regenerated diagnostic projection. The sections marked as
-target contract describe the cut still to build; they are not advertisements
-of current daemon capability.
+The retained native session now has a public in-process `YmirSession` port with
+explicit spawn, remove, teleport, velocity, configuration, force, torque,
+step, and disposal operations. It emits revisioned receipts and typed
+Begin/Hit/End facts with stable Ymir identities. Ordinary retained steps do not
+accept complete body snapshots.
+
+The current CLI still has no named session registry, CultMesh command
+lowerings, retained-world queries, durable receipt ledger, or reconstruction
+checkpoint. Its CultCache and Eve output is a regenerated diagnostic
+projection. The sections marked as target contract describe that daemon cut;
+they are not advertisements of current CLI capability.
 
 ## Target Inputs
 
@@ -114,7 +119,7 @@ infer retained identity from a body list.
 Session identity must be explicit. A process-wide simulator object, zone index,
 or repeated stable body id is not enough to join two calls to the same world.
 Aetheria owns run and zone lifetime and will create, retain, and dispose the
-corresponding Ymir session after the public port exists. Current projectile
+corresponding Ymir session after daemon registry integration. Current projectile
 sweep and stationary mine proximity integration can use Ymir's static
 Box3D-backed circle-cast and overlap queries, but those calls do not join a
 retained world or own contact lifecycle.

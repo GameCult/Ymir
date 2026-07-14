@@ -120,4 +120,51 @@ public sealed class Box3DParityTests
             result.AngularVelocityAfterUnforcedStep,
             precision: 5);
     }
+
+    [Fact]
+    public unsafe void RetainedSessionCommandsPreserveTypedContactLifecycle()
+    {
+        Assert.Equal(3u, Box3DOracle.ymir_box3d_get_abi_version());
+        Assert.Equal(0, Box3DOracle.ymir_box3d_session_create(out var session));
+        try
+        {
+            var bodyA = new Box3DSessionBodyInput(
+                1, -0.9f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0);
+            var bodyB = new Box3DSessionBodyInput(
+                2, 0.9f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0);
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_spawn(session, &bodyA));
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_spawn(session, &bodyB));
+            Assert.Equal(2, Box3DOracle.ymir_box3d_session_spawn(session, &bodyA));
+            Assert.Equal(1, Box3DOracle.ymir_box3d_session_remove(session, 999));
+
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_step(session, 1.0f / 60.0f, 4, null, 0));
+            var beginEvents = CopyEvents(session);
+            var begin = Assert.Single(beginEvents, value => value.Kind == 1);
+            Assert.Equal(new HashSet<ulong> { 1, 2 }, new HashSet<ulong> { begin.StableIdA, begin.StableIdB });
+            Assert.Equal(1u, begin.HasDetails);
+
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_remove(session, 2));
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_step(session, 1.0f / 60.0f, 4, null, 0));
+            var end = Assert.Single(CopyEvents(session), value => value.Kind == 3);
+            Assert.Equal(new HashSet<ulong> { 1, 2 }, new HashSet<ulong> { end.StableIdA, end.StableIdB });
+            Assert.Equal(0u, end.HasDetails);
+        }
+        finally
+        {
+            Box3DOracle.ymir_box3d_session_destroy(session);
+        }
+    }
+
+    private static unsafe Box3DSessionContactEvent[] CopyEvents(nint session)
+    {
+        var count = Box3DOracle.ymir_box3d_session_get_contact_event_count(session);
+        Assert.True(count >= 0);
+        var events = new Box3DSessionContactEvent[count];
+        fixed (Box3DSessionContactEvent* pointer = events)
+        {
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_copy_contact_events(session, pointer, count, out var written));
+            Assert.Equal(count, written);
+        }
+        return events;
+    }
 }

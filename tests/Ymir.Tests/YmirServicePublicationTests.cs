@@ -17,7 +17,9 @@ public sealed class YmirServicePublicationTests
 
         Assert.Contains("Box3D", advertisement.Description, StringComparison.Ordinal);
         Assert.Contains("Box3D-only isolated snapshot stepping", advertisement.Owns);
-        Assert.Contains("public retained session lifecycle yet", advertisement.DoesNotOwn);
+        Assert.Contains("public in-process retained sessions with explicit mutation receipts", advertisement.Owns);
+        Assert.Contains("typed Begin, Hit, and End contact facts for retained steps", advertisement.Owns);
+        Assert.Contains("daemon-owned named session registry or CultMesh command lowering yet", advertisement.DoesNotOwn);
         Assert.Empty(advertisement.CommandLowerings);
         Assert.Contains("Box3D solver and collision semantics", advertisement.DoesNotOwn);
         Assert.Equal("Box3D v0.1.0 (C17)", diagnostics.NumericSubstrate);

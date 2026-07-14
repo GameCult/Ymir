@@ -9,7 +9,7 @@
     <AssemblyName>Ymir.Box3D</AssemblyName>
     <Description>Native ABI boundary between Ymir sessions and pinned Box3D.</Description>
     <PackageId>GameCult.Ymir.Box3D</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>GameCult</Authors>
     <IsPackable>true</IsPackable>
     <PackageReadmeFile>README.md</PackageReadmeFile>

@@ -39,9 +39,31 @@ internal readonly record struct Box3DContact(
     float Penetration,
     float RelativeSpeed);
 
+internal enum Box3DContactKind
+{
+    Begin = 1,
+    Hit = 2,
+    End = 3
+}
+
+internal readonly record struct Box3DContactKey(uint Part0, uint Part1, uint Part2);
+
+internal readonly record struct Box3DContactFact(
+    Box3DContactKind Kind,
+    Box3DContactKey ContactKey,
+    ulong StableIdA,
+    ulong StableIdB,
+    bool HasDetails,
+    float PointX,
+    float PointZ,
+    float NormalX,
+    float NormalZ,
+    float Penetration,
+    float RelativeSpeed);
+
 internal sealed class Box3DSession : IDisposable
 {
-    internal const uint AbiVersion = 2;
+    internal const uint AbiVersion = 3;
     internal const int DefaultSubstepCount = 4;
 
     private readonly Box3DSessionHandle _handle;
@@ -93,6 +115,67 @@ internal sealed class Box3DSession : IDisposable
         }
     }
 
+    internal unsafe void Spawn(Box3DBody body)
+    {
+        ThrowIfDisposed();
+        var native = ToNative(body);
+        ThrowIfMutationFailed(Box3DNative.ymir_box3d_session_spawn(_handle, &native), "spawn body");
+    }
+
+    internal void Remove(ulong stableId)
+    {
+        ThrowIfDisposed();
+        ThrowIfMutationFailed(Box3DNative.ymir_box3d_session_remove(_handle, stableId), "remove body");
+    }
+
+    internal void Teleport(
+        ulong stableId,
+        float positionX,
+        float positionZ,
+        float directionX,
+        float directionZ)
+    {
+        ThrowIfDisposed();
+        ThrowIfMutationFailed(
+            Box3DNative.ymir_box3d_session_teleport(
+                _handle, stableId, positionX, positionZ, directionX, directionZ),
+            "teleport body");
+    }
+
+    internal void SetVelocity(ulong stableId, float linearX, float linearZ, float angular)
+    {
+        ThrowIfDisposed();
+        ThrowIfMutationFailed(
+            Box3DNative.ymir_box3d_session_set_velocity(_handle, stableId, linearX, linearZ, angular),
+            "set body velocity");
+    }
+
+    internal void Configure(
+        ulong stableId,
+        float radius,
+        float mass,
+        float restitution,
+        bool isStatic)
+    {
+        ThrowIfDisposed();
+        ThrowIfMutationFailed(
+            Box3DNative.ymir_box3d_session_configure(
+                _handle, stableId, radius, mass, restitution, isStatic ? 1u : 0u),
+            "configure body");
+    }
+
+    internal void ApplyForce(ulong stableId, float x, float z)
+    {
+        ThrowIfDisposed();
+        ThrowIfMutationFailed(Box3DNative.ymir_box3d_session_apply_force(_handle, stableId, x, z), "apply body force");
+    }
+
+    internal void ApplyTorque(ulong stableId, float value)
+    {
+        ThrowIfDisposed();
+        ThrowIfMutationFailed(Box3DNative.ymir_box3d_session_apply_torque(_handle, stableId, value), "apply body torque");
+    }
+
     internal unsafe void Step(float deltaTime, ReadOnlySpan<Box3DField> fields, int substepCount = DefaultSubstepCount)
     {
         ThrowIfDisposed();
@@ -114,7 +197,7 @@ internal sealed class Box3DSession : IDisposable
 
         fixed (Box3DRadialField* pointer = native)
         {
-            ThrowIfFailed(
+            ThrowIfMutationFailed(
                 Box3DNative.ymir_box3d_session_step(_handle, deltaTime, substepCount, pointer, native.Length),
                 "step session");
         }
@@ -180,6 +263,42 @@ internal sealed class Box3DSession : IDisposable
             contact.RelativeSpeed)).ToArray();
     }
 
+    internal unsafe Box3DContactFact[] CopyContactEvents()
+    {
+        ThrowIfDisposed();
+        var count = Box3DNative.ymir_box3d_session_get_contact_event_count(_handle);
+        if (count < 0)
+        {
+            throw new InvalidOperationException("Box3D returned an invalid contact event count.");
+        }
+
+        var native = new Box3DContactEventOutput[count];
+        fixed (Box3DContactEventOutput* pointer = native)
+        {
+            ThrowIfFailed(
+                Box3DNative.ymir_box3d_session_copy_contact_events(_handle, pointer, count, out var written),
+                "copy contact events");
+            if (written != count)
+            {
+                throw new InvalidOperationException(
+                    $"Box3D contact event snapshot changed during copy: expected {count}, received {written}.");
+            }
+        }
+
+        return native.Select(contact => new Box3DContactFact(
+            (Box3DContactKind)contact.Kind,
+            new Box3DContactKey(contact.ContactId0, contact.ContactId1, contact.ContactId2),
+            contact.StableIdA,
+            contact.StableIdB,
+            contact.HasDetails != 0,
+            contact.PointX,
+            contact.PointZ,
+            contact.NormalX,
+            contact.NormalZ,
+            contact.Penetration,
+            contact.RelativeSpeed)).ToArray();
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -204,12 +323,14 @@ internal sealed class Box3DSession : IDisposable
                 out var bodyInputSize,
                 out var fieldInputSize,
                 out var bodyOutputSize,
-                out var contactOutputSize),
+                out var contactOutputSize,
+                out var contactEventOutputSize),
             "read native ABI layout");
         EnsureSize<Box3DBodyInput>(bodyInputSize);
         EnsureSize<Box3DRadialField>(fieldInputSize);
         EnsureSize<Box3DBodyOutput>(bodyOutputSize);
         EnsureSize<Box3DContactOutput>(contactOutputSize);
+        EnsureSize<Box3DContactEventOutput>(contactEventOutputSize);
 
         Box3DNative.ymir_box3d_get_version(out var major, out var minor, out var revision);
         if (major != 0 || minor != 1 || revision != 0)
@@ -235,6 +356,30 @@ internal sealed class Box3DSession : IDisposable
             throw new InvalidOperationException($"Ymir could not {operation}: native Box3D status {status}.");
         }
     }
+
+    private void ThrowIfMutationFailed(Box3DStatus status, string operation)
+    {
+        if (status is Box3DStatus.OutOfMemory or Box3DStatus.InternalError)
+        {
+            Dispose();
+        }
+        ThrowIfFailed(status, operation);
+    }
+
+    private static Box3DBodyInput ToNative(Box3DBody body) => new(
+        body.StableId,
+        body.PositionX,
+        body.PositionZ,
+        body.VelocityX,
+        body.VelocityZ,
+        body.DirectionX,
+        body.DirectionZ,
+        body.AngularVelocity,
+        body.Torque,
+        body.Radius,
+        body.Mass,
+        body.Restitution,
+        body.IsStatic ? 1u : 0u);
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 }
