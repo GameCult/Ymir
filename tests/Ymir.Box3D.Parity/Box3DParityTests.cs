@@ -83,4 +83,41 @@ public sealed class Box3DParityTests
 
         Assert.True(result.IsHit);
     }
+
+    [Fact]
+    public void PairStepEmitsBeginContactAndSeparatesOverlappingSpheres()
+    {
+        var bodyA = new Box3DBodyInput(-0.9f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0);
+        var bodyB = new Box3DBodyInput(0.9f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0);
+
+        Box3DOracle.ymir_box3d_step_pair(in bodyA, in bodyB, 1.0f / 60.0f, 4, 0.0f, out var result);
+
+        Assert.Equal(1, result.BeginContactCount);
+        Assert.True(result.BodyA.PositionX < -0.9f);
+        Assert.True(result.BodyB.PositionX > 0.9f);
+    }
+
+    [Fact]
+    public void PairStepUsesMaximumRestitution()
+    {
+        var bodyA = new Box3DBodyInput(-1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.1f, 0);
+        var bodyB = new Box3DBodyInput(1.0f, 0.0f, -1.0f, 0.0f, 1.0f, 1.0f, 0.8f, 0);
+
+        Box3DOracle.ymir_box3d_step_pair(in bodyA, in bodyB, 1.0f / 60.0f, 4, 0.0f, out var result);
+
+        Assert.True(result.BodyA.VelocityX < -0.7f);
+        Assert.True(result.BodyB.VelocityX > 0.7f);
+    }
+
+    [Fact]
+    public void TorqueIsClearedAfterEachWorldStep()
+    {
+        var result = Box3DOracle.ymir_box3d_torque_lifetime(0.4f, 0.1f, 4);
+
+        Assert.True(result.AngularVelocityAfterAppliedStep > 0.0f);
+        Assert.Equal(
+            result.AngularVelocityAfterAppliedStep,
+            result.AngularVelocityAfterUnforcedStep,
+            precision: 5);
+    }
 }

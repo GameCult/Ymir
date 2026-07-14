@@ -16,8 +16,9 @@ torque lifetime, and numeric tolerances.
 
 `native/Ymir.Box3D` statically links the pinned C17 library into one small
 shared-library facade. The facade exports only blittable sphere overlap,
-sphere cast, capsule-versus-sphere membership, and version operations. This
-keeps Box3D's alpha C ABI out of Ymir's public managed contracts.
+sphere cast, capsule-versus-sphere membership, planar pair stepping, torque
+lifetime, and version operations. This keeps Box3D's alpha C ABI out of Ymir's
+public managed contracts.
 
 `tests/Ymir.Box3D.Parity` builds that facade through CMake and invokes it with
 source-generated .NET interop. Run it with:
@@ -42,12 +43,16 @@ is retained in the pinned submodule.
   includes rounded start and end caps and the same overlap slop.
 - Box3D query callback order is not a contract. Ymir sorts projected results by
   distance and stable entity id.
+- Contact begin facts are emitted after the world step.
+- Restitution uses the maximum of the two shape materials.
+- Applied torque is transient and cleared by each world step; a continuous
+  torque must be submitted again for the next step.
 
 ## Cut Line
 
 The current managed collision formulas are transitional. They may exist only
-while differential tests prove compatibility. The next parity slice covers a
-planar sphere-world step, transient forces and torques, restitution mixing,
-and begin/end contact events. Once those facts are projected through a stable
-Ymir native port, the managed solver, query geometry, and spatial indexes are
-deleted rather than retained as fallback authority.
+while differential tests prove compatibility. The remaining parity slice
+covers retained world sessions, end-contact lifecycle, continuous collision,
+and replay. Once those facts are projected through a stable Ymir native port,
+the managed solver, query geometry, and spatial indexes are deleted rather
+than retained as fallback authority.

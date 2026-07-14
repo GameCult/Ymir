@@ -4,6 +4,7 @@
     <Project Path="src/Ymir.Core/Ymir.Core.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Ymir.Box3D.Parity/Ymir.Box3D.Parity.csproj" />
     <Project Path="tests/Ymir.Tests/Ymir.Tests.csproj" />
   </Folder>
   <Project Path="../CultMath/src/CultMath/CultMath.csproj" />

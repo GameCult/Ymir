@@ -40,6 +40,18 @@ internal static partial class Box3DOracle
         float bodyY,
         float bodyRadius,
         int canEncroach);
+
+    [LibraryImport(LibraryName)]
+    internal static partial void ymir_box3d_step_pair(
+        in Box3DBodyInput bodyA,
+        in Box3DBodyInput bodyB,
+        float timeStep,
+        int subStepCount,
+        float restitutionThreshold,
+        out Box3DPairStepResult result);
+
+    [LibraryImport(LibraryName)]
+    internal static partial Box3DTorqueResult ymir_box3d_torque_lifetime(float torque, float timeStep, int subStepCount);
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -58,3 +70,35 @@ internal readonly record struct Box3DCastResult(
 {
     public bool IsHit => Hit != 0;
 }
+
+[StructLayout(LayoutKind.Sequential)]
+internal readonly record struct Box3DBodyInput(
+    float PositionX,
+    float PositionY,
+    float VelocityX,
+    float VelocityY,
+    float Radius,
+    float Mass,
+    float Restitution,
+    int IsStatic);
+
+[StructLayout(LayoutKind.Sequential)]
+internal readonly record struct Box3DBodyOutput(
+    float PositionX,
+    float PositionY,
+    float VelocityX,
+    float VelocityY,
+    float AngularVelocity);
+
+[StructLayout(LayoutKind.Sequential)]
+internal readonly record struct Box3DPairStepResult(
+    Box3DBodyOutput BodyA,
+    Box3DBodyOutput BodyB,
+    int BeginContactCount,
+    int EndContactCount,
+    int HitContactCount);
+
+[StructLayout(LayoutKind.Sequential)]
+internal readonly record struct Box3DTorqueResult(
+    float AngularVelocityAfterAppliedStep,
+    float AngularVelocityAfterUnforcedStep);
