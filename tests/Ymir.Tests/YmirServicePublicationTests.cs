@@ -8,6 +8,22 @@ namespace Ymir.Tests;
 public sealed class YmirServicePublicationTests
 {
     [Fact]
+    public void PublicationAdvertisesBox3DOwnershipBoundary()
+    {
+        var now = DateTimeOffset.Parse("2026-07-14T12:00:00Z");
+
+        var advertisement = YmirServicePublication.ProviderAdvertisement(now);
+        var diagnostics = YmirServicePublication.OperatorState(now);
+
+        Assert.Contains("Box3D", advertisement.Description, StringComparison.Ordinal);
+        Assert.Contains("authoritative physics session lifecycle", advertisement.Owns);
+        Assert.Contains("Box3D solver and collision semantics", advertisement.DoesNotOwn);
+        Assert.Equal("Box3D v0.1.0 (C17)", diagnostics.NumericSubstrate);
+        Assert.Contains("does not own physics algorithms", diagnostics.BatchKernel, StringComparison.Ordinal);
+        Assert.Contains("world_state.v0", diagnostics.Persistence, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void EveSurfaceUsesCanonicalDocumentAndOperatorMetrics()
     {
         var diagnostics = new YmirOperatorStateDocument

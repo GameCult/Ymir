@@ -1,7 +1,6 @@
 using GameCult.Caching;
 using GameCult.Caching.MessagePack;
 using GameCult.Eve.Surface;
-using CultMath;
 using MessagePack;
 
 namespace Ymir.Core;
@@ -18,7 +17,7 @@ public sealed class YmirProviderAdvertisementDocument
     public string Title { get; set; } = "Ymir Physics";
 
     [Key(2)]
-    public string Description { get; set; } = "GameCult physics/world substrate engine built on CultMath.";
+    public string Description { get; set; } = "GameCult authoritative Box3D session wrapper and physics daemon.";
 
     [Key(3)]
     public string[] Owns { get; set; } = [];
@@ -45,16 +44,16 @@ public sealed class YmirOperatorStateDocument
     public string Status { get; set; } = "mvp";
 
     [Key(2)]
-    public string StateOwner { get; set; } = "Ymir.Core step and query results";
+    public string StateOwner { get; set; } = "Ymir world sessions and typed GameCult projections";
 
     [Key(3)]
-    public string NumericSubstrate { get; set; } = "CultMath";
+    public string NumericSubstrate { get; set; } = "Box3D v0.1.0 (C17)";
 
     [Key(4)]
     public string BatchKernel { get; set; } = "";
 
     [Key(5)]
-    public string Persistence { get; set; } = "CultCache MessagePack directory store for gamecult.ymir.world_state.v1";
+    public string Persistence { get; set; } = "CultCache gamecult.ymir.world_state.v0 legacy checkpoint during Box3D cutover";
 
     [Key(6)]
     public string UpdatedAtUtc { get; set; } = "";
@@ -82,18 +81,20 @@ public static class YmirServicePublication
     {
         ProviderId = "ymir.physics",
         Title = "Ymir Physics",
-        Description = "GameCult physics/world substrate engine built on CultMath.",
+        Description = "GameCult authoritative Box3D session wrapper and physics daemon.",
         Owns =
         [
-            "physics simulation truth",
-            "body integration",
-            "field acceleration",
-            "contact generation",
-            "collision query semantics",
-            "SoA CultCache world-state persistence"
+            "authoritative physics session lifecycle",
+            "stable GameCult id to Box3D handle projection",
+            "typed physics commands and facts",
+            "deterministic result ordering",
+            "CultCache checkpoint reconstruction",
+            "CultMesh and Eve service publication"
         ],
         DoesNotOwn =
         [
+            "physics algorithm invention",
+            "Box3D solver and collision semantics",
             "Unity scene truth",
             "rendering",
             "gameplay damage policy",
@@ -107,10 +108,10 @@ public static class YmirServicePublication
     {
         ProviderId = "ymir.physics",
         Status = "mvp",
-        StateOwner = "Ymir.Core step and query results",
-        NumericSubstrate = "CultMath",
-        BatchKernel = $"CultMath.BatchMath lanes={BatchMath.LaneCount}, hardwareAccelerated={BatchMath.IsHardwareAccelerated}",
-        Persistence = "CultCache MessagePack directory store for gamecult.ymir.world_state.v1",
+        StateOwner = "Ymir world sessions and typed GameCult projections",
+        NumericSubstrate = "Box3D v0.1.0 (C17)",
+        BatchKernel = "Box3D native solver; Ymir does not own physics algorithms",
+        Persistence = "CultCache gamecult.ymir.world_state.v0 legacy checkpoint during Box3D cutover",
         UpdatedAtUtc = FormatUtc(now)
     };
 
