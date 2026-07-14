@@ -250,6 +250,46 @@ public sealed class YmirSimulatorTests
         }
     }
 
+    [Fact]
+    public async Task CultCacheV2PreservesBox3DBodyProfile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ymir-v2-tests-{Guid.NewGuid():N}.cc");
+        var recordsPath = $"{path}.records";
+        try
+        {
+            var world = YmirSoAWorld.FromWorld(new YmirWorld(
+                3.0f,
+                [new PhysicsBody("payload", Vec2.Zero, Vec2.Zero, 0.5f, 1.0f) with
+                {
+                    IsKinematic = true,
+                    IsBullet = true,
+                    ParticipatesInFields = false,
+                    CollisionCategoryBits = 4,
+                    CollisionMaskBits = 2,
+                    CollisionGroupIndex = -11
+                }],
+                []));
+
+            await YmirCultCacheStore.SaveWorldAsync(path, "test", world);
+            var loaded = await YmirCultCacheStore.LoadWorldAsync(path, "test");
+
+            Assert.NotNull(loaded);
+            loaded!.Validate();
+            var body = Assert.Single(loaded.ToWorld().Bodies);
+            Assert.True(body.IsKinematic);
+            Assert.True(body.IsBullet);
+            Assert.False(body.ParticipatesInFields);
+            Assert.Equal(4UL, body.CollisionCategoryBits);
+            Assert.Equal(2UL, body.CollisionMaskBits);
+            Assert.Equal(-11, body.CollisionGroupIndex);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+            if (Directory.Exists(recordsPath)) Directory.Delete(recordsPath, recursive: true);
+        }
+    }
+
     private static SimulationStepResult Step(params PhysicsBody[] bodies)
     {
         var simulator = new YmirSimulator();

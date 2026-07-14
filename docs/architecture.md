@@ -145,10 +145,11 @@ The native facade must remain boring:
 
 ## Persistence
 
-`gamecult.ymir.world_state.v1` appends planar direction and angular velocity to
-the v0 layout. The v0 reader is an explicit migration path; keys are not
-reassigned. Torque is transient command state and is intentionally absent.
-Version 1 is a compatibility world snapshot, not a complete retained-session
+`gamecult.ymir.world_state.v2` appends Box3D body type, bullet,
+field-participation, and collision filter arrays to the v1 layout. The v1 and
+v0 readers are explicit migration paths; keys are not reassigned. Torque is
+transient command state and is intentionally absent. Version 2 is a
+compatibility world snapshot, not a complete retained-session
 checkpoint: it does not preserve full shape, material, filter, session tuning,
 provenance, or warm contact state.
 
@@ -172,7 +173,7 @@ Box3D-backed sessions prove:
 1. fixed-step body state projection;
 2. begin/end/hit contact lifecycle;
 3. overlap and shape-cast lowering;
-4. continuous collision and projectile witnesses;
+4. continuous collision event timing and same-step Box3D cast witnesses;
 5. transient force and torque application;
 6. checkpoint reconstruction and replay;
 7. Aetheria gravity, tractor, pickup, and payload smokes.

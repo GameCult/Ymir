@@ -47,6 +47,8 @@ parity suite already witness released Box3D behavior for:
 - contact-begin facts
 - restitution mixing
 - transient torque lifetime
+- category/mask/group collision filtering
+- bullet CCD against kinematic bodies, including Box3D's next-step contact-event timing
 
 The production `Ymir.Box3D` boundary owns the native session ABI. The legacy
 snapshot `YmirSimulator.Step` contract now creates an isolated Box3D session,
@@ -92,6 +94,11 @@ an isolated empty consumer without CMake or the submodule. A committed release
 smoke is still required before that is a repeatable packaging guarantee. Linux
 and macOS packages must be produced and smoked on their own release workers
 before those RIDs are advertised.
+
+The current package version is `0.3.0`. ABI v4 exposes Box3D body type,
+bullet, field-participation, and collision-filter configuration without
+exposing Box3D handles. These are Ymir contract fields, but their behavior is
+Box3D behavior.
 
 ## Cutover Rule
 

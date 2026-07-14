@@ -18,6 +18,12 @@ public sealed class YmirSoAWorld
     public float[] Mass { get; set; } = [];
     public float[] DynamicMask { get; set; } = [];
     public float[] Restitution { get; set; } = [];
+    public float[] KinematicMask { get; set; } = [];
+    public float[] BulletMask { get; set; } = [];
+    public float[] FieldParticipationMask { get; set; } = [];
+    public ulong[] CollisionCategoryBits { get; set; } = [];
+    public ulong[] CollisionMaskBits { get; set; } = [];
+    public int[] CollisionGroupIndex { get; set; } = [];
     public string[] FieldIds { get; set; } = [];
     public float[] FieldPositionX { get; set; } = [];
     public float[] FieldPositionY { get; set; } = [];
@@ -49,6 +55,12 @@ public sealed class YmirSoAWorld
             Mass = bodies.Select(body => body.Mass).ToArray(),
             DynamicMask = bodies.Select(body => body.IsStatic ? 0.0f : 1.0f).ToArray(),
             Restitution = bodies.Select(body => body.Restitution).ToArray(),
+            KinematicMask = bodies.Select(body => body.IsKinematic ? 1.0f : 0.0f).ToArray(),
+            BulletMask = bodies.Select(body => body.IsBullet ? 1.0f : 0.0f).ToArray(),
+            FieldParticipationMask = bodies.Select(body => body.ParticipatesInFields ? 1.0f : 0.0f).ToArray(),
+            CollisionCategoryBits = bodies.Select(body => body.CollisionCategoryBits).ToArray(),
+            CollisionMaskBits = bodies.Select(body => body.CollisionMaskBits).ToArray(),
+            CollisionGroupIndex = bodies.Select(body => body.CollisionGroupIndex).ToArray(),
             FieldIds = fields.Select(field => field.Id).ToArray(),
             FieldPositionX = fields.Select(field => field.Position.X).ToArray(),
             FieldPositionY = fields.Select(field => field.Position.Y).ToArray(),
@@ -70,7 +82,13 @@ public sealed class YmirSoAWorld
                 Restitution[i],
                 new Vec2(DirectionX[i], DirectionY[i]),
                 AngularVelocity[i],
-                Torque[i]))
+                Torque[i],
+                KinematicMask[i] > 0.0f,
+                BulletMask[i] > 0.0f,
+                FieldParticipationMask[i] > 0.0f,
+                CollisionCategoryBits[i],
+                CollisionMaskBits[i],
+                CollisionGroupIndex[i]))
             .ToArray(),
         Enumerable.Range(0, FieldCount)
             .Select(i => new RadialField(
@@ -96,6 +114,12 @@ public sealed class YmirSoAWorld
         Mass = (float[])Mass.Clone(),
         DynamicMask = (float[])DynamicMask.Clone(),
         Restitution = (float[])Restitution.Clone(),
+        KinematicMask = (float[])KinematicMask.Clone(),
+        BulletMask = (float[])BulletMask.Clone(),
+        FieldParticipationMask = (float[])FieldParticipationMask.Clone(),
+        CollisionCategoryBits = (ulong[])CollisionCategoryBits.Clone(),
+        CollisionMaskBits = (ulong[])CollisionMaskBits.Clone(),
+        CollisionGroupIndex = (int[])CollisionGroupIndex.Clone(),
         FieldIds = (string[])FieldIds.Clone(),
         FieldPositionX = (float[])FieldPositionX.Clone(),
         FieldPositionY = (float[])FieldPositionY.Clone(),
@@ -123,6 +147,16 @@ public sealed class YmirSoAWorld
             if (DynamicMask[i] > 0.0f && Mass[i] <= 0.0f)
             {
                 throw new ArgumentOutOfRangeException(nameof(Mass), "Dynamic body mass must be positive.");
+            }
+
+            if (DynamicMask[i] <= 0.0f && KinematicMask[i] > 0.0f)
+            {
+                throw new ArgumentException("A body cannot be both static and kinematic.");
+            }
+
+            if (CollisionCategoryBits[i] == 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(CollisionCategoryBits), "Collision category bits must be non-zero.");
             }
 
             var directionLengthSquared = DirectionX[i] * DirectionX[i] + DirectionY[i] * DirectionY[i];
@@ -158,6 +192,7 @@ public sealed class YmirSoAWorld
     {
         var expected = BodyIds.Length;
         FillMissingAngularState(expected);
+        FillMissingCollisionState(expected);
         foreach (var length in new[]
                  {
                      PositionX.Length,
@@ -171,7 +206,13 @@ public sealed class YmirSoAWorld
                      Radius.Length,
                      Mass.Length,
                      DynamicMask.Length,
-                     Restitution.Length
+                     Restitution.Length,
+                     KinematicMask.Length,
+                     BulletMask.Length,
+                     FieldParticipationMask.Length,
+                     CollisionCategoryBits.Length,
+                     CollisionMaskBits.Length,
+                     CollisionGroupIndex.Length
                  })
         {
             if (length != expected)
@@ -179,6 +220,19 @@ public sealed class YmirSoAWorld
                 throw new ArgumentException("Ymir body SoA arrays must have equal length.");
             }
         }
+    }
+
+    private void FillMissingCollisionState(int expected)
+    {
+        if (KinematicMask.Length == 0 && expected > 0) KinematicMask = new float[expected];
+        if (BulletMask.Length == 0 && expected > 0) BulletMask = new float[expected];
+        if (FieldParticipationMask.Length == 0 && expected > 0)
+            FieldParticipationMask = Enumerable.Repeat(1.0f, expected).ToArray();
+        if (CollisionCategoryBits.Length == 0 && expected > 0)
+            CollisionCategoryBits = Enumerable.Repeat(1UL, expected).ToArray();
+        if (CollisionMaskBits.Length == 0 && expected > 0)
+            CollisionMaskBits = Enumerable.Repeat(ulong.MaxValue, expected).ToArray();
+        if (CollisionGroupIndex.Length == 0 && expected > 0) CollisionGroupIndex = new int[expected];
     }
 
     private void FillMissingAngularState(int expected)

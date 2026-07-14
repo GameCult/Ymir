@@ -4,6 +4,8 @@ namespace Ymir.Box3D;
 
 internal readonly record struct Box3DBody(
     ulong StableId,
+    ulong CollisionCategoryBits,
+    ulong CollisionMaskBits,
     float PositionX,
     float PositionZ,
     float VelocityX,
@@ -15,7 +17,11 @@ internal readonly record struct Box3DBody(
     float Radius,
     float Mass,
     float Restitution,
-    bool IsStatic);
+    bool IsStatic,
+    bool IsKinematic,
+    bool IsBullet,
+    bool ParticipatesInFields,
+    int CollisionGroupIndex);
 
 internal readonly record struct Box3DField(float PositionX, float PositionZ, float Strength, float Radius);
 
@@ -63,7 +69,7 @@ internal readonly record struct Box3DContactFact(
 
 internal sealed class Box3DSession : IDisposable
 {
-    internal const uint AbiVersion = 3;
+    internal const uint AbiVersion = 4;
     internal const int DefaultSubstepCount = 4;
 
     private readonly Box3DSessionHandle _handle;
@@ -90,6 +96,8 @@ internal sealed class Box3DSession : IDisposable
             var body = bodies[i];
             native[i] = new Box3DBodyInput(
                 body.StableId,
+                body.CollisionCategoryBits,
+                body.CollisionMaskBits,
                 body.PositionX,
                 body.PositionZ,
                 body.VelocityX,
@@ -101,7 +109,11 @@ internal sealed class Box3DSession : IDisposable
                 body.Radius,
                 body.Mass,
                 body.Restitution,
-                body.IsStatic ? 1u : 0u);
+                body.IsStatic ? 1u : 0u,
+                body.IsKinematic ? 1u : 0u,
+                body.IsBullet ? 1u : 0u,
+                body.ParticipatesInFields ? 1u : 0u,
+                body.CollisionGroupIndex);
         }
 
         fixed (Box3DBodyInput* pointer = native)
@@ -155,12 +167,13 @@ internal sealed class Box3DSession : IDisposable
         float radius,
         float mass,
         float restitution,
-        bool isStatic)
+        bool isStatic,
+        bool isKinematic)
     {
         ThrowIfDisposed();
         ThrowIfMutationFailed(
             Box3DNative.ymir_box3d_session_configure(
-                _handle, stableId, radius, mass, restitution, isStatic ? 1u : 0u),
+                _handle, stableId, radius, mass, restitution, isStatic ? 1u : 0u, isKinematic ? 1u : 0u),
             "configure body");
     }
 
@@ -368,6 +381,8 @@ internal sealed class Box3DSession : IDisposable
 
     private static Box3DBodyInput ToNative(Box3DBody body) => new(
         body.StableId,
+        body.CollisionCategoryBits,
+        body.CollisionMaskBits,
         body.PositionX,
         body.PositionZ,
         body.VelocityX,
@@ -379,7 +394,11 @@ internal sealed class Box3DSession : IDisposable
         body.Radius,
         body.Mass,
         body.Restitution,
-        body.IsStatic ? 1u : 0u);
+        body.IsStatic ? 1u : 0u,
+        body.IsKinematic ? 1u : 0u,
+        body.IsBullet ? 1u : 0u,
+        body.ParticipatesInFields ? 1u : 0u,
+        body.CollisionGroupIndex);
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 }

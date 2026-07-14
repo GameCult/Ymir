@@ -53,6 +53,8 @@ internal sealed class YmirWorldSession : IDisposable
                 indicesByKey.Add(key, i);
                 bodies[i] = new Box3DBody(
                     key,
+                    world.CollisionCategoryBits[i],
+                    world.CollisionMaskBits[i],
                     world.PositionX[i],
                     world.PositionY[i],
                     world.VelocityX[i],
@@ -64,7 +66,11 @@ internal sealed class YmirWorldSession : IDisposable
                     world.Radius[i],
                     world.Mass[i],
                     world.Restitution[i],
-                    world.DynamicMask[i] <= 0.0f);
+                    world.DynamicMask[i] <= 0.0f,
+                    world.KinematicMask[i] > 0.0f,
+                    world.BulletMask[i] > 0.0f,
+                    world.FieldParticipationMask[i] > 0.0f,
+                    world.CollisionGroupIndex[i]);
             }
 
             Array.Sort(bodies, static (left, right) => left.StableId.CompareTo(right.StableId));

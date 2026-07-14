@@ -24,7 +24,7 @@ public sealed class YmirServicePublicationTests
         Assert.Contains("Box3D solver and collision semantics", advertisement.DoesNotOwn);
         Assert.Equal("Box3D v0.1.0 (C17)", diagnostics.NumericSubstrate);
         Assert.Contains("does not own physics algorithms", diagnostics.BatchKernel, StringComparison.Ordinal);
-        Assert.Contains("world_state.v1", diagnostics.Persistence, StringComparison.Ordinal);
+        Assert.Contains("world_state.v2", diagnostics.Persistence, StringComparison.Ordinal);
         Assert.Contains("v0 read migration", diagnostics.Persistence, StringComparison.Ordinal);
     }
 

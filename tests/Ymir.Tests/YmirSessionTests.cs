@@ -190,6 +190,74 @@ public sealed class YmirSessionTests
         Assert.Equal(Vec2.Zero, session.Snapshot().Bodies.Single().Velocity);
     }
 
+    [Fact]
+    public void CollisionProfilesExcludeOwnGroupAndPayloadPeers()
+    {
+        using var session = YmirSession.Create(new YmirSessionCreateRequest(
+            "collision-profile",
+            [
+                Body("source") with
+                {
+                    CollisionCategoryBits = 1,
+                    CollisionMaskBits = 2,
+                    CollisionGroupIndex = -7
+                },
+                Body("own-payload") with
+                {
+                    CollisionCategoryBits = 2,
+                    CollisionMaskBits = 1,
+                    CollisionGroupIndex = -7
+                },
+                Body("other-payload") with
+                {
+                    CollisionCategoryBits = 2,
+                    CollisionMaskBits = 1,
+                    CollisionGroupIndex = -8
+                }
+            ]));
+
+        var result = session.Step(Step("profile-step", 0, 1.0f / 60.0f));
+        var begin = Assert.Single(result.ContactFacts, fact => fact.Kind == YmirContactFactKind.Begin);
+
+        Assert.Equal(new HashSet<string> { "source", "other-payload" }, new HashSet<string> { begin.BodyA, begin.BodyB });
+    }
+
+    [Fact]
+    public void BodyCanOptOutOfRadialFields()
+    {
+        using var session = YmirSession.Create(new YmirSessionCreateRequest(
+            "field-profile",
+            [Body("affected", positionX: 1.0f), Body("ignored", positionX: -5.0f) with { ParticipatesInFields = false }]));
+
+        var result = session.Step(new YmirStepSessionCommand(
+            Header("field-step", 0),
+            0.1f,
+            [new RadialField("gravity", Vec2.Zero, 10.0f, 10.0f)]));
+
+        Assert.NotEqual(0.0f, result.World.Bodies.Single(body => body.Id == "affected").Velocity.X);
+        Assert.Equal(0.0f, result.World.Bodies.Single(body => body.Id == "ignored").Velocity.X, 5);
+    }
+
+    [Fact]
+    public void KinematicTargetDoesNotAcceptBulletImpulse()
+    {
+        using var session = YmirSession.Create(new YmirSessionCreateRequest(
+            "bullet-kinematic",
+            [
+                Body("bullet", positionX: -10.0f, velocityX: 100.0f) with { IsBullet = true },
+                Body("target") with { IsKinematic = true }
+            ]));
+
+        var ccdStep = session.Step(Step("ccd", 0, 0.2f));
+        var eventStep = session.Step(Step("event", 1, 1.0f / 60.0f));
+
+        Assert.Empty(ccdStep.ContactFacts);
+        Assert.Contains(eventStep.ContactFacts, fact => fact.Kind is YmirContactFactKind.Begin or YmirContactFactKind.Hit);
+        var target = eventStep.World.Bodies.Single(body => body.Id == "target");
+        Assert.Equal(Vec2.Zero, target.Velocity);
+        Assert.Equal(Vec2.Zero, target.Position);
+    }
+
     private static YmirCommandHeader Header(string id, long revision) => new(id, revision);
 
     private static long BodyGeneration(YmirContactFact fact, string bodyId) =>

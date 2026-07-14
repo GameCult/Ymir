@@ -95,6 +95,18 @@ internal static partial class Box3DOracle
 
     [LibraryImport(LibraryName)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial int ymir_box3d_session_get_body_count(nint session);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static unsafe partial int ymir_box3d_session_copy_bodies(
+        nint session,
+        Box3DSessionBodyOutput* bodies,
+        int capacity,
+        out int written);
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static unsafe partial int ymir_box3d_session_copy_contact_events(
         nint session,
         Box3DSessionContactEvent* events,
@@ -154,6 +166,8 @@ internal readonly record struct Box3DTorqueResult(
 [StructLayout(LayoutKind.Sequential)]
 internal readonly record struct Box3DSessionBodyInput(
     ulong StableId,
+    ulong CollisionCategoryBits,
+    ulong CollisionMaskBits,
     float PositionX,
     float PositionY,
     float VelocityX,
@@ -165,7 +179,11 @@ internal readonly record struct Box3DSessionBodyInput(
     float Radius,
     float Mass,
     float Restitution,
-    uint IsStatic);
+    uint IsStatic,
+    uint IsKinematic,
+    uint IsBullet,
+    uint ParticipatesInFields,
+    int CollisionGroupIndex);
 
 [StructLayout(LayoutKind.Sequential)]
 internal readonly record struct Box3DSessionContactEvent(
@@ -182,3 +200,14 @@ internal readonly record struct Box3DSessionContactEvent(
     float NormalY,
     float Penetration,
     float RelativeSpeed);
+
+[StructLayout(LayoutKind.Sequential)]
+internal readonly record struct Box3DSessionBodyOutput(
+    ulong StableId,
+    float PositionX,
+    float PositionY,
+    float VelocityX,
+    float VelocityY,
+    float DirectionX,
+    float DirectionY,
+    float AngularVelocity);

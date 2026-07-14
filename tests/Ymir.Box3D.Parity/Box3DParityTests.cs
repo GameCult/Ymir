@@ -124,14 +124,12 @@ public sealed class Box3DParityTests
     [Fact]
     public unsafe void RetainedSessionCommandsPreserveTypedContactLifecycle()
     {
-        Assert.Equal(3u, Box3DOracle.ymir_box3d_get_abi_version());
+        Assert.Equal(4u, Box3DOracle.ymir_box3d_get_abi_version());
         Assert.Equal(0, Box3DOracle.ymir_box3d_session_create(out var session));
         try
         {
-            var bodyA = new Box3DSessionBodyInput(
-                1, -0.9f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0);
-            var bodyB = new Box3DSessionBodyInput(
-                2, 0.9f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0);
+            var bodyA = SessionBody(1, -0.9f);
+            var bodyB = SessionBody(2, 0.9f);
             Assert.Equal(0, Box3DOracle.ymir_box3d_session_spawn(session, &bodyA));
             Assert.Equal(0, Box3DOracle.ymir_box3d_session_spawn(session, &bodyB));
             Assert.Equal(2, Box3DOracle.ymir_box3d_session_spawn(session, &bodyA));
@@ -155,6 +153,74 @@ public sealed class Box3DParityTests
         }
     }
 
+    [Fact]
+    public unsafe void NegativeGroupAndCategoryMasksAreBox3DCollisionAuthority()
+    {
+        Assert.Equal(0, Box3DOracle.ymir_box3d_session_create(out var session));
+        try
+        {
+            var source = SessionBody(1, 0.0f, category: 1, mask: 2, group: -7);
+            var ownPayload = SessionBody(2, 0.0f, category: 2, mask: 1, group: -7);
+            var otherPayload = SessionBody(3, 0.0f, category: 2, mask: 1, group: -8);
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_spawn(session, &source));
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_spawn(session, &ownPayload));
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_spawn(session, &otherPayload));
+
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_step(session, 1.0f / 60.0f, 4, null, 0));
+            var pairs = CopyEvents(session)
+                .Where(value => value.Kind == 1)
+                .Select(value => new HashSet<ulong> { value.StableIdA, value.StableIdB })
+                .ToArray();
+
+            Assert.Single(pairs);
+            Assert.Equal(new HashSet<ulong> { 1, 3 }, pairs[0]);
+        }
+        finally
+        {
+            Box3DOracle.ymir_box3d_session_destroy(session);
+        }
+    }
+
+    [Fact]
+    public unsafe void BulletUsesBox3DContinuousCollisionAgainstKinematicTarget()
+    {
+        Assert.Equal(0, Box3DOracle.ymir_box3d_session_create(out var session));
+        try
+        {
+            var bullet = SessionBody(1, -10.0f, velocityX: 100.0f, isBullet: true);
+            var target = SessionBody(2, 0.0f, isKinematic: true);
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_spawn(session, &bullet));
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_spawn(session, &target));
+
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_step(session, 0.2f, 4, null, 0));
+            Assert.Empty(CopyEvents(session));
+            var ccdBodies = CopyBodies(session);
+            Assert.True(ccdBodies.Single(value => value.StableId == 1).PositionX < 0.0f);
+            Assert.Equal(0.0f, ccdBodies.Single(value => value.StableId == 2).PositionX, precision: 5);
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_step(session, 1.0f / 60.0f, 4, null, 0));
+            Assert.Contains(CopyEvents(session), value =>
+                (value.Kind == 1 || value.Kind == 2) &&
+                new HashSet<ulong> { value.StableIdA, value.StableIdB }.SetEquals([1UL, 2UL]));
+        }
+        finally
+        {
+            Box3DOracle.ymir_box3d_session_destroy(session);
+        }
+    }
+
+    private static Box3DSessionBodyInput SessionBody(
+        ulong id,
+        float positionX,
+        float velocityX = 0.0f,
+        ulong category = 1,
+        ulong mask = ulong.MaxValue,
+        int group = 0,
+        bool isKinematic = false,
+        bool isBullet = false) => new(
+            id, category, mask, positionX, 0.0f, velocityX, 0.0f, 0.0f, 1.0f,
+            0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0,
+            isKinematic ? 1u : 0u, isBullet ? 1u : 0u, 1u, group);
+
     private static unsafe Box3DSessionContactEvent[] CopyEvents(nint session)
     {
         var count = Box3DOracle.ymir_box3d_session_get_contact_event_count(session);
@@ -166,5 +232,18 @@ public sealed class Box3DParityTests
             Assert.Equal(count, written);
         }
         return events;
+    }
+
+    private static unsafe Box3DSessionBodyOutput[] CopyBodies(nint session)
+    {
+        var count = Box3DOracle.ymir_box3d_session_get_body_count(session);
+        Assert.True(count >= 0);
+        var bodies = new Box3DSessionBodyOutput[count];
+        fixed (Box3DSessionBodyOutput* pointer = bodies)
+        {
+            Assert.Equal(0, Box3DOracle.ymir_box3d_session_copy_bodies(session, pointer, count, out var written));
+            Assert.Equal(count, written);
+        }
+        return bodies;
     }
 }

@@ -29,7 +29,8 @@ public sealed record YmirConfigureBodyCommand(
     float Radius,
     float Mass,
     bool IsStatic,
-    float Restitution);
+    float Restitution,
+    bool IsKinematic = false);
 
 public sealed record YmirApplyForceCommand(
     YmirCommandHeader Header,

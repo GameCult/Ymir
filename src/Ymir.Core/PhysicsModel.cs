@@ -21,7 +21,13 @@ public sealed record PhysicsBody(
     float Restitution = 0.2f,
     Vec2? Direction = null,
     float AngularVelocity = 0.0f,
-    float Torque = 0.0f);
+    float Torque = 0.0f,
+    bool IsKinematic = false,
+    bool IsBullet = false,
+    bool ParticipatesInFields = true,
+    ulong CollisionCategoryBits = 1UL,
+    ulong CollisionMaskBits = ulong.MaxValue,
+    int CollisionGroupIndex = 0);
 
 public sealed record RadialField(
     string Id,

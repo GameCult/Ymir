@@ -53,7 +53,7 @@ public sealed class YmirOperatorStateDocument
     public string BatchKernel { get; set; } = "";
 
     [Key(5)]
-    public string Persistence { get; set; } = "CultCache gamecult.ymir.world_state.v1; explicit v0 read migration";
+    public string Persistence { get; set; } = "CultCache gamecult.ymir.world_state.v2; explicit v1/v0 read migration";
 
     [Key(6)]
     public string UpdatedAtUtc { get; set; } = "";
@@ -90,7 +90,7 @@ public static class YmirServicePublication
             "stable GameCult id to transient Box3D handle projection",
             "Box3D-backed circle overlap and cast queries over submitted bodies",
             "deterministic result ordering",
-            "CultCache world snapshot v1 with explicit v0 read migration",
+            "CultCache world snapshot v2 with explicit v1/v0 read migration",
             "diagnostic Eve publication"
         ],
         DoesNotOwn =
@@ -115,7 +115,7 @@ public static class YmirServicePublication
         StateOwner = "In-process retained Box3D sessions, isolated snapshot steps, and diagnostic projections",
         NumericSubstrate = "Box3D v0.1.0 (C17)",
         BatchKernel = "Box3D native solver; Ymir does not own physics algorithms",
-        Persistence = "CultCache gamecult.ymir.world_state.v1; explicit v0 read migration",
+        Persistence = "CultCache gamecult.ymir.world_state.v2; explicit v1/v0 read migration",
         UpdatedAtUtc = FormatUtc(now)
     };
 

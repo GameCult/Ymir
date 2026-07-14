@@ -110,7 +110,8 @@ internal static partial class Box3DNative
         float radius,
         float mass,
         float restitution,
-        uint isStatic);
+        uint isStatic,
+        uint isKinematic);
 
     [LibraryImport(LibraryName)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
@@ -191,6 +192,8 @@ internal sealed class Box3DSessionHandle : SafeHandleZeroOrMinusOneIsInvalid
 [StructLayout(LayoutKind.Sequential)]
 internal readonly record struct Box3DBodyInput(
     ulong StableId,
+    ulong CollisionCategoryBits,
+    ulong CollisionMaskBits,
     float PositionX,
     float PositionZ,
     float VelocityX,
@@ -202,7 +205,11 @@ internal readonly record struct Box3DBodyInput(
     float Radius,
     float Mass,
     float Restitution,
-    uint IsStatic);
+    uint IsStatic,
+    uint IsKinematic,
+    uint IsBullet,
+    uint ParticipatesInFields,
+    int CollisionGroupIndex);
 
 [StructLayout(LayoutKind.Sequential)]
 internal readonly record struct Box3DRadialField(

@@ -85,6 +85,8 @@ typedef enum ymir_box3d_status
 typedef struct ymir_box3d_session_body_input
 {
     uint64_t stable_id;
+    uint64_t collision_category_bits;
+    uint64_t collision_mask_bits;
     float position_x;
     float position_y;
     float velocity_x;
@@ -97,6 +99,10 @@ typedef struct ymir_box3d_session_body_input
     float mass;
     float restitution;
     uint32_t is_static;
+    uint32_t is_kinematic;
+    uint32_t is_bullet;
+    uint32_t participates_in_fields;
+    int32_t collision_group_index;
 } ymir_box3d_session_body_input;
 
 typedef struct ymir_box3d_radial_field_input
@@ -182,6 +188,12 @@ typedef struct ymir_box3d_session_body
     float mass;
     float restitution;
     uint32_t is_static;
+    uint32_t is_kinematic;
+    uint32_t is_bullet;
+    uint32_t participates_in_fields;
+    uint64_t collision_category_bits;
+    uint64_t collision_mask_bits;
+    int32_t collision_group_index;
     int seen;
 } ymir_box3d_session_body;
 
@@ -206,7 +218,7 @@ typedef struct ymir_box3d_session
 } ymir_box3d_session;
 
 _Static_assert(sizeof(ymir_box3d_status) == sizeof(int32_t), "Ymir Box3D status ABI must be 32-bit");
-_Static_assert(sizeof(ymir_box3d_session_body_input) == 56, "Unexpected Ymir Box3D body input layout");
+_Static_assert(sizeof(ymir_box3d_session_body_input) == 88, "Unexpected Ymir Box3D body input layout");
 _Static_assert(sizeof(ymir_box3d_radial_field_input) == 16, "Unexpected Ymir Box3D field layout");
 _Static_assert(sizeof(ymir_box3d_session_body_output) == 40, "Unexpected Ymir Box3D body output layout");
 _Static_assert(sizeof(ymir_box3d_session_contact_output) == 40, "Unexpected Ymir Box3D contact layout");
@@ -235,7 +247,17 @@ static int ymir_session_body_input_is_valid(const ymir_box3d_session_body_input*
            ymir_is_finite(input->torque) &&
            ymir_is_finite(input->radius) && input->radius > 0.0f && ymir_is_finite(input->mass) &&
            (input->is_static != 0 || input->mass > 0.0f) && ymir_is_finite(input->restitution) &&
-           input->restitution >= 0.0f;
+           input->restitution >= 0.0f && !(input->is_static != 0 && input->is_kinematic != 0) &&
+           input->collision_category_bits != 0;
+}
+
+static b3BodyType ymir_session_body_type(const ymir_box3d_session_body_input* input)
+{
+    if (input->is_static != 0)
+    {
+        return b3_staticBody;
+    }
+    return input->is_kinematic != 0 ? b3_kinematicBody : b3_dynamicBody;
 }
 
 static b3Quat ymir_session_rotation(float direction_x, float direction_y)
@@ -374,7 +396,7 @@ static ymir_box3d_status ymir_session_create_body(
     ymir_box3d_session_body* output)
 {
     b3BodyDef body_def = b3DefaultBodyDef();
-    body_def.type = input->is_static != 0 ? b3_staticBody : b3_dynamicBody;
+    body_def.type = ymir_session_body_type(input);
     body_def.position = ymir_vec(input->position_x, input->position_y);
     body_def.rotation = ymir_session_rotation(input->direction_x, input->direction_y);
     body_def.linearVelocity = ymir_vec(input->velocity_x, input->velocity_y);
@@ -383,6 +405,7 @@ static ymir_box3d_status ymir_session_create_body(
     body_def.motionLocks.angularX = true;
     body_def.motionLocks.angularZ = true;
     body_def.enableSleep = false;
+    body_def.isBullet = input->is_bullet != 0;
     b3BodyId body_id = b3CreateBody(session->world_id, &body_def);
     if (B3_IS_NULL(body_id))
     {
@@ -394,6 +417,9 @@ static ymir_box3d_status ymir_session_create_body(
     shape_def.density = input->is_static != 0 ? 0.0f : ymir_session_density(input->mass, input->radius);
     shape_def.baseMaterial.friction = 0.0f;
     shape_def.baseMaterial.restitution = input->restitution;
+    shape_def.filter.categoryBits = input->collision_category_bits;
+    shape_def.filter.maskBits = input->collision_mask_bits;
+    shape_def.filter.groupIndex = input->collision_group_index;
     shape_def.enableContactEvents = true;
     shape_def.enableHitEvents = true;
     b3Sphere sphere = {{0.0f, 0.0f, 0.0f}, input->radius};
@@ -420,6 +446,12 @@ static ymir_box3d_status ymir_session_create_body(
         .mass = input->mass,
         .restitution = input->restitution,
         .is_static = input->is_static != 0,
+        .is_kinematic = input->is_kinematic != 0,
+        .is_bullet = input->is_bullet != 0,
+        .participates_in_fields = input->participates_in_fields != 0,
+        .collision_category_bits = input->collision_category_bits,
+        .collision_mask_bits = input->collision_mask_bits,
+        .collision_group_index = input->collision_group_index,
         .seen = 1,
     };
     return YMIR_BOX3D_OK;
@@ -429,13 +461,31 @@ static void ymir_session_update_body(
     ymir_box3d_session_body* body,
     const ymir_box3d_session_body_input* input)
 {
-    int type_changed = body->is_static != (input->is_static != 0);
+    int type_changed = body->is_static != (input->is_static != 0) ||
+        body->is_kinematic != (input->is_kinematic != 0);
     int radius_changed = body->radius != input->radius;
     int mass_changed = body->mass != input->mass;
 
     if (type_changed)
     {
-        b3Body_SetType(body->body_id, input->is_static != 0 ? b3_staticBody : b3_dynamicBody);
+        b3Body_SetType(body->body_id, ymir_session_body_type(input));
+    }
+
+    if (body->is_bullet != (input->is_bullet != 0))
+    {
+        b3Body_SetBullet(body->body_id, input->is_bullet != 0);
+    }
+
+    if (body->collision_category_bits != input->collision_category_bits ||
+        body->collision_mask_bits != input->collision_mask_bits ||
+        body->collision_group_index != input->collision_group_index)
+    {
+        b3Filter filter = {
+            .categoryBits = input->collision_category_bits,
+            .maskBits = input->collision_mask_bits,
+            .groupIndex = input->collision_group_index,
+        };
+        b3Shape_SetFilter(body->shape_id, filter, true);
     }
 
     if (radius_changed)
@@ -487,6 +537,12 @@ static void ymir_session_update_body(
     body->mass = input->mass;
     body->restitution = input->restitution;
     body->is_static = input->is_static != 0;
+    body->is_kinematic = input->is_kinematic != 0;
+    body->is_bullet = input->is_bullet != 0;
+    body->participates_in_fields = input->participates_in_fields != 0;
+    body->collision_category_bits = input->collision_category_bits;
+    body->collision_mask_bits = input->collision_mask_bits;
+    body->collision_group_index = input->collision_group_index;
     body->seen = 1;
 }
 
@@ -1150,7 +1206,7 @@ YMIR_EXPORT ymir_box3d_torque_result YMIR_CALL ymir_box3d_torque_lifetime(float 
 
 YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_get_abi_version(void)
 {
-    return 3;
+    return 4;
 }
 
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_get_abi_layout(
@@ -1403,10 +1459,12 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_configure(
     float radius,
     float mass,
     float restitution,
-    uint32_t is_static)
+    uint32_t is_static,
+    uint32_t is_kinematic)
 {
     if (session == NULL || !ymir_is_finite(radius) || radius <= 0.0f || !ymir_is_finite(mass) ||
-        (is_static == 0 && mass <= 0.0f) || !ymir_is_finite(restitution) || restitution < 0.0f)
+        (is_static == 0 && mass <= 0.0f) || (is_static != 0 && is_kinematic != 0) ||
+        !ymir_is_finite(restitution) || restitution < 0.0f)
     {
         return YMIR_BOX3D_INVALID_ARGUMENT;
     }
@@ -1416,12 +1474,14 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_configure(
         return YMIR_BOX3D_INVALID_ARGUMENT;
     }
     ymir_box3d_session_body* body = session->bodies + index;
-    int type_changed = body->is_static != (is_static != 0);
+    int type_changed = body->is_static != (is_static != 0) || body->is_kinematic != (is_kinematic != 0);
     int radius_changed = body->radius != radius;
     int mass_changed = body->mass != mass;
     if (type_changed)
     {
-        b3Body_SetType(body->body_id, is_static != 0 ? b3_staticBody : b3_dynamicBody);
+        b3Body_SetType(
+            body->body_id,
+            is_static != 0 ? b3_staticBody : (is_kinematic != 0 ? b3_kinematicBody : b3_dynamicBody));
     }
     if (radius_changed)
     {
@@ -1442,6 +1502,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_configure(
     body->mass = mass;
     body->restitution = restitution;
     body->is_static = is_static != 0;
+    body->is_kinematic = is_kinematic != 0;
     ymir_box3d_status status = ymir_session_drain_contact_events(session, YMIR_DRAIN_END, 1);
     return status;
 }
@@ -1526,7 +1587,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_step(
     for (int body_index = 0; body_index < session->body_count; ++body_index)
     {
         ymir_box3d_session_body* body = session->bodies + body_index;
-        if (body->is_static)
+        if (body->is_static || body->is_kinematic)
         {
             body->pending_torque = 0.0f;
             continue;
@@ -1537,6 +1598,11 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_step(
             b3Body_ApplyTorque(body->body_id, (b3Vec3){0.0f, body->pending_torque, 0.0f}, true);
         }
         body->pending_torque = 0.0f;
+
+        if (!body->participates_in_fields)
+        {
+            continue;
+        }
 
         b3Pos position = b3Body_GetPosition(body->body_id);
         float acceleration_x = 0.0f;

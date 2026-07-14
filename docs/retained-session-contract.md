@@ -38,7 +38,7 @@ The retained port accepts narrow operations with explicit meaning:
 - remove a body, rejecting an unknown id;
 - teleport a body;
 - set linear and angular velocity;
-- configure body shape, mass, type, and restitution;
+- configure body shape, mass, static/kinematic/dynamic type, and restitution;
 - apply one-shot force or torque;
 - step with a fixed delta, substep count, and typed fields;
 - dispose the session.
@@ -46,6 +46,10 @@ The retained port accepts narrow operations with explicit meaning:
 The current public slice implements those mutation and step operations.
 Retained-world overlap and cast queries at a named revision are the next
 library cut; the static compatibility queries do not satisfy that contract.
+Bullet, collision-filter, and field-participation profiles are currently
+spawn/restore definitions. Retained `Configure` changes radius, mass,
+static/kinematic/dynamic type, and restitution only. Changing the profile
+requires explicit remove-and-spawn until a typed profile command exists.
 
 Restore/import is the only path allowed to accept a complete world snapshot.
 There is no `Upsert`, generic patch bag, or omission-based removal.
@@ -73,7 +77,7 @@ chronology.
 
 - Box3D handles are process-local and never cross the contract.
 - DTO and SoA body arrays are projections.
-- `gamecult.ymir.world_state.v1` is an inspection/migration snapshot, not a
+- `gamecult.ymir.world_state.v2` is an inspection/migration snapshot, not a
   retained-session checkpoint.
 - Receipt and contact-episode ledgers are session metadata, not physics law.
 - Aetheria cargo, damage, loot, feedback, and scoring remain gameplay state

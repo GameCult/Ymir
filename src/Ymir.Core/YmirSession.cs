@@ -217,6 +217,7 @@ public sealed class YmirSession : IDisposable
                 writer.Write(command.Mass);
                 writer.Write(command.IsStatic);
                 writer.Write(command.Restitution);
+                writer.Write(command.IsKinematic);
             });
             if (Preflight(command.Header, fingerprint, "body.configure") is { } previous)
             {
@@ -228,6 +229,7 @@ public sealed class YmirSession : IDisposable
             }
             if (!float.IsFinite(command.Radius) || command.Radius <= 0.0f ||
                 !float.IsFinite(command.Mass) || (!command.IsStatic && command.Mass <= 0.0f) ||
+                (command.IsStatic && command.IsKinematic) ||
                 !float.IsFinite(command.Restitution) || command.Restitution < 0.0f)
             {
                 return RejectAndStore(command.Header, fingerprint, "body.configure", YmirCommandError.InvalidCommand);
@@ -235,12 +237,19 @@ public sealed class YmirSession : IDisposable
 
             RunNative(() =>
             {
-                _native.Configure(key, command.Radius, command.Mass, command.Restitution, command.IsStatic);
+                _native.Configure(
+                    key,
+                    command.Radius,
+                    command.Mass,
+                    command.Restitution,
+                    command.IsStatic,
+                    command.IsKinematic);
                 _bodies[command.BodyId] = body with
                 {
                     Radius = command.Radius,
                     Mass = command.Mass,
                     IsStatic = command.IsStatic,
+                    IsKinematic = command.IsKinematic,
                     Restitution = command.Restitution
                 };
                 UpdateBodyProjection(_native.CopyBodies());
@@ -267,7 +276,7 @@ public sealed class YmirSession : IDisposable
             {
                 return RejectAndStore(command.Header, fingerprint, "body.apply_force", YmirCommandError.UnknownBody);
             }
-            if (body.IsStatic)
+            if (body.IsStatic || body.IsKinematic)
             {
                 return RejectAndStore(command.Header, fingerprint, "body.apply_force", YmirCommandError.StaticBody);
             }
@@ -299,7 +308,7 @@ public sealed class YmirSession : IDisposable
             {
                 return RejectAndStore(command.Header, fingerprint, "body.apply_torque", YmirCommandError.UnknownBody);
             }
-            if (body.IsStatic)
+            if (body.IsStatic || body.IsKinematic)
             {
                 return RejectAndStore(command.Header, fingerprint, "body.apply_torque", YmirCommandError.StaticBody);
             }
@@ -791,6 +800,8 @@ public sealed class YmirSession : IDisposable
         var direction = DirectionOrDefault(body.Direction);
         return new Box3DBody(
             key,
+            body.CollisionCategoryBits,
+            body.CollisionMaskBits,
             body.Position.X,
             body.Position.Y,
             body.Velocity.X,
@@ -802,7 +813,11 @@ public sealed class YmirSession : IDisposable
             body.Radius,
             body.Mass,
             body.Restitution,
-            body.IsStatic);
+            body.IsStatic,
+            body.IsKinematic,
+            body.IsBullet,
+            body.ParticipatesInFields,
+            body.CollisionGroupIndex);
     }
 
     private static Vec2 DirectionOrDefault(Vec2? direction) =>
@@ -858,7 +873,9 @@ public sealed class YmirSession : IDisposable
         if (string.IsNullOrWhiteSpace(body.Id) || !Finite(body.Position) || !Finite(body.Velocity) ||
             !float.IsFinite(body.Radius) || body.Radius <= 0.0f ||
             !float.IsFinite(body.Mass) || (!body.IsStatic && body.Mass <= 0.0f) ||
+            (body.IsStatic && body.IsKinematic) ||
             !float.IsFinite(body.Restitution) || body.Restitution < 0.0f ||
+            body.CollisionCategoryBits == 0 ||
             (body.Direction is { } direction && !ValidDirection(direction)) ||
             !float.IsFinite(body.AngularVelocity) || !float.IsFinite(body.Torque) ||
             (!allowTorque && body.Torque != 0.0f))
@@ -918,6 +935,12 @@ public sealed class YmirSession : IDisposable
         }
         writer.Write(body.AngularVelocity);
         writer.Write(body.Torque);
+        writer.Write(body.IsKinematic);
+        writer.Write(body.IsBullet);
+        writer.Write(body.ParticipatesInFields);
+        writer.Write(body.CollisionCategoryBits);
+        writer.Write(body.CollisionMaskBits);
+        writer.Write(body.CollisionGroupIndex);
     }
 
     private static void WriteField(BinaryWriter writer, RadialField? field)
