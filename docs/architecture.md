@@ -43,7 +43,7 @@ Begin/Hit/End facts with stable Ymir identities. Ordinary retained steps do not
 accept complete body snapshots.
 
 The current CLI still has no named session registry, CultMesh command
-lowerings, retained-world queries, durable receipt ledger, or reconstruction
+lowerings, durable receipt ledger, or reconstruction
 checkpoint. Its CultCache and Eve output is a regenerated diagnostic
 projection. The sections marked as target contract describe that daemon cut;
 they are not advertisements of current CLI capability.
@@ -119,10 +119,11 @@ infer retained identity from a body list.
 Session identity must be explicit. A process-wide simulator object, zone index,
 or repeated stable body id is not enough to join two calls to the same world.
 Aetheria owns run and zone lifetime and will create, retain, and dispose the
-corresponding Ymir session after daemon registry integration. Current projectile
-sweep and stationary mine proximity integration can use Ymir's static
-Box3D-backed circle-cast and overlap queries, but those calls do not join a
-retained world or own contact lifecycle.
+corresponding Ymir session after daemon registry integration. Projectile sweep
+and stationary mine proximity integration can use Ymir's revision-checked
+retained-session circle-cast and overlap queries. They observe the current
+stable-id body projection; they do not invent a contact episode or mutate the
+Box3D world.
 
 Radial gravity and tractor attraction are typed force-generation inputs. They
 are applied to Box3D before stepping. Pickup collection remains an Aetheria

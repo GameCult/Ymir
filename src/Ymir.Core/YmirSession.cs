@@ -409,6 +409,59 @@ public sealed class YmirSession : IDisposable
         }
     }
 
+    public YmirSessionCircleCastResult CastCircle(YmirSessionCircleCastQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        lock (_gate)
+        {
+            var error = QueryPreflight(query.QueryId, query.ExpectedRevision, query.CandidateBodyIds, out var bodies);
+            if (error != YmirQueryError.None)
+            {
+                return new YmirSessionCircleCastResult(
+                    query.QueryId ?? "", _sessionId, _sessionGeneration, _revision, _stepIndex, error, []);
+            }
+
+            try
+            {
+                var result = YmirQueries.CastCircle(new CircleCastQueryRequest(
+                    query.Origin, query.Direction, query.Distance, query.Radius, bodies));
+                return new YmirSessionCircleCastResult(
+                    query.QueryId, _sessionId, _sessionGeneration, _revision, _stepIndex, YmirQueryError.None, result.Hits);
+            }
+            catch (ArgumentException)
+            {
+                return new YmirSessionCircleCastResult(
+                    query.QueryId ?? "", _sessionId, _sessionGeneration, _revision, _stepIndex, YmirQueryError.InvalidQuery, []);
+            }
+        }
+    }
+
+    public YmirSessionCircleOverlapResult OverlapCircle(YmirSessionCircleOverlapQuery query)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        lock (_gate)
+        {
+            var error = QueryPreflight(query.QueryId, query.ExpectedRevision, query.CandidateBodyIds, out var bodies);
+            if (error != YmirQueryError.None)
+            {
+                return new YmirSessionCircleOverlapResult(
+                    query.QueryId ?? "", _sessionId, _sessionGeneration, _revision, _stepIndex, error, []);
+            }
+
+            try
+            {
+                var result = YmirQueries.OverlapCircle(new CircleOverlapQueryRequest(query.Center, query.Radius, bodies));
+                return new YmirSessionCircleOverlapResult(
+                    query.QueryId, _sessionId, _sessionGeneration, _revision, _stepIndex, YmirQueryError.None, result.Hits);
+            }
+            catch (ArgumentException)
+            {
+                return new YmirSessionCircleOverlapResult(
+                    query.QueryId ?? "", _sessionId, _sessionGeneration, _revision, _stepIndex, YmirQueryError.InvalidQuery, []);
+            }
+        }
+    }
+
     public YmirCommandReceipt Dispose(YmirDisposeSessionCommand command)
     {
         ArgumentNullException.ThrowIfNull(command);
@@ -456,6 +509,48 @@ public sealed class YmirSession : IDisposable
             _generationsByKey.Add(key, generation);
             _bodies.Add(canonicalBody.Id, canonicalBody);
         });
+    }
+
+    private YmirQueryError QueryPreflight(
+        string? queryId,
+        long expectedRevision,
+        IReadOnlyList<string>? candidateBodyIds,
+        out PhysicsBody[] bodies)
+    {
+        bodies = [];
+        if (_faulted)
+        {
+            return YmirQueryError.SessionFaulted;
+        }
+        if (_disposed)
+        {
+            return YmirQueryError.SessionDisposed;
+        }
+        if (string.IsNullOrWhiteSpace(queryId) || expectedRevision < 0 || candidateBodyIds == null)
+        {
+            return YmirQueryError.InvalidQuery;
+        }
+        if (expectedRevision != _revision)
+        {
+            return YmirQueryError.StaleRevision;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var selected = new List<PhysicsBody>(candidateBodyIds.Count);
+        foreach (var bodyId in candidateBodyIds)
+        {
+            if (string.IsNullOrWhiteSpace(bodyId) || !seen.Add(bodyId))
+            {
+                return YmirQueryError.InvalidQuery;
+            }
+            if (!_bodies.TryGetValue(bodyId, out var body))
+            {
+                return YmirQueryError.UnknownBody;
+            }
+            selected.Add(body);
+        }
+        bodies = selected.ToArray();
+        return YmirQueryError.None;
     }
 
     private IReadOnlyList<YmirContactFact> ProjectFacts(IReadOnlyList<Box3DContactFact> nativeFacts)

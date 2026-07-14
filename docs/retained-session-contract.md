@@ -43,9 +43,11 @@ The retained port accepts narrow operations with explicit meaning:
 - step with a fixed delta, substep count, and typed fields;
 - dispose the session.
 
-The current public slice implements those mutation and step operations.
-Retained-world overlap and cast queries at a named revision are the next
-library cut; the static compatibility queries do not satisfy that contract.
+The current public slice implements those mutation and step operations plus
+revision-checked circle overlap and cast queries. A query observes the current
+retained body projection under the session lock and accepts an explicit set of
+stable candidate body ids. The candidate set is product-owned eligibility;
+Box3D still owns the overlap/cast geometry and numeric result.
 Bullet, collision-filter, and field-participation profiles are currently
 spawn/restore definitions. Retained `Configure` changes radius, mass,
 static/kinematic/dynamic type, and restitution only. Changing the profile
@@ -130,7 +132,7 @@ is derived process state: it never appears in a public fact or checkpoint.
 1. Typed native mutation operations and step-owned lifecycle buffers: done.
 2. Public managed retained session with no ordinary full synchronization:
    done.
-3. Add retained-world queries and revision checks.
+3. Revision-checked retained-session overlap and cast queries: done.
 4. Add the daemon session registry, generation-bearing routed commands,
    idempotent Create, bounded live dedupe backed by durable receipts, and
    CultMesh command lowering.

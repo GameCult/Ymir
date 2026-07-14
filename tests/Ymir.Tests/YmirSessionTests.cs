@@ -258,6 +258,50 @@ public sealed class YmirSessionTests
         Assert.Equal(Vec2.Zero, target.Position);
     }
 
+    [Fact]
+    public void RetainedCastObservesNamedRevisionAndExplicitCandidates()
+    {
+        using var session = YmirSession.Create(new YmirSessionCreateRequest(
+            "retained-cast",
+            [Body("source", positionX: -2.0f), Body("target", positionX: 2.0f), Body("ignored", positionX: 0.0f)]));
+
+        var result = session.CastCircle(new YmirSessionCircleCastQuery(
+            "payload-sweep",
+            0,
+            new Vec2(-5.0f, 0.0f),
+            new Vec2(1.0f, 0.0f),
+            10.0f,
+            0.25f,
+            ["target"]));
+
+        Assert.Equal(YmirQueryError.None, result.Error);
+        Assert.Equal(0, result.ObservedRevision);
+        Assert.Equal(0, result.ObservedStepIndex);
+        Assert.Equal("target", Assert.Single(result.Hits).BodyId);
+        Assert.Equal(0, session.Info.Revision);
+    }
+
+    [Fact]
+    public void RetainedQueriesFailClosedForStaleUnknownAndDisposedSessions()
+    {
+        var session = YmirSession.Create(new YmirSessionCreateRequest("query-failures", [Body("target")]));
+
+        var stale = session.OverlapCircle(new YmirSessionCircleOverlapQuery(
+            "stale", 1, Vec2.Zero, 1.0f, ["target"]));
+        var unknown = session.OverlapCircle(new YmirSessionCircleOverlapQuery(
+            "unknown", 0, Vec2.Zero, 1.0f, ["missing"]));
+        session.Dispose();
+        var disposed = session.OverlapCircle(new YmirSessionCircleOverlapQuery(
+            "disposed", 0, Vec2.Zero, 1.0f, ["target"]));
+
+        Assert.Equal(YmirQueryError.StaleRevision, stale.Error);
+        Assert.Equal(YmirQueryError.UnknownBody, unknown.Error);
+        Assert.Equal(YmirQueryError.SessionDisposed, disposed.Error);
+        Assert.Empty(stale.Hits);
+        Assert.Empty(unknown.Hits);
+        Assert.Empty(disposed.Hits);
+    }
+
     private static YmirCommandHeader Header(string id, long revision) => new(id, revision);
 
     private static long BodyGeneration(YmirContactFact fact, string bodyId) =>

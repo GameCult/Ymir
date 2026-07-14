@@ -61,9 +61,10 @@ mutations, force and torque commands, revisioned receipts, retained stepping,
 and typed Begin/Hit/End facts. It never treats omission as removal. The daemon
 still lacks a named session registry and CultMesh command lowering. Aetheria
 will name one session per run and zone through that daemon contract; its old
-process-wide simulator objects are not session identifiers. Retained-world
-queries, checkpoint reconstruction, and non-Windows RID artifacts remain
-cutover work.
+process-wide simulator objects are not session identifiers. Revision-checked
+retained-session circle overlap and cast queries observe the current stable-id
+body projection without mutating it. Checkpoint reconstruction and non-Windows
+RID artifacts remain cutover work.
 
 See [the architecture map](docs/architecture.md) and
 [the executable parity contract](docs/box3d-parity.md). The

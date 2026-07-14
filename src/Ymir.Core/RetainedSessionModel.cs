@@ -112,6 +112,50 @@ public sealed record YmirSessionStepResult(
     long StepIndex,
     IReadOnlyList<YmirContactFact> ContactFacts);
 
+public sealed record YmirSessionCircleCastQuery(
+    string QueryId,
+    long ExpectedRevision,
+    Vec2 Origin,
+    Vec2 Direction,
+    float Distance,
+    float Radius,
+    IReadOnlyList<string> CandidateBodyIds);
+
+public sealed record YmirSessionCircleOverlapQuery(
+    string QueryId,
+    long ExpectedRevision,
+    Vec2 Center,
+    float Radius,
+    IReadOnlyList<string> CandidateBodyIds);
+
+public enum YmirQueryError
+{
+    None,
+    StaleRevision,
+    UnknownBody,
+    InvalidQuery,
+    SessionDisposed,
+    SessionFaulted
+}
+
+public sealed record YmirSessionCircleCastResult(
+    string QueryId,
+    string SessionId,
+    string SessionGeneration,
+    long ObservedRevision,
+    long ObservedStepIndex,
+    YmirQueryError Error,
+    IReadOnlyList<CircleCastHit> Hits);
+
+public sealed record YmirSessionCircleOverlapResult(
+    string QueryId,
+    string SessionId,
+    string SessionGeneration,
+    long ObservedRevision,
+    long ObservedStepIndex,
+    YmirQueryError Error,
+    IReadOnlyList<CircleOverlapHit> Hits);
+
 public sealed record YmirSessionInfo(
     string SessionId,
     string SessionGeneration,
