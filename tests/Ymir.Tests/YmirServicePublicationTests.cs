@@ -16,11 +16,14 @@ public sealed class YmirServicePublicationTests
         var diagnostics = YmirServicePublication.OperatorState(now);
 
         Assert.Contains("Box3D", advertisement.Description, StringComparison.Ordinal);
-        Assert.Contains("authoritative physics session lifecycle", advertisement.Owns);
+        Assert.Contains("Box3D-only isolated snapshot stepping", advertisement.Owns);
+        Assert.Contains("public retained session lifecycle yet", advertisement.DoesNotOwn);
+        Assert.Empty(advertisement.CommandLowerings);
         Assert.Contains("Box3D solver and collision semantics", advertisement.DoesNotOwn);
         Assert.Equal("Box3D v0.1.0 (C17)", diagnostics.NumericSubstrate);
         Assert.Contains("does not own physics algorithms", diagnostics.BatchKernel, StringComparison.Ordinal);
-        Assert.Contains("world_state.v0", diagnostics.Persistence, StringComparison.Ordinal);
+        Assert.Contains("world_state.v1", diagnostics.Persistence, StringComparison.Ordinal);
+        Assert.Contains("v0 read migration", diagnostics.Persistence, StringComparison.Ordinal);
     }
 
     [Fact]

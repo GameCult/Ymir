@@ -7,7 +7,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <IsPackable>false</IsPackable>
     <NativeSourceDir>$(MSBuildThisFileDirectory)..\..\native\Ymir.Box3D</NativeSourceDir>
-    <NativeBuildDir>$(MSBuildThisFileDirectory)..\..\artifacts\box3d-native\$(Configuration)</NativeBuildDir>
+    <NativeBuildDir>$(MSBuildThisFileDirectory)..\..\artifacts\box3d-native\parity\$(Configuration)</NativeBuildDir>
     <CMakeExe Condition="'$(CMakeExe)' == '' and '$(OS)' == 'Windows_NT' and Exists('C:\Program Files\CMake\bin\cmake.exe')">C:\Program Files\CMake\bin\cmake.exe</CMakeExe>
     <CMakeExe Condition="'$(CMakeExe)' == ''">cmake</CMakeExe>
   </PropertyGroup>

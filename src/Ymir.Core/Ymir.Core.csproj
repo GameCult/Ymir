@@ -6,6 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Ymir.Box3D\Ymir.Box3D.csproj" />
     <ProjectReference Include="$(CultLibRoot)\src\GameCult.Caching\GameCult.Caching.csproj" />
     <ProjectReference Include="$(CultLibRoot)\src\GameCult.Caching.MessagePack\GameCult.Caching.MessagePack.csproj" />
     <ProjectReference Include="$(EveUnityRoot)\packages\org.gamecult.eve.surface\GameCult.Eve.Surface.csproj" />
@@ -18,7 +19,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>Ymir.Core</RootNamespace>
     <AssemblyName>Ymir.Core</AssemblyName>
-    <Description>GameCult physics/world substrate engine built on CultMath.</Description>
+    <Description>GameCult physics session daemon and contracts backed by pinned Box3D.</Description>
     <Authors>GameCult</Authors>
   </PropertyGroup>
 

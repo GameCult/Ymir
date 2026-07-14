@@ -3,7 +3,8 @@
 ## Authority
 
 Box3D v0.1.0 is Ymir's physics implementation and executable semantics oracle.
-The production session cutover is still under construction. The exact upstream source is pinned as the
+The production native session ABI and snapshot lowering are live; explicit
+retained-world ownership is still being connected. The exact upstream source is pinned as the
 `extern/box3d` submodule at commit
 `8441b4a06d6d09dcfb0b0f704df4d847d1437b92`.
 
@@ -15,10 +16,16 @@ torque lifetime, and numeric tolerances.
 ## Body
 
 `native/Ymir.Box3D` statically links the pinned C17 library into one small
-shared-library facade. The facade exports only blittable sphere overlap,
-sphere cast, capsule-versus-sphere membership, planar pair stepping, torque
-lifetime, and version operations. This keeps Box3D's alpha C ABI out of Ymir's
+shared-library facade. The facade exports retained sphere-world sessions plus
+the overlap, cast, pair-step, torque-lifetime, version, and ABI-layout
+operations used by the harness. This keeps Box3D's alpha C ABI out of Ymir's
 public managed contracts.
+
+Production ABI version 2 uses caller-owned blittable buffers, explicit cdecl,
+fixed-width status/count values, compile-time C layout assertions, and a
+managed/native layout sentinel before opening a session. Planar direction maps
+to Box3D rotation about Y; angular velocity and transient torque remain Box3D
+state and commands rather than managed integration.
 
 `tests/Ymir.Box3D.Parity` builds that facade through CMake and invokes it with
 source-generated .NET interop. Run it with:
@@ -50,9 +57,8 @@ is retained in the pinned submodule.
 
 ## Cut Line
 
-The current managed collision formulas are transitional. They may exist only
-while differential tests prove compatibility. The remaining parity slice
-covers retained world sessions, end-contact lifecycle, continuous collision,
-and replay. Once those facts are projected through a stable Ymir native port,
-the managed solver, query geometry, and spatial indexes are deleted rather
-than retained as fallback authority.
+The managed integrator and circle collision solver are no longer runtime
+authorities. The remaining parity slice covers explicit retained-world
+ownership, end-contact lifecycle, continuous collision, and replay. Custom
+query geometry and spatial indexes are not fallback authorities; Box3D owns
+those edge cases.

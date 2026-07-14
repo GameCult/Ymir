@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 
 namespace Ymir.Box3D.Parity;
 
@@ -7,9 +8,11 @@ internal static partial class Box3DOracle
     private const string LibraryName = "ymir_box3d";
 
     [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial int ymir_box3d_get_version(out int major, out int minor, out int revision);
 
     [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial Box3DOverlapResult ymir_box3d_overlap_spheres(
         float queryX,
         float queryY,
@@ -19,6 +22,7 @@ internal static partial class Box3DOracle
         float bodyRadius);
 
     [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial Box3DOverlapResult ymir_box3d_overlap_capsule_sphere(
         float startX,
         float startY,
@@ -30,6 +34,7 @@ internal static partial class Box3DOracle
         float bodyRadius);
 
     [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial Box3DCastResult ymir_box3d_cast_sphere(
         float originX,
         float originY,
@@ -42,6 +47,7 @@ internal static partial class Box3DOracle
         int canEncroach);
 
     [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial void ymir_box3d_step_pair(
         in Box3DBodyInput bodyA,
         in Box3DBodyInput bodyB,
@@ -51,6 +57,7 @@ internal static partial class Box3DOracle
         out Box3DPairStepResult result);
 
     [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial Box3DTorqueResult ymir_box3d_torque_lifetime(float torque, float timeStep, int subStepCount);
 }
 

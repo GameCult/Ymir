@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/ymir-daemon/ymir-daemon.csproj" />
+    <Project Path="src/Ymir.Box3D/Ymir.Box3D.csproj" />
     <Project Path="src/Ymir.Core/Ymir.Core.csproj" />
   </Folder>
   <Folder Name="/tests/">
