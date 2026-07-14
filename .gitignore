@@ -5,3 +5,5 @@ obj/
 .ymir/
 *.user
 TestResults/
+BenchmarkDotNet.Artifacts/
+artifacts/box3d-native/

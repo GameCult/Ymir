@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>false</IsPackable>
+    <NativeSourceDir>$(MSBuildThisFileDirectory)..\..\native\Ymir.Box3D</NativeSourceDir>
+    <NativeBuildDir>$(MSBuildThisFileDirectory)..\..\artifacts\box3d-native\$(Configuration)</NativeBuildDir>
+    <CMakeExe Condition="'$(OS)' == 'Windows_NT'">C:\Program Files\CMake\bin\cmake.exe</CMakeExe>
+    <CMakeExe Condition="'$(OS)' != 'Windows_NT'">cmake</CMakeExe>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <Target Name="BuildBox3DParityOracle" BeforeTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
+    <Exec Command="&quot;$(CMakeExe)&quot; -S &quot;$(NativeSourceDir)&quot; -B &quot;$(NativeBuildDir)&quot; -DBUILD_SHARED_LIBS=OFF" />
+    <Exec Command="&quot;$(CMakeExe)&quot; --build &quot;$(NativeBuildDir)&quot; --config $(Configuration) --target ymir_box3d" />
+    <Copy SourceFiles="$(NativeBuildDir)\bin\$(Configuration)\ymir_box3d.dll" DestinationFolder="$(OutDir)" Condition="'$(OS)' == 'Windows_NT'" />
+    <Copy SourceFiles="$(NativeBuildDir)\bin\libymir_box3d.so" DestinationFolder="$(OutDir)" Condition="'$(OS)' != 'Windows_NT' and !$([MSBuild]::IsOSPlatform('OSX'))" />
+    <Copy SourceFiles="$(NativeBuildDir)\bin\libymir_box3d.dylib" DestinationFolder="$(OutDir)" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
+  </Target>
+
+</Project>
