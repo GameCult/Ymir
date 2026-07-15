@@ -124,7 +124,7 @@ public sealed class Box3DParityTests
     [Fact]
     public unsafe void RetainedSessionCommandsPreserveTypedContactLifecycle()
     {
-        Assert.Equal(4u, Box3DOracle.ymir_box3d_get_abi_version());
+        Assert.Equal(5u, Box3DOracle.ymir_box3d_get_abi_version());
         Assert.Equal(0, Box3DOracle.ymir_box3d_session_create(out var session));
         try
         {

@@ -1,9 +1,53 @@
+using Ymir.Box3D;
+
 namespace Ymir.Core;
 
 public sealed record YmirSessionCreateRequest(
     string SessionId,
     IReadOnlyList<PhysicsBody> InitialBodies,
     float InitialTime = 0.0f);
+
+public static class YmirSessionCheckpointContract
+{
+    public const string FormatId = "gamecult.ymir.session_checkpoint.replay.v1";
+    public static string RuntimeFingerprint =>
+        $"gamecult.ymir.replay.v1|{Box3DRuntime.ValidatedBuildId}";
+}
+
+public sealed record YmirSessionCheckpoint(
+    string FormatId,
+    string RuntimeFingerprint,
+    string SessionId,
+    string SessionGeneration,
+    long Revision,
+    long StepIndex,
+    float Time,
+    long NextBodyGeneration,
+    IReadOnlyList<PhysicsBody> InitialBodies,
+    float InitialTime,
+    IReadOnlyList<YmirSessionJournalEntry> Journal,
+    string JournalDigest,
+    YmirWorld World,
+    IReadOnlyList<YmirContactEpisodeCheckpoint> ActiveContactEpisodes);
+
+public sealed record YmirContactEpisodeCheckpoint(
+    string BodyA,
+    long BodyAGeneration,
+    string BodyB,
+    long BodyBGeneration,
+    long StartStepIndex,
+    long Ordinal);
+
+public abstract record YmirSessionJournalEntry;
+
+public sealed record YmirSpawnBodyJournalEntry(YmirSpawnBodyCommand Command) : YmirSessionJournalEntry;
+public sealed record YmirRemoveBodyJournalEntry(YmirRemoveBodyCommand Command) : YmirSessionJournalEntry;
+public sealed record YmirTeleportBodyJournalEntry(YmirTeleportBodyCommand Command) : YmirSessionJournalEntry;
+public sealed record YmirSetBodyVelocityJournalEntry(YmirSetBodyVelocityCommand Command) : YmirSessionJournalEntry;
+public sealed record YmirConfigureBodyJournalEntry(YmirConfigureBodyCommand Command) : YmirSessionJournalEntry;
+public sealed record YmirApplyForceJournalEntry(YmirApplyForceCommand Command) : YmirSessionJournalEntry;
+public sealed record YmirApplyTorqueJournalEntry(YmirApplyTorqueCommand Command) : YmirSessionJournalEntry;
+public sealed record YmirStepSessionJournalEntry(YmirStepSessionCommand Command) : YmirSessionJournalEntry;
 
 public sealed record YmirCommandHeader(string CommandId, long ExpectedRevision);
 

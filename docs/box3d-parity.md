@@ -21,16 +21,16 @@ the overlap, cast, pair-step, torque-lifetime, version, and ABI-layout
 operations used by the harness. This keeps Box3D's alpha C ABI out of Ymir's
 public managed contracts.
 
-Production ABI version 4 uses caller-owned blittable buffers, explicit cdecl,
+Production ABI version 5 uses caller-owned blittable buffers, explicit cdecl,
 fixed-width status/count values, compile-time C layout assertions, and a
-managed/native layout sentinel before opening a session. It adds explicit
+managed/native layout and pinned-build-identity sentinel before opening a session. It adds explicit
 retained body mutations, one-shot force and torque operations, and a
 session-owned Begin/Hit/End event buffer. The private buffer retains Box3D's
 stored contact key only long enough to correlate its separate event arrays;
 public Ymir facts never expose native contact identity. Planar direction maps to Box3D
 rotation about Y; angular velocity and transient torque remain Box3D state and
 commands rather than managed integration.
-ABI v4 additionally carries Box3D static/kinematic/dynamic selection, bullet
+ABI v5 additionally carries Box3D static/kinematic/dynamic selection, bullet
 CCD, category/mask/group filtering, and per-body radial-field participation.
 
 `tests/Ymir.Box3D.Parity` builds that facade through CMake and invokes it with

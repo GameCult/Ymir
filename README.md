@@ -9,10 +9,10 @@ algorithms usable as durable, typed GameCult world truth. Unity, renderers, and
 game products consume Ymir state and contact facts; they do not become physics
 authorities.
 
-The Box3D parity facade currently witnesses a bounded released-behavior slice.
-The production command path still runs the transitional managed solver and is
-not Box3D-authoritative until one retained Box3D session embedded in the
-Aetheria daemon owns every step, query, and contact fact.
+The production runtime path is a retained Box3D session. The parity facade
+witnesses released behavior at the native boundary; Ymir adds stable ids,
+typed commands and facts, replay memory, and deterministic projection without
+installing a second solver.
 
 ## Target Ownership
 
@@ -84,8 +84,9 @@ and typed Begin/Hit/End facts. It never treats omission as removal. Aetheria
 embeds one session per run and zone; its old process-wide simulator objects
 are not session identifiers. Revision-checked
 retained-session circle overlap and cast queries observe the current stable-id
-body projection without mutating it. Checkpoint reconstruction and non-Windows
-RID artifacts remain cutover work.
+body projection without mutating it. Replay-backed checkpoint reconstruction is
+implemented; host-owned incremental journal persistence and non-Windows RID
+artifacts remain cutover work.
 
 See [the architecture map](docs/architecture.md) and
 [the executable parity contract](docs/box3d-parity.md). The
@@ -117,7 +118,8 @@ smoke is still required before that is a repeatable packaging guarantee. Linux
 and macOS packages must be produced and smoked on their own release workers
 before those RIDs are advertised.
 
-The current package version is `0.3.0`. ABI v4 exposes Box3D body type,
+The current package version is `0.3.0`. ABI v5 exposes the exact pinned native
+build identity plus Box3D body type,
 bullet, field-participation, and collision-filter configuration without
 exposing Box3D handles. These are Ymir contract fields, but their behavior is
 Box3D behavior.

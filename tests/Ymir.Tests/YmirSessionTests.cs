@@ -93,6 +93,70 @@ public sealed class YmirSessionTests
     }
 
     [Fact]
+    public void ReplayCheckpointPreservesContactLineageAndCommandLedger()
+    {
+        using var original = YmirSession.Create(new YmirSessionCreateRequest(
+            "checkpoint-contact",
+            [
+                Body("ship", positionX: 0.0f, isStatic: true),
+                Body("pickup", positionX: 1.5f)
+            ]));
+        var began = original.Step(Step("begin", 0, 0.01f));
+        var firstBegin = Assert.Single(began.ContactFacts, fact => fact.Kind == YmirContactFactKind.Begin);
+        var checkpoint = original.Checkpoint();
+        var payload = YmirSessionCheckpointCodec.Encode(checkpoint);
+        checkpoint = YmirSessionCheckpointCodec.Decode(payload);
+
+        using var restored = YmirSession.Restore(checkpoint);
+        var duplicate = restored.Step(Step("begin", 0, 0.01f));
+        Assert.Equal(began.Receipt.ReceiptId, duplicate.Receipt.ReceiptId);
+        Assert.Equal(began.Receipt.Outcome, duplicate.Receipt.Outcome);
+        Assert.Equal(began.Receipt.BeforeRevision, duplicate.Receipt.BeforeRevision);
+        Assert.Equal(began.Receipt.AfterRevision, duplicate.Receipt.AfterRevision);
+        Assert.Equal(began.Receipt.ProducedFactIds, duplicate.Receipt.ProducedFactIds);
+        Assert.Equal(began.ContactFacts.Select(value => value.FactId), duplicate.ContactFacts.Select(value => value.FactId));
+        Assert.Equal(checkpoint.SessionGeneration, restored.Info.SessionGeneration);
+
+        var conflict = restored.Step(Step("begin", 0, 0.02f));
+        Assert.Equal(YmirCommandError.CommandIdConflict, conflict.Receipt.Error);
+        var persistent = restored.Step(Step("persistent", 1, 0.01f));
+        Assert.DoesNotContain(persistent.ContactFacts, fact => fact.Kind == YmirContactFactKind.Begin);
+        restored.Teleport(new YmirTeleportBodyCommand(
+            Header("separate", 2), "pickup", new Vec2(10.0f, 0.0f), new Vec2(0.0f, 1.0f)));
+        var ended = restored.Step(Step("end", 3, 0.01f));
+        var end = Assert.Single(ended.ContactFacts, fact => fact.Kind == YmirContactFactKind.End);
+        Assert.Equal(firstBegin.ContactId, end.ContactId);
+        restored.Teleport(new YmirTeleportBodyCommand(
+            Header("return", 4), "pickup", new Vec2(1.5f, 0.0f), new Vec2(0.0f, 1.0f)));
+        var beganAgain = restored.Step(Step("begin-again", 5, 0.01f));
+        var secondBegin = Assert.Single(beganAgain.ContactFacts, fact => fact.Kind == YmirContactFactKind.Begin);
+        Assert.NotEqual(firstBegin.ContactId, secondBegin.ContactId);
+    }
+
+    [Fact]
+    public void ReplayCheckpointRestoresPendingForceAndRejectsCorruptJournal()
+    {
+        using var original = YmirSession.Create(new YmirSessionCreateRequest(
+            "checkpoint-force", [Body("ship")]));
+        original.ApplyForce(new YmirApplyForceCommand(Header("force", 0), "ship", new Vec2(10.0f, 0.0f)));
+        var checkpoint = original.Checkpoint();
+
+        using var restored = YmirSession.Restore(checkpoint);
+        var stepped = restored.Step(Step("step", 1, 0.1f));
+        Assert.True(stepped.World.Bodies.Single().Velocity.X > 0.0f);
+
+        var corrupt = checkpoint with { Journal = [] };
+        Assert.Throws<InvalidOperationException>(() => YmirSession.Restore(corrupt));
+        var wrongRuntime = checkpoint with { RuntimeFingerprint = "some-other-solver" };
+        Assert.Throws<InvalidOperationException>(() => YmirSession.Restore(wrongRuntime));
+        var corruptIdentity = YmirSessionCheckpointCodec.Encode(checkpoint);
+        corruptIdentity[32] ^= 0xff;
+        Assert.Throws<InvalidDataException>(() => YmirSessionCheckpointCodec.Decode(corruptIdentity));
+        Assert.Throws<InvalidDataException>(() =>
+            YmirSessionCheckpointCodec.Decode(YmirSessionCheckpointCodec.Encode(checkpoint).Concat(new byte[] { 1 }).ToArray()));
+    }
+
+    [Fact]
     public void RemoveAndRecreateChangesBodyGeneration()
     {
         using var session = YmirSession.Create(new YmirSessionCreateRequest(

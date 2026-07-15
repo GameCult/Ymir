@@ -24,6 +24,10 @@ internal static partial class Box3DNative
 
     [LibraryImport(LibraryName)]
     [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
+    internal static partial nint ymir_box3d_get_build_id();
+
+    [LibraryImport(LibraryName)]
+    [UnmanagedCallConv(CallConvs = [typeof(CallConvCdecl)])]
     internal static partial Box3DStatus ymir_box3d_get_abi_layout(
         out uint bodyInputSize,
         out uint fieldInputSize,

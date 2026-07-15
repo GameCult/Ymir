@@ -53,7 +53,7 @@ public sealed class YmirOperatorStateDocument
     public string BatchKernel { get; set; } = "";
 
     [Key(5)]
-    public string Persistence { get; set; } = "CultCache gamecult.ymir.world_state.v2; explicit v1/v0 read migration";
+    public string Persistence { get; set; } = "Checksummed replay checkpoint v1; host-owned private journal persistence; world_state.v2 inspection snapshot";
 
     [Key(6)]
     public string UpdatedAtUtc { get; set; } = "";
@@ -90,13 +90,14 @@ public static class YmirServicePublication
             "stable GameCult id to transient Box3D handle projection",
             "Box3D-backed circle overlap and cast queries over submitted bodies",
             "deterministic result ordering",
+            "checksummed replay checkpoint reconstruction bound to the pinned native build",
             "CultCache world snapshot v2 with explicit v1/v0 read migration",
             "diagnostic Eve publication"
         ],
         DoesNotOwn =
         [
             "daemon-owned named session registry or CultMesh command lowering yet",
-            "complete checkpoint reconstruction yet",
+            "host-owned durable journal storage or atomic frame persistence",
             "physics algorithm invention",
             "Box3D solver and collision semantics",
             "CultMesh provider sessions or discovery during cutover",
@@ -116,7 +117,7 @@ public static class YmirServicePublication
         StateOwner = "In-process retained Box3D sessions, isolated snapshot steps, and diagnostic projections",
         NumericSubstrate = "Box3D v0.1.0 (C17)",
         BatchKernel = "Box3D native solver; Ymir does not own physics algorithms",
-        Persistence = "CultCache gamecult.ymir.world_state.v2; explicit v1/v0 read migration",
+        Persistence = "Checksummed replay checkpoint v1; host-owned private journal persistence; world_state.v2 inspection snapshot",
         UpdatedAtUtc = FormatUtc(now)
     };
 

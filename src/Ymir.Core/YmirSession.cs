@@ -19,6 +19,9 @@ public sealed class YmirSession : IDisposable
     private readonly Dictionary<string, PhysicsBody> _bodies = new(StringComparer.Ordinal);
     private readonly Dictionary<Box3DContactKey, ActiveEpisode> _episodesByNativeContact = new();
     private readonly Dictionary<string, LedgerEntry> _ledger = new(StringComparer.Ordinal);
+    private readonly List<YmirSessionJournalEntry> _journal = [];
+    private readonly PhysicsBody[] _initialBodies;
+    private readonly float _initialTime;
     private readonly string _sessionId;
     private readonly string _sessionGeneration;
     private ulong _nextNativeKey = 1;
@@ -30,7 +33,7 @@ public sealed class YmirSession : IDisposable
     private bool _disposed;
     private bool _faulted;
 
-    private YmirSession(YmirSessionCreateRequest request)
+    private YmirSession(YmirSessionCreateRequest request, string? restoredSessionGeneration = null)
     {
         ArgumentNullException.ThrowIfNull(request);
         if (string.IsNullOrWhiteSpace(request.SessionId))
@@ -43,14 +46,18 @@ public sealed class YmirSession : IDisposable
         }
 
         _sessionId = request.SessionId;
-        _sessionGeneration = Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture);
+        _sessionGeneration = string.IsNullOrWhiteSpace(restoredSessionGeneration)
+            ? Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)
+            : restoredSessionGeneration;
         _time = request.InitialTime;
+        _initialTime = request.InitialTime;
 
         var initial = request.InitialBodies ?? throw new ArgumentNullException(nameof(request.InitialBodies));
         ValidateUniqueBodyIds(initial);
+        _initialBodies = initial.OrderBy(body => body.Id, StringComparer.Ordinal).ToArray();
         try
         {
-            foreach (var body in initial.OrderBy(body => body.Id, StringComparer.Ordinal))
+            foreach (var body in _initialBodies)
             {
                 ValidateBody(body, allowTorque: false);
                 SpawnCore(body);
@@ -66,6 +73,26 @@ public sealed class YmirSession : IDisposable
 
     public static YmirSession Create(YmirSessionCreateRequest request) => new(request);
 
+    public static YmirSession Restore(YmirSessionCheckpoint checkpoint)
+    {
+        ValidateCheckpointHeader(checkpoint);
+        var session = new YmirSession(
+            new YmirSessionCreateRequest(checkpoint.SessionId, checkpoint.InitialBodies, checkpoint.InitialTime),
+            checkpoint.SessionGeneration);
+        try
+        {
+            foreach (var entry in checkpoint.Journal)
+                session.Replay(entry);
+            session.VerifyCheckpoint(checkpoint);
+            return session;
+        }
+        catch
+        {
+            session.Dispose();
+            throw;
+        }
+    }
+
     public YmirSessionInfo Info
     {
         get
@@ -78,12 +105,48 @@ public sealed class YmirSession : IDisposable
         }
     }
 
+    public YmirSessionCheckpoint Checkpoint()
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_faulted)
+                throw new InvalidOperationException("A faulted Ymir session cannot publish a checkpoint.");
+            var activeEpisodes = _episodesByNativeContact.Values
+                .Distinct()
+                .Select(EpisodeCheckpoint)
+                .OrderBy(value => value.BodyA, StringComparer.Ordinal)
+                .ThenBy(value => value.BodyAGeneration)
+                .ThenBy(value => value.BodyB, StringComparer.Ordinal)
+                .ThenBy(value => value.BodyBGeneration)
+                .ThenBy(value => value.StartStepIndex)
+                .ThenBy(value => value.Ordinal)
+                .ToArray();
+            return new YmirSessionCheckpoint(
+                YmirSessionCheckpointContract.FormatId,
+                YmirSessionCheckpointContract.RuntimeFingerprint,
+                _sessionId,
+                _sessionGeneration,
+                _revision,
+                _stepIndex,
+                _time,
+                _nextBodyGeneration,
+                _initialBodies.ToArray(),
+                _initialTime,
+                _journal.ToArray(),
+                JournalDigest(),
+                SnapshotCore(),
+                activeEpisodes);
+        }
+    }
+
     public YmirCommandReceipt Spawn(YmirSpawnBodyCommand command)
     {
         ArgumentNullException.ThrowIfNull(command);
         lock (_gate)
         {
             var fingerprint = Fingerprint(command.Header, "body.spawn", writer => WriteBody(writer, command.Body));
+            RecordCommand(command.Header, new YmirSpawnBodyJournalEntry(command));
             if (Preflight(command.Header, fingerprint, "body.spawn") is { } previous)
             {
                 return ReceiptFrom(previous, command.Header, "body.spawn", fingerprint);
@@ -108,6 +171,7 @@ public sealed class YmirSession : IDisposable
         lock (_gate)
         {
             var fingerprint = Fingerprint(command.Header, "body.remove", writer => WriteString(writer, command.BodyId));
+            RecordCommand(command.Header, new YmirRemoveBodyJournalEntry(command));
             if (Preflight(command.Header, fingerprint, "body.remove") is { } previous)
             {
                 return ReceiptFrom(previous, command.Header, "body.remove", fingerprint);
@@ -139,6 +203,7 @@ public sealed class YmirSession : IDisposable
                 Write(writer, command.Position);
                 Write(writer, command.Direction);
             });
+            RecordCommand(command.Header, new YmirTeleportBodyJournalEntry(command));
             if (Preflight(command.Header, fingerprint, "body.teleport") is { } previous)
             {
                 return ReceiptFrom(previous, command.Header, "body.teleport", fingerprint);
@@ -174,6 +239,7 @@ public sealed class YmirSession : IDisposable
                 Write(writer, command.LinearVelocity);
                 writer.Write(command.AngularVelocity);
             });
+            RecordCommand(command.Header, new YmirSetBodyVelocityJournalEntry(command));
             if (Preflight(command.Header, fingerprint, "body.set_velocity") is { } previous)
             {
                 return ReceiptFrom(previous, command.Header, "body.set_velocity", fingerprint);
@@ -219,6 +285,7 @@ public sealed class YmirSession : IDisposable
                 writer.Write(command.Restitution);
                 writer.Write(command.IsKinematic);
             });
+            RecordCommand(command.Header, new YmirConfigureBodyJournalEntry(command));
             if (Preflight(command.Header, fingerprint, "body.configure") is { } previous)
             {
                 return ReceiptFrom(previous, command.Header, "body.configure", fingerprint);
@@ -268,6 +335,7 @@ public sealed class YmirSession : IDisposable
                 WriteString(writer, command.BodyId);
                 Write(writer, command.Force);
             });
+            RecordCommand(command.Header, new YmirApplyForceJournalEntry(command));
             if (Preflight(command.Header, fingerprint, "body.apply_force") is { } previous)
             {
                 return ReceiptFrom(previous, command.Header, "body.apply_force", fingerprint);
@@ -300,6 +368,7 @@ public sealed class YmirSession : IDisposable
                 WriteString(writer, command.BodyId);
                 writer.Write(command.Torque);
             });
+            RecordCommand(command.Header, new YmirApplyTorqueJournalEntry(command));
             if (Preflight(command.Header, fingerprint, "body.apply_torque") is { } previous)
             {
                 return ReceiptFrom(previous, command.Header, "body.apply_torque", fingerprint);
@@ -348,6 +417,7 @@ public sealed class YmirSession : IDisposable
                     WriteField(writer, field);
                 }
             });
+            RecordCommand(command.Header, new YmirStepSessionJournalEntry(command));
             if (Preflight(command.Header, fingerprint, "session.step") is { } previous)
             {
                 if (previous.Result is YmirSessionStepResult replay)
@@ -817,6 +887,113 @@ public sealed class YmirSession : IDisposable
         _time,
         _bodies.Values.OrderBy(body => body.Id, StringComparer.Ordinal).ToArray(),
         _fields.ToArray());
+
+    private void RecordCommand(YmirCommandHeader header, YmirSessionJournalEntry entry)
+    {
+        if (!_ledger.ContainsKey(header.CommandId))
+            _journal.Add(entry);
+    }
+
+    private void Replay(YmirSessionJournalEntry entry)
+    {
+        switch (entry)
+        {
+            case YmirSpawnBodyJournalEntry value: Spawn(value.Command); break;
+            case YmirRemoveBodyJournalEntry value: Remove(value.Command); break;
+            case YmirTeleportBodyJournalEntry value: Teleport(value.Command); break;
+            case YmirSetBodyVelocityJournalEntry value: SetVelocity(value.Command); break;
+            case YmirConfigureBodyJournalEntry value: Configure(value.Command); break;
+            case YmirApplyForceJournalEntry value: ApplyForce(value.Command); break;
+            case YmirApplyTorqueJournalEntry value: ApplyTorque(value.Command); break;
+            case YmirStepSessionJournalEntry value: Step(value.Command); break;
+            default: throw new InvalidOperationException($"Unknown Ymir journal entry '{entry?.GetType().FullName ?? "<null>"}'.");
+        }
+    }
+
+    private void VerifyCheckpoint(YmirSessionCheckpoint checkpoint)
+    {
+        var world = SnapshotCore();
+        var active = _episodesByNativeContact.Values
+            .Distinct()
+            .Select(EpisodeCheckpoint)
+            .OrderBy(value => value.BodyA, StringComparer.Ordinal)
+            .ThenBy(value => value.BodyAGeneration)
+            .ThenBy(value => value.BodyB, StringComparer.Ordinal)
+            .ThenBy(value => value.BodyBGeneration)
+            .ThenBy(value => value.StartStepIndex)
+            .ThenBy(value => value.Ordinal)
+            .ToArray();
+        var expectedBodies = (checkpoint.World.Bodies ?? Array.Empty<PhysicsBody>())
+            .OrderBy(value => value.Id, StringComparer.Ordinal).ToArray();
+        var expectedFields = checkpoint.World.Fields ?? Array.Empty<RadialField>();
+        if (_revision != checkpoint.Revision || _stepIndex != checkpoint.StepIndex ||
+            _time != checkpoint.Time || _nextBodyGeneration != checkpoint.NextBodyGeneration ||
+            world.Time != checkpoint.World.Time || !world.Bodies.SequenceEqual(expectedBodies) ||
+            !world.Fields.SequenceEqual(expectedFields) ||
+            !active.SequenceEqual(checkpoint.ActiveContactEpisodes) ||
+            !string.Equals(JournalDigest(), checkpoint.JournalDigest, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Ymir checkpoint replay diverged for session '{checkpoint.SessionId}'.");
+        }
+    }
+
+    private string JournalDigest()
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
+        {
+            writer.Write(1);
+            writer.Write(_journal.Count);
+            foreach (var entry in _journal)
+            {
+                var header = JournalHeader(entry);
+                WriteString(writer, entry.GetType().Name);
+                WriteString(writer, header.CommandId);
+                if (!_ledger.TryGetValue(header.CommandId, out var ledger))
+                    throw new InvalidOperationException($"Ymir journal command '{header.CommandId}' has no ledger result.");
+                WriteString(writer, ledger.Fingerprint);
+            }
+        }
+        return Convert.ToHexString(SHA256.HashData(stream.GetBuffer().AsSpan(0, checked((int)stream.Length))))
+            .ToLowerInvariant();
+    }
+
+    private static YmirCommandHeader JournalHeader(YmirSessionJournalEntry entry) => entry switch
+    {
+        YmirSpawnBodyJournalEntry value => value.Command.Header,
+        YmirRemoveBodyJournalEntry value => value.Command.Header,
+        YmirTeleportBodyJournalEntry value => value.Command.Header,
+        YmirSetBodyVelocityJournalEntry value => value.Command.Header,
+        YmirConfigureBodyJournalEntry value => value.Command.Header,
+        YmirApplyForceJournalEntry value => value.Command.Header,
+        YmirApplyTorqueJournalEntry value => value.Command.Header,
+        YmirStepSessionJournalEntry value => value.Command.Header,
+        _ => throw new InvalidOperationException($"Unknown Ymir journal entry '{entry?.GetType().FullName ?? "<null>"}'.")
+    };
+
+    private static YmirContactEpisodeCheckpoint EpisodeCheckpoint(ActiveEpisode episode) => new(
+        episode.Pair.BodyA,
+        episode.Pair.BodyAGeneration,
+        episode.Pair.BodyB,
+        episode.Pair.BodyBGeneration,
+        episode.StartStepIndex,
+        episode.Ordinal);
+
+    private static void ValidateCheckpointHeader(YmirSessionCheckpoint checkpoint)
+    {
+        ArgumentNullException.ThrowIfNull(checkpoint);
+        if (!string.Equals(checkpoint.FormatId, YmirSessionCheckpointContract.FormatId, StringComparison.Ordinal) ||
+            !string.Equals(checkpoint.RuntimeFingerprint, YmirSessionCheckpointContract.RuntimeFingerprint, StringComparison.Ordinal))
+            throw new InvalidOperationException("Ymir checkpoint format or runtime provenance is incompatible.");
+        if (string.IsNullOrWhiteSpace(checkpoint.SessionId) || string.IsNullOrWhiteSpace(checkpoint.SessionGeneration) ||
+            checkpoint.Revision < 0 || checkpoint.StepIndex < 0 || checkpoint.NextBodyGeneration < 1 ||
+            !float.IsFinite(checkpoint.Time) || checkpoint.Time < 0 ||
+            !float.IsFinite(checkpoint.InitialTime) || checkpoint.InitialTime < 0 ||
+            checkpoint.InitialBodies == null || checkpoint.Journal == null || checkpoint.World == null ||
+            checkpoint.ActiveContactEpisodes == null || string.IsNullOrWhiteSpace(checkpoint.JournalDigest))
+            throw new InvalidOperationException("Ymir checkpoint header is incomplete or invalid.");
+    }
 
     private bool TryBody(string? id, out ulong key, out PhysicsBody body)
     {

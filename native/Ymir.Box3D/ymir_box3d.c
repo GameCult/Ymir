@@ -1206,7 +1206,12 @@ YMIR_EXPORT ymir_box3d_torque_result YMIR_CALL ymir_box3d_torque_lifetime(float 
 
 YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_get_abi_version(void)
 {
-    return 4;
+    return 5;
+}
+
+YMIR_EXPORT const char* YMIR_CALL ymir_box3d_get_build_id(void)
+{
+    return "box3d-8441b4a06d6d09dcfb0b0f704df4d847d1437b92-abi5-f32";
 }
 
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_get_abi_layout(

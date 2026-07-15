@@ -85,9 +85,21 @@ chronology.
 - Aetheria cargo, damage, loot, feedback, and scoring remain gameplay state
   derived from Ymir facts.
 
-The current in-process receipt ledger is not a durable reconnect ledger. It is
-kept for the lifetime of the session and is intentionally not advertised as a
-reconnect or checkpoint guarantee.
+The replay checkpoint preserves the logical session generation, complete typed
+command journal, receipt ledger, body-generation counter, world projection, and
+active contact episodes. Restore creates a fresh native Box3D world and replays
+that journal through the checkpoint boundary before facts may leave the
+session. The world and episode records verify replay; they do not replace it or
+infer contact continuity from body proximity.
+
+`gamecult.ymir.session_checkpoint.replay.v1` is encoded by the bounded binary
+`YmirSessionCheckpointCodec`. The checkpoint carries the pinned Box3D/ABI/
+precision fingerprint and fails closed on incompatible provenance, corrupt or
+trailing data, journal divergence, world divergence, or contact-lineage
+divergence. A SHA-256 checksum binds session identity, provenance, journal,
+world verifier, and active episodes. ABI v5 independently validates the exact
+pinned native build id before opening a session. It contains no native Box3D
+handle or contact key.
 
 ## Forbidden Writers
 
@@ -102,10 +114,9 @@ reconnect or checkpoint guarantee.
 
 ## Shared Paths
 
-Direct commands, agent commands, and spawns use the same explicit in-process
-session operations. Imports, reconnects, and replay must lower through those
-operations after the owning product's registry and reconstruction contract exist.
-Restore will establish initial state; it will not remain a parallel writer.
+Direct commands, agent commands, spawns, and checkpoint replay use the same
+explicit session operations. Restore establishes a fresh native world through
+those operations; it is not a parallel state writer.
 Retained queries will observe a named revision without mutating it. Snapshot
 reads cannot be fed back without an explicit restore, teleport, velocity, or
 configuration operation.
@@ -133,10 +144,11 @@ is derived process state: it never appears in a public fact or checkpoint.
 2. Public managed retained session with no ordinary full synchronization:
    done.
 3. Revision-checked retained-session overlap and cast queries: done.
-4. Embed one retained session per Aetheria run and zone, then delete its process-wide
-   simulator identity, manual tractor geometry, per-projectile mini-worlds,
-   and tuple contact dedup.
-5. For optional standalone hosting, add a session registry, generation-bearing
+4. One embedded retained world and physical-payload session per Aetheria run
+   and zone: done.
+5. Persist replay journals privately and incrementally behind a bounded resume
+   descriptor; complete history must not ride in public product frames.
+6. For optional standalone hosting, add a session registry, generation-bearing
    routed commands, idempotent Create, durable receipts, and CultMesh lowering.
 
 The isolated `YmirSimulator` remains a compatibility API. It is never the
@@ -160,5 +172,5 @@ End fact.
 - different insertion orders produce the same semantic fact order.
 - queries observe the requested retained revision and cannot inject bodies.
 - disposed or stale session generations fail closed.
-- restored continuation must reproduce bodies and fact identity before Ymir
-  advertises retained-session checkpoint support.
+- restored continuation reproduces command receipts, bodies, active contact
+  identity, and subsequent Begin/End facts before authoritative publication.

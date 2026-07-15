@@ -56,11 +56,13 @@ step, and disposal operations. It emits revisioned receipts and typed
 Begin/Hit/End facts with stable Ymir identities. Ordinary retained steps do not
 accept complete body snapshots.
 
-The current CLI still has no named session registry, CultMesh command
-lowerings, durable receipt ledger, or reconstruction
-checkpoint. Its CultCache and Eve output is a regenerated diagnostic
-projection. The sections marked as target contract describe that daemon cut;
-they are not advertisements of current CLI capability.
+The embedded retained-session library now has a replay-backed reconstruction
+checkpoint and durable-in-checkpoint command receipt ledger. Host-owned private
+incremental journal storage and atomic frame/resume commits remain integration
+work. Complete replay history is not product state and must not ride in public
+client frames. The current CLI still has no named session registry or CultMesh
+command lowerings; its CultCache and Eve output remains a regenerated
+diagnostic projection.
 
 ## Target Inputs
 
@@ -175,6 +177,17 @@ lifecycle identity are binary contracts, not tolerance checks. Authoritative
 contact facts resume only after canonical history has been replayed through the
 checkpoint tick; a checkpoint alone cannot emit gameplay contact facts.
 
+`gamecult.ymir.session_checkpoint.replay.v1` implements that promise. It stores
+the initial definitions, complete typed command journal, logical session
+generation, command digest, body-generation counter, world verification
+projection, active contact-episode verification records, and pinned runtime
+fingerprint. Restore replays into a new Box3D world with outward publication
+suppressed, then compares the reconstructed boundary exactly before returning a
+live session. The bounded binary codec rejects incompatible, corrupt, or
+trailing data and checksums the complete encoded payload. ABI v5 validates the
+exact pinned native build id, not merely Box3D's public version. Native Box3D
+identities never enter the checkpoint.
+
 `gamecult.ymir.world_state.v2` appends Box3D body type, bullet,
 field-participation, and collision filter arrays to the v1 layout. The v1 and
 v0 readers are explicit migration paths; keys are not reassigned. Torque is
@@ -200,7 +213,8 @@ Box3D-backed sessions prove:
 3. overlap and shape-cast lowering;
 4. continuous collision event timing and same-step Box3D cast witnesses;
 5. transient force and torque application;
-6. checkpoint reconstruction and replay;
+6. checkpoint reconstruction and replay (implemented; journal compaction and
+   long-running storage remain operational work);
 7. Aetheria gravity, tractor, pickup, and payload smokes.
 
 There is no managed fallback after that cut. A native load or compatibility
@@ -213,9 +227,9 @@ failure fails closed and reports the missing capability.
   session facts.
 - Negative source checks prove custom solver and spatial-index authorities are
   absent after cutover.
-- Aetheria smokes must prove gravity, contact-gated destruction loot, tractor
-  attraction, pickup collection, and fast payload hits through the retained
-  contract. Current gravity, pickup-contact, cast, and overlap witnesses cover
-  only the snapshot/query compatibility path.
+- Aetheria smokes prove gravity, tractor attraction, contact-gated pickup
+  collection/rejection, physical payload hits, and restart continuation through
+  the retained contract. Destruction loot remains Aetheria gameplay state
+  gated by Ymir contact facts where collection occurs.
 - Released-client witnesses prove generic Eve clients only observe Ymir and
   Aetheria provider contracts, never native implementation details.

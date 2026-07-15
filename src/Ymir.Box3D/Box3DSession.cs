@@ -69,7 +69,7 @@ internal readonly record struct Box3DContactFact(
 
 internal sealed class Box3DSession : IDisposable
 {
-    internal const uint AbiVersion = 4;
+    internal const uint AbiVersion = 5;
     internal const int DefaultSubstepCount = 4;
 
     private readonly Box3DSessionHandle _handle;
@@ -329,6 +329,13 @@ internal sealed class Box3DSession : IDisposable
         if (abi != AbiVersion)
         {
             throw new InvalidOperationException($"Ymir Box3D ABI mismatch. Managed expects {AbiVersion}, native provides {abi}.");
+        }
+
+        var buildId = Marshal.PtrToStringAnsi(Box3DNative.ymir_box3d_get_build_id());
+        if (!string.Equals(buildId, Box3DRuntime.NativeBuildId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Ymir Box3D build mismatch. Managed expects '{Box3DRuntime.NativeBuildId}', native provides '{buildId ?? "<null>"}'.");
         }
 
         ThrowIfFailed(
