@@ -82,7 +82,7 @@ internal static class Program
             ok = true,
             path,
             record = "ymir:world:sample",
-            schema = "gamecult.ymir.world_state.v0",
+            schema = "gamecult.ymir.world_state.v2",
             bodyCount = result.World.BodyCount,
             fieldCount = result.World.FieldCount
         });

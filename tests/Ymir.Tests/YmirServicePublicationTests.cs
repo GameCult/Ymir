@@ -16,16 +16,17 @@ public sealed class YmirServicePublicationTests
         var diagnostics = YmirServicePublication.OperatorState(now);
 
         Assert.Contains("Box3D", advertisement.Description, StringComparison.Ordinal);
-        Assert.Contains("stateless managed step and query request handling", advertisement.Owns);
+        Assert.Contains("Box3D-only isolated snapshot stepping", advertisement.Owns);
+        Assert.Contains("public in-process retained sessions with explicit mutation receipts", advertisement.Owns);
+        Assert.Contains("typed Begin, Hit, and End contact facts for retained steps", advertisement.Owns);
+        Assert.Contains("daemon-owned named session registry or CultMesh command lowering yet", advertisement.DoesNotOwn);
+        Assert.Empty(advertisement.CommandLowerings);
         Assert.Contains("Box3D solver and collision semantics", advertisement.DoesNotOwn);
-        Assert.Contains("retained Box3D production sessions during cutover", advertisement.DoesNotOwn);
-        Assert.Contains("CultMesh provider sessions or discovery during cutover", advertisement.DoesNotOwn);
-        Assert.DoesNotContain("daemon", advertisement.Description, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain(advertisement.Owns, claim => claim.Contains("session", StringComparison.OrdinalIgnoreCase));
-        Assert.Equal("box3d-cutover", diagnostics.Status);
-        Assert.StartsWith("Active: CultMath managed solver", diagnostics.NumericSubstrate, StringComparison.Ordinal);
-        Assert.Contains("no retained Box3D session", diagnostics.BatchKernel, StringComparison.Ordinal);
-        Assert.Contains("world_state.v0", diagnostics.Persistence, StringComparison.Ordinal);
+        Assert.Equal("Box3D v0.1.0 (C17)", diagnostics.NumericSubstrate);
+        Assert.Contains("does not own physics algorithms", diagnostics.BatchKernel, StringComparison.Ordinal);
+        Assert.Contains("world_state.v2", diagnostics.Persistence, StringComparison.Ordinal);
+        Assert.Contains("v0 read migration", diagnostics.Persistence, StringComparison.Ordinal);
+        Assert.Equal("box3d-retained-session", diagnostics.Status);
     }
 
     [Fact]

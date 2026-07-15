@@ -18,14 +18,15 @@ Aetheria daemon owns every step, query, and contact fact.
 
 - Box3D owns rigid-body integration, collision geometry, broadphase, solver
   behavior, continuous collision, overlap and cast semantics, contact
-  lifecycle, force and torque lifetime, tolerances, and step behavior for an
-  identical creation order and command stream under the accepted build and
-  runtime configuration.
-- Ymir owns the pinned Box3D version, stable GameCult entity ids, native ABI
-  isolation, long-lived world sessions, typed commands and facts,
-  deterministic result ordering, checkpoint reconstruction, and the embedded
-  session boundary. Its optional standalone service owns only its own
-  publication and lifecycle.
+  lifecycle, force and torque lifetime, tolerances, and deterministic step
+  behavior for identical recorded inputs.
+- Ymir owns the pinned Box3D version, stable GameCult entity ids,
+  native ABI isolation, public in-process retained sessions, explicit mutation
+  receipts, typed contact facts, snapshot lowering, deterministic result
+  ordering, versioned CultCache snapshots, and a diagnostic Eve publication.
+- An optional Ymir daemon may own named session routing, durable command receipts,
+  checkpoint reconstruction, CultMesh command/fact publication, and process
+  supervision for worlds it hosts. It is not part of Aetheria's gameplay path.
 - Aetheria owns gameplay policy and supplies typed physical intent: bodies,
   fields, tractor targets, forces, projectiles, filters, and the gameplay
   consequences of Ymir contact facts.
@@ -68,15 +69,28 @@ parity suite already witness released Box3D behavior for:
 - contact-begin facts
 - restitution mixing
 - transient torque lifetime
+- category/mask/group collision filtering
+- bullet CCD against kinematic bodies, including Box3D's next-step contact-event timing
 
-The legacy managed Ymir solver remains temporarily live while retained Box3D
-world sessions, end-contact lifecycle, continuous collision, replay, and
-checkpoint reconstruction are connected. It is compatibility scaffolding, not
-the target architecture. It will be deleted, along with Ymir's custom geometry
-and spatial indexes, once the Box3D-backed path proves the public contract.
+The production `Ymir.Box3D` boundary owns the native session ABI. The legacy
+snapshot `YmirSimulator.Step` contract now creates an isolated Box3D session,
+projects the result, and disposes it. It contains no managed integrator,
+collision loop, or impulse solver.
+
+That snapshot facade deliberately does not pretend to own long-lived world
+identity. The public in-process `YmirSession` now exposes explicit body
+mutations, force and torque commands, revisioned receipts, retained stepping,
+and typed Begin/Hit/End facts. It never treats omission as removal. Aetheria
+embeds one session per run and zone; its old process-wide simulator objects
+are not session identifiers. Revision-checked
+retained-session circle overlap and cast queries observe the current stable-id
+body projection without mutating it. Checkpoint reconstruction and non-Windows
+RID artifacts remain cutover work.
 
 See [the architecture map](docs/architecture.md) and
-[the executable parity contract](docs/box3d-parity.md).
+[the executable parity contract](docs/box3d-parity.md). The
+[retained-session contract](docs/retained-session-contract.md) records the
+current ownership cut shared by embedded and optional standalone hosts.
 
 ## Build And Test
 
@@ -96,9 +110,22 @@ dotnet test tests\Ymir.Box3D.Parity\Ymir.Box3D.Parity.csproj
 
 Box3D is MIT licensed. Its license is retained in `extern/box3d`.
 
+`GameCult.Ymir.Box3D` packages the managed boundary, Box3D license, and native
+facade under `runtimes/<rid>/native`. A local Windows x64 package has loaded in
+an isolated empty consumer without CMake or the submodule. A committed release
+smoke is still required before that is a repeatable packaging guarantee. Linux
+and macOS packages must be produced and smoked on their own release workers
+before those RIDs are advertised.
+
+The current package version is `0.3.0`. ABI v4 exposes Box3D body type,
+bullet, field-participation, and collision-filter configuration without
+exposing Box3D handles. These are Ymir contract fields, but their behavior is
+Box3D behavior.
+
 ## Cutover Rule
 
 A Ymir cutover is complete only when all runtime stepping, collision queries,
-and contact facts come from a retained Box3D world through one Ymir session
-primitive. Manual Unity callbacks, Aetheria geometry tests, and the managed
-Ymir solver must be structurally unable to decide the result.
+and contact facts come from Box3D through an explicitly owned Ymir session.
+Manual Unity callbacks and Aetheria geometry tests must be structurally unable
+to decide the result. Snapshot compatibility calls may use isolated sessions;
+they are not allowed to infer or share retained-world identity.

@@ -18,7 +18,16 @@ public sealed record PhysicsBody(
     float Radius,
     float Mass,
     bool IsStatic = false,
-    float Restitution = 0.2f);
+    float Restitution = 0.2f,
+    Vec2? Direction = null,
+    float AngularVelocity = 0.0f,
+    float Torque = 0.0f,
+    bool IsKinematic = false,
+    bool IsBullet = false,
+    bool ParticipatesInFields = true,
+    ulong CollisionCategoryBits = 1UL,
+    ulong CollisionMaskBits = ulong.MaxValue,
+    int CollisionGroupIndex = 0);
 
 public sealed record RadialField(
     string Id,
@@ -46,3 +55,31 @@ public sealed record ContactEvent(
 public sealed record SimulationStepResult(
     YmirWorld World,
     IReadOnlyList<ContactEvent> Contacts);
+
+public sealed record CircleCastQueryRequest(
+    Vec2 Origin,
+    Vec2 Direction,
+    float Distance,
+    float Radius,
+    IReadOnlyList<PhysicsBody> Bodies);
+
+public sealed record CircleCastHit(
+    string BodyId,
+    Vec2 Point,
+    Vec2 Normal,
+    float Distance);
+
+public sealed record CircleCastQueryResult(IReadOnlyList<CircleCastHit> Hits);
+
+public sealed record CircleOverlapQueryRequest(
+    Vec2 Center,
+    float Radius,
+    IReadOnlyList<PhysicsBody> Bodies);
+
+public sealed record CircleOverlapHit(
+    string BodyId,
+    Vec2 Point,
+    Vec2 Normal,
+    float Distance);
+
+public sealed record CircleOverlapQueryResult(IReadOnlyList<CircleOverlapHit> Hits);

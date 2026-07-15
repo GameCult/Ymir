@@ -1,0 +1,58 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>Ymir.Box3D</RootNamespace>
+    <AssemblyName>Ymir.Box3D</AssemblyName>
+    <Description>Native ABI boundary between Ymir sessions and pinned Box3D.</Description>
+    <PackageId>GameCult.Ymir.Box3D</PackageId>
+    <Version>0.3.0</Version>
+    <Authors>GameCult</Authors>
+    <IsPackable>true</IsPackable>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <NativeSourceDir>$(MSBuildThisFileDirectory)..\..\native\Ymir.Box3D</NativeSourceDir>
+    <NativeBuildDir>$(MSBuildThisFileDirectory)..\..\artifacts\box3d-native\production\$(Configuration)</NativeBuildDir>
+    <CMakeExe Condition="'$(CMakeExe)' == '' and '$(OS)' == 'Windows_NT' and Exists('C:\Program Files\CMake\bin\cmake.exe')">C:\Program Files\CMake\bin\cmake.exe</CMakeExe>
+    <CMakeExe Condition="'$(CMakeExe)' == ''">cmake</CMakeExe>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(NativeBuildDir)\bin\$(Configuration)\ymir_box3d.dll"
+          Link="ymir_box3d.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          Pack="true"
+          PackagePath="runtimes/win-x64/native/ymir_box3d.dll"
+          Condition="'$(OS)' == 'Windows_NT'" />
+    <None Include="$(NativeBuildDir)\bin\libymir_box3d.so"
+          Link="libymir_box3d.so"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          Pack="true"
+          PackagePath="runtimes/linux-x64/native/libymir_box3d.so"
+          Condition="'$(OS)' != 'Windows_NT' and !$([MSBuild]::IsOSPlatform('OSX'))" />
+    <None Include="$(NativeBuildDir)\bin\libymir_box3d.dylib"
+          Link="libymir_box3d.dylib"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          Pack="true"
+          PackagePath="runtimes/osx-x64/native/libymir_box3d.dylib"
+          Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
+    <None Include="..\..\extern\box3d\LICENSE"
+          Link="box3d-MIT.txt"
+          Pack="true"
+          PackagePath="licenses" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <Target Name="BuildYmirBox3DNative"
+          BeforeTargets="PrepareForBuild;GetCopyToOutputDirectoryItems;GetCopyToPublishDirectoryItems"
+          Condition="'$(DesignTimeBuild)' != 'true'">
+    <Exec Command="&quot;$(CMakeExe)&quot; -S &quot;$(NativeSourceDir)&quot; -B &quot;$(NativeBuildDir)&quot; -DBUILD_SHARED_LIBS=OFF" />
+    <Exec Command="&quot;$(CMakeExe)&quot; --build &quot;$(NativeBuildDir)&quot; --config $(Configuration) --target ymir_box3d" />
+  </Target>
+
+</Project>

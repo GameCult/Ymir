@@ -6,4 +6,4 @@ obj/
 *.user
 TestResults/
 BenchmarkDotNet.Artifacts/
-artifacts/box3d-native/
+artifacts/

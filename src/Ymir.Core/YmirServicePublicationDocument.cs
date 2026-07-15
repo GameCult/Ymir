@@ -17,7 +17,7 @@ public sealed class YmirProviderAdvertisementDocument
     public string Title { get; set; } = "Ymir Physics";
 
     [Key(2)]
-    public string Description { get; set; } = "GameCult cutover CLI and service-record publisher for the planned Box3D wrapper.";
+    public string Description { get; set; } = "GameCult Box3D retained-session library and optional physics-daemon surface.";
 
     [Key(3)]
     public string[] Owns { get; set; } = [];
@@ -44,16 +44,16 @@ public sealed class YmirOperatorStateDocument
     public string Status { get; set; } = "box3d-cutover";
 
     [Key(2)]
-    public string StateOwner { get; set; } = "Stateless managed step/query DTOs and derived service records";
+    public string StateOwner { get; set; } = "In-process retained Box3D sessions, isolated snapshot steps, and diagnostic projections";
 
     [Key(3)]
-    public string NumericSubstrate { get; set; } = "Active: CultMath managed solver; target oracle: pinned Box3D v0.1.0 (C17)";
+    public string NumericSubstrate { get; set; } = "Box3D v0.1.0 (C17)";
 
     [Key(4)]
     public string BatchKernel { get; set; } = "";
 
     [Key(5)]
-    public string Persistence { get; set; } = "CultCache gamecult.ymir.world_state.v0 legacy checkpoint during Box3D cutover";
+    public string Persistence { get; set; } = "CultCache gamecult.ymir.world_state.v2; explicit v1/v0 read migration";
 
     [Key(6)]
     public string UpdatedAtUtc { get; set; } = "";
@@ -81,21 +81,24 @@ public static class YmirServicePublication
     {
         ProviderId = "ymir.physics",
         Title = "Ymir Physics",
-        Description = "GameCult cutover CLI and service-record publisher for the planned Box3D wrapper.",
+        Description = "GameCult Box3D retained-session library and optional physics-daemon surface.",
         Owns =
         [
-            "stateless managed step and query request handling",
-            "stable GameCult physics identity",
-            "typed physics request and result DTOs",
+            "Box3D-only isolated snapshot stepping",
+            "public in-process retained sessions with explicit mutation receipts",
+            "typed Begin, Hit, and End contact facts for retained steps",
+            "stable GameCult id to transient Box3D handle projection",
+            "Box3D-backed circle overlap and cast queries over submitted bodies",
             "deterministic result ordering",
-            "CultCache world and service record emission",
-            "Eve operator surface projection"
+            "CultCache world snapshot v2 with explicit v1/v0 read migration",
+            "diagnostic Eve publication"
         ],
         DoesNotOwn =
         [
+            "daemon-owned named session registry or CultMesh command lowering yet",
+            "complete checkpoint reconstruction yet",
             "physics algorithm invention",
             "Box3D solver and collision semantics",
-            "retained Box3D production sessions during cutover",
             "CultMesh provider sessions or discovery during cutover",
             "Unity scene truth",
             "rendering",
@@ -109,11 +112,11 @@ public static class YmirServicePublication
     public static YmirOperatorStateDocument OperatorState(DateTimeOffset now) => new()
     {
         ProviderId = "ymir.physics",
-        Status = "box3d-cutover",
-        StateOwner = "Stateless managed step/query DTOs and derived service records",
-        NumericSubstrate = "Active: CultMath managed solver; target oracle: pinned Box3D v0.1.0 (C17)",
-        BatchKernel = "Transitional managed solver; no retained Box3D session",
-        Persistence = "CultCache gamecult.ymir.world_state.v0 legacy checkpoint during Box3D cutover",
+        Status = "box3d-retained-session",
+        StateOwner = "In-process retained Box3D sessions, isolated snapshot steps, and diagnostic projections",
+        NumericSubstrate = "Box3D v0.1.0 (C17)",
+        BatchKernel = "Box3D native solver; Ymir does not own physics algorithms",
+        Persistence = "CultCache gamecult.ymir.world_state.v2; explicit v1/v0 read migration",
         UpdatedAtUtc = FormatUtc(now)
     };
 

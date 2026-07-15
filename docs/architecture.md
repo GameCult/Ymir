@@ -37,17 +37,30 @@ advertised Eve/CultMesh surface. Generic Eve clients connect directly to the
 Aetheria daemon. They never import Ymir internals and do not route gameplay
 through a standalone Ymir or discovery service.
 
-A standalone Ymir daemon is a second hosting mode for physics tooling and
+A standalone Ymir daemon is an optional hosting mode for physics tooling and
 other products. It hosts the same Ymir session primitive; it is not an
 Aetheria relay and cannot own a shadow copy of Aetheria's world.
 
-## Current Mechanism
+## Current Body
 
-The native facade currently exists only as a bounded parity oracle. Each world
-step witness creates and destroys a short-lived Box3D world. Production
-`ymir-daemon` commands still call the transitional managed `YmirSimulator`; no
-retained Box3D world or live CultMesh provider session exists yet. The owner,
-dataflow, and persistence sections below describe the cutover target.
+The runtime solver cut is complete: Box3D is the only integrator, collision
+engine, broadphase, query-geometry implementation, and contact source in the
+committed Ymir path. The public `YmirSimulator.Step` compatibility API creates
+an isolated internal session for one complete snapshot, projects its output,
+and disposes it. Public circle overlap and cast APIs invoke Box3D geometry over
+caller-supplied bodies.
+
+The retained native session now has a public in-process `YmirSession` port with
+explicit spawn, remove, teleport, velocity, configuration, force, torque,
+step, and disposal operations. It emits revisioned receipts and typed
+Begin/Hit/End facts with stable Ymir identities. Ordinary retained steps do not
+accept complete body snapshots.
+
+The current CLI still has no named session registry, CultMesh command
+lowerings, durable receipt ledger, or reconstruction
+checkpoint. Its CultCache and Eve output is a regenerated diagnostic
+projection. The sections marked as target contract describe that daemon cut;
+they are not advertisements of current CLI capability.
 
 ## Target Inputs
 
@@ -112,9 +125,19 @@ solver.
 ## Target Shared Paths
 
 Direct player commands, agent commands, programmatic spawns, server ticks,
-imports, reconnects, replay, and checkpoint recovery all enter one Ymir world
-session primitive. DTO compatibility methods may lower into that primitive;
-they may not run an alternate step.
+imports, reconnects, replay, and checkpoint recovery will enter the same Ymir
+session primitive for their named world. Today, DTO compatibility methods
+lower into an isolated Box3D session; they may not run an alternate step or
+infer retained identity from a body list.
+
+Session identity must be explicit. A process-wide simulator object, zone index,
+or repeated stable body id is not enough to join two calls to the same world.
+Aetheria owns run and zone lifetime and creates, retains, and disposes the
+corresponding embedded Ymir session. Projectile sweep
+and stationary mine proximity integration can use Ymir's revision-checked
+retained-session circle-cast and overlap queries. They observe the current
+stable-id body projection; they do not invent a contact episode or mutate the
+Box3D world.
 
 Radial gravity and tractor attraction are typed force-generation inputs. They
 are applied to Box3D before stepping. Pickup collection remains an Aetheria
@@ -152,6 +175,14 @@ lifecycle identity are binary contracts, not tolerance checks. Authoritative
 contact facts resume only after canonical history has been replayed through the
 checkpoint tick; a checkpoint alone cannot emit gameplay contact facts.
 
+`gamecult.ymir.world_state.v2` appends Box3D body type, bullet,
+field-participation, and collision filter arrays to the v1 layout. The v1 and
+v0 readers are explicit migration paths; keys are not reassigned. Torque is
+transient command state and is intentionally absent. Version 2 is a
+compatibility world snapshot, not a complete retained-session
+checkpoint: it does not preserve full shape, material, filter, session tuning,
+provenance, or warm contact state.
+
 Transient forces and torques are commands, not durable body state. Derived
 mass and inertia are published only when useful for inspection. Old checkpoint
 versions must migrate explicitly or fail closed; they may not silently decode
@@ -159,13 +190,15 @@ under a reassigned MessagePack layout.
 
 ## Cut Line
 
-The managed Ymir solver, `YmirQueryPrimitives`, and `YmirSpatialIndex` are
-deleted when retained Box3D sessions prove:
+The managed integrator and circle impulse solver have been deleted from the
+runtime path. Any uncommitted `YmirQueryPrimitives` or `YmirSpatialIndex` work
+is obsolete and must not be annexed. The retained-session cut continues until
+Box3D-backed sessions prove:
 
 1. fixed-step body state projection;
 2. begin/end/hit contact lifecycle;
 3. overlap and shape-cast lowering;
-4. continuous collision and projectile witnesses;
+4. continuous collision event timing and same-step Box3D cast witnesses;
 5. transient force and torque application;
 6. checkpoint reconstruction and replay;
 7. Aetheria gravity, tractor, pickup, and payload smokes.
@@ -180,7 +213,9 @@ failure fails closed and reports the missing capability.
   session facts.
 - Negative source checks prove custom solver and spatial-index authorities are
   absent after cutover.
-- Aetheria smokes prove gravity, contact-gated destruction loot, tractor
-  attraction, pickup collection, and fast payload hits.
+- Aetheria smokes must prove gravity, contact-gated destruction loot, tractor
+  attraction, pickup collection, and fast payload hits through the retained
+  contract. Current gravity, pickup-contact, cast, and overlap witnesses cover
+  only the snapshot/query compatibility path.
 - Released-client witnesses prove generic Eve clients only observe Ymir and
   Aetheria provider contracts, never native implementation details.
