@@ -157,6 +157,48 @@ public sealed class YmirSessionTests
     }
 
     [Fact]
+    public void IncrementalPersistenceWritesOnlyNewJournalEntriesAndRestoresBoundary()
+    {
+        using var original = YmirSession.Create(new YmirSessionCreateRequest(
+            "incremental-contact",
+            [Body("ship", positionX: 0.0f, isStatic: true), Body("pickup", positionX: 1.5f)]));
+        var began = original.Step(Step("begin", 0, 0.01f));
+        var begin = Assert.Single(began.ContactFacts, fact => fact.Kind == YmirContactFactKind.Begin);
+
+        var first = original.CapturePersistence(0);
+        var firstChunk = Assert.IsType<YmirSessionJournalChunk>(first.JournalChunk);
+        Assert.Equal(0, firstChunk.FirstEntryIndex);
+        Assert.Single(firstChunk.Entries);
+        var firstChunkBytes = YmirSessionCheckpointCodec.Encode(firstChunk);
+        var firstDescriptorBytes = YmirSessionCheckpointCodec.Encode(first.ResumeDescriptor);
+
+        var persistent = original.Step(Step("persistent", 1, 0.01f));
+        Assert.DoesNotContain(persistent.ContactFacts, fact => fact.Kind == YmirContactFactKind.Begin);
+        var second = original.CapturePersistence(first.ResumeDescriptor.JournalEntryCount);
+        var secondChunk = Assert.IsType<YmirSessionJournalChunk>(second.JournalChunk);
+        Assert.Equal(1, secondChunk.FirstEntryIndex);
+        Assert.Single(secondChunk.Entries);
+
+        var chunks = new[]
+        {
+            YmirSessionCheckpointCodec.DecodeJournalChunk(firstChunkBytes),
+            YmirSessionCheckpointCodec.DecodeJournalChunk(YmirSessionCheckpointCodec.Encode(secondChunk))
+        };
+        var descriptor = YmirSessionCheckpointCodec.DecodeResumeDescriptor(
+            YmirSessionCheckpointCodec.Encode(second.ResumeDescriptor));
+        using var restored = YmirSession.Restore(descriptor, chunks);
+        restored.Teleport(new YmirTeleportBodyCommand(
+            Header("separate", 2), "pickup", new Vec2(10.0f, 0.0f), new Vec2(0.0f, 1.0f)));
+        var ended = restored.Step(Step("end", 3, 0.01f));
+        Assert.Equal(begin.ContactId, Assert.Single(ended.ContactFacts, fact => fact.Kind == YmirContactFactKind.End).ContactId);
+
+        Assert.Throws<InvalidOperationException>(() => YmirSession.Restore(descriptor, [chunks[1]]));
+        var corruptDescriptor = firstDescriptorBytes.ToArray();
+        corruptDescriptor[24] ^= 0xff;
+        Assert.Throws<InvalidDataException>(() => YmirSessionCheckpointCodec.DecodeResumeDescriptor(corruptDescriptor));
+    }
+
+    [Fact]
     public void RemoveAndRecreateChangesBodyGeneration()
     {
         using var session = YmirSession.Create(new YmirSessionCreateRequest(

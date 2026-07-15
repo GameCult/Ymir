@@ -85,8 +85,12 @@ embeds one session per run and zone; its old process-wide simulator objects
 are not session identifiers. Revision-checked
 retained-session circle overlap and cast queries observe the current stable-id
 body projection without mutating it. Replay-backed checkpoint reconstruction is
-implemented; host-owned incremental journal persistence and non-Windows RID
-artifacts remain cutover work.
+implemented. `CapturePersistence` emits only the journal suffix not yet stored
+by its host plus a bounded resume descriptor; restore verifies contiguous
+chunks, the complete journal digest, the projected world, and active contact
+episodes before the session can emit facts. Aetheria stores those records in a
+daemon-private CultCache and uses its hard-flushed public frame as the commit
+marker. Journal compaction and non-Windows RID artifacts remain cutover work.
 
 See [the architecture map](docs/architecture.md) and
 [the executable parity contract](docs/box3d-parity.md). The

@@ -10,9 +10,39 @@ public sealed record YmirSessionCreateRequest(
 public static class YmirSessionCheckpointContract
 {
     public const string FormatId = "gamecult.ymir.session_checkpoint.replay.v1";
+    public const string JournalChunkFormatId = "gamecult.ymir.session_journal_chunk.v1";
+    public const string ResumeDescriptorFormatId = "gamecult.ymir.session_resume.v1";
     public static string RuntimeFingerprint =>
         $"gamecult.ymir.replay.v1|{Box3DRuntime.ValidatedBuildId}";
 }
+
+public sealed record YmirSessionJournalChunk(
+    string FormatId,
+    string RuntimeFingerprint,
+    string SessionId,
+    string SessionGeneration,
+    long FirstEntryIndex,
+    IReadOnlyList<YmirSessionJournalEntry> Entries);
+
+public sealed record YmirSessionResumeDescriptor(
+    string FormatId,
+    string RuntimeFingerprint,
+    string SessionId,
+    string SessionGeneration,
+    long Revision,
+    long StepIndex,
+    float Time,
+    long NextBodyGeneration,
+    IReadOnlyList<PhysicsBody> InitialBodies,
+    float InitialTime,
+    long JournalEntryCount,
+    string JournalDigest,
+    YmirWorld World,
+    IReadOnlyList<YmirContactEpisodeCheckpoint> ActiveContactEpisodes);
+
+public sealed record YmirSessionPersistenceCapture(
+    YmirSessionJournalChunk? JournalChunk,
+    YmirSessionResumeDescriptor ResumeDescriptor);
 
 public sealed record YmirSessionCheckpoint(
     string FormatId,

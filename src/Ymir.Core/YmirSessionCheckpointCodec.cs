@@ -6,6 +6,8 @@ namespace Ymir.Core;
 public static class YmirSessionCheckpointCodec
 {
     private const uint Magic = 0x43534D59; // YMSC
+    private const uint JournalMagic = 0x4A534D59; // YMSJ
+    private const uint ResumeMagic = 0x52534D59; // YMSR
     private const int Version = 1;
     private const int MaximumPayloadBytes = 256 * 1024 * 1024;
     private const int MaximumCollectionCount = 4 * 1024 * 1024;
@@ -43,17 +45,10 @@ public static class YmirSessionCheckpointCodec
 
     public static YmirSessionCheckpoint Decode(ReadOnlySpan<byte> payload)
     {
-        if (payload.Length <= ChecksumBytes || payload.Length > MaximumPayloadBytes)
-            throw new InvalidDataException("Ymir checkpoint payload size is invalid.");
-        var content = payload[..^ChecksumBytes];
-        var expectedChecksum = payload[^ChecksumBytes..];
-        Span<byte> actualChecksum = stackalloc byte[ChecksumBytes];
-        SHA256.HashData(content, actualChecksum);
-        if (!CryptographicOperations.FixedTimeEquals(actualChecksum, expectedChecksum))
-            throw new InvalidDataException("Ymir checkpoint checksum is invalid.");
+        var content = VerifiedContent(payload);
         try
         {
-            using var stream = new MemoryStream(content.ToArray(), writable: false);
+            using var stream = new MemoryStream(content, writable: false);
             using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
             if (reader.ReadUInt32() != Magic || reader.ReadInt32() != Version)
                 throw new InvalidDataException("Ymir checkpoint codec header is incompatible.");
@@ -84,6 +79,141 @@ public static class YmirSessionCheckpointCodec
         {
             throw new InvalidDataException("Ymir checkpoint payload is corrupt.", error);
         }
+    }
+
+    public static byte[] Encode(YmirSessionJournalChunk chunk)
+    {
+        ArgumentNullException.ThrowIfNull(chunk);
+        return EncodeChecksummed(writer =>
+        {
+            writer.Write(JournalMagic);
+            writer.Write(Version);
+            WriteString(writer, chunk.FormatId);
+            WriteString(writer, chunk.RuntimeFingerprint);
+            WriteString(writer, chunk.SessionId);
+            WriteString(writer, chunk.SessionGeneration);
+            writer.Write(chunk.FirstEntryIndex);
+            WriteJournal(writer, chunk.Entries);
+        });
+    }
+
+    public static YmirSessionJournalChunk DecodeJournalChunk(ReadOnlySpan<byte> payload)
+    {
+        var content = VerifiedContent(payload);
+        try
+        {
+            using var stream = new MemoryStream(content, writable: false);
+            using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
+            if (reader.ReadUInt32() != JournalMagic || reader.ReadInt32() != Version)
+                throw new InvalidDataException("Ymir journal chunk codec header is incompatible.");
+            var chunk = new YmirSessionJournalChunk(
+                ReadString(reader),
+                ReadString(reader),
+                ReadString(reader),
+                ReadString(reader),
+                reader.ReadInt64(),
+                ReadJournal(reader));
+            if (stream.Position != stream.Length)
+                throw new InvalidDataException("Ymir journal chunk contains trailing data.");
+            return chunk;
+        }
+        catch (InvalidDataException)
+        {
+            throw;
+        }
+        catch (Exception error) when (error is EndOfStreamException or IOException or ArgumentException or OverflowException)
+        {
+            throw new InvalidDataException("Ymir journal chunk payload is corrupt.", error);
+        }
+    }
+
+    public static byte[] Encode(YmirSessionResumeDescriptor descriptor)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        return EncodeChecksummed(writer =>
+        {
+            writer.Write(ResumeMagic);
+            writer.Write(Version);
+            WriteString(writer, descriptor.FormatId);
+            WriteString(writer, descriptor.RuntimeFingerprint);
+            WriteString(writer, descriptor.SessionId);
+            WriteString(writer, descriptor.SessionGeneration);
+            writer.Write(descriptor.Revision);
+            writer.Write(descriptor.StepIndex);
+            writer.Write(descriptor.Time);
+            writer.Write(descriptor.NextBodyGeneration);
+            WriteBodies(writer, descriptor.InitialBodies);
+            writer.Write(descriptor.InitialTime);
+            writer.Write(descriptor.JournalEntryCount);
+            WriteString(writer, descriptor.JournalDigest);
+            WriteWorld(writer, descriptor.World);
+            WriteEpisodes(writer, descriptor.ActiveContactEpisodes);
+        });
+    }
+
+    public static YmirSessionResumeDescriptor DecodeResumeDescriptor(ReadOnlySpan<byte> payload)
+    {
+        var content = VerifiedContent(payload);
+        try
+        {
+            using var stream = new MemoryStream(content, writable: false);
+            using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
+            if (reader.ReadUInt32() != ResumeMagic || reader.ReadInt32() != Version)
+                throw new InvalidDataException("Ymir resume descriptor codec header is incompatible.");
+            var descriptor = new YmirSessionResumeDescriptor(
+                ReadString(reader),
+                ReadString(reader),
+                ReadString(reader),
+                ReadString(reader),
+                reader.ReadInt64(),
+                reader.ReadInt64(),
+                reader.ReadSingle(),
+                reader.ReadInt64(),
+                ReadBodies(reader),
+                reader.ReadSingle(),
+                reader.ReadInt64(),
+                ReadString(reader),
+                ReadWorld(reader),
+                ReadEpisodes(reader));
+            if (stream.Position != stream.Length)
+                throw new InvalidDataException("Ymir resume descriptor contains trailing data.");
+            return descriptor;
+        }
+        catch (InvalidDataException)
+        {
+            throw;
+        }
+        catch (Exception error) when (error is EndOfStreamException or IOException or ArgumentException or OverflowException)
+        {
+            throw new InvalidDataException("Ymir resume descriptor payload is corrupt.", error);
+        }
+    }
+
+    private static byte[] EncodeChecksummed(Action<BinaryWriter> write)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true))
+        {
+            write(writer);
+            writer.Flush();
+        }
+        if (stream.Length > MaximumPayloadBytes - ChecksumBytes)
+            throw new InvalidOperationException("Ymir persistence payload exceeds the supported size.");
+        var content = stream.ToArray();
+        return [.. content, .. SHA256.HashData(content)];
+    }
+
+    private static byte[] VerifiedContent(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length <= ChecksumBytes || payload.Length > MaximumPayloadBytes)
+            throw new InvalidDataException("Ymir persistence payload size is invalid.");
+        var content = payload[..^ChecksumBytes];
+        var expectedChecksum = payload[^ChecksumBytes..];
+        Span<byte> actualChecksum = stackalloc byte[ChecksumBytes];
+        SHA256.HashData(content, actualChecksum);
+        if (!CryptographicOperations.FixedTimeEquals(actualChecksum, expectedChecksum))
+            throw new InvalidDataException("Ymir persistence payload checksum is invalid.");
+        return content.ToArray();
     }
 
     private static void WriteJournal(BinaryWriter writer, IReadOnlyList<YmirSessionJournalEntry> entries)

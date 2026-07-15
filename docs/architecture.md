@@ -56,13 +56,16 @@ step, and disposal operations. It emits revisioned receipts and typed
 Begin/Hit/End facts with stable Ymir identities. Ordinary retained steps do not
 accept complete body snapshots.
 
-The embedded retained-session library now has a replay-backed reconstruction
-checkpoint and durable-in-checkpoint command receipt ledger. Host-owned private
-incremental journal storage and atomic frame/resume commits remain integration
-work. Complete replay history is not product state and must not ride in public
-client frames. The current CLI still has no named session registry or CultMesh
-command lowerings; its CultCache and Eve output remains a regenerated
-diagnostic projection.
+The embedded retained-session library has replay-backed reconstruction,
+durable command receipts, incremental journal-suffix capture, and bounded
+resume descriptors. Aetheria stores these in a second daemon-private CultCache:
+immutable chunks are flushed first, immutable per-frame resumes second, and the
+public Aetheria frame last. The public frame is the only commit marker. Orphaned
+private records cannot advance gameplay truth, and restart fails closed once
+the persistence capability has been activated. Complete replay history is not
+product state and never rides in public client frames. The current CLI still
+has no named session registry or CultMesh command lowerings; its CultCache and
+Eve output remains a regenerated diagnostic projection.
 
 ## Target Inputs
 

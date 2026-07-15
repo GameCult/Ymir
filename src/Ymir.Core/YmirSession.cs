@@ -93,6 +93,49 @@ public sealed class YmirSession : IDisposable
         }
     }
 
+    public static YmirSession Restore(
+        YmirSessionResumeDescriptor descriptor,
+        IReadOnlyList<YmirSessionJournalChunk> chunks)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(chunks);
+        if (!string.Equals(descriptor.FormatId, YmirSessionCheckpointContract.ResumeDescriptorFormatId, StringComparison.Ordinal) ||
+            !string.Equals(descriptor.RuntimeFingerprint, YmirSessionCheckpointContract.RuntimeFingerprint, StringComparison.Ordinal) ||
+            descriptor.JournalEntryCount < 0)
+            throw new InvalidOperationException("Ymir resume descriptor format or runtime provenance is incompatible.");
+
+        var journal = new List<YmirSessionJournalEntry>();
+        foreach (var chunk in chunks.OrderBy(value => value.FirstEntryIndex))
+        {
+            if (!string.Equals(chunk.FormatId, YmirSessionCheckpointContract.JournalChunkFormatId, StringComparison.Ordinal) ||
+                !string.Equals(chunk.RuntimeFingerprint, descriptor.RuntimeFingerprint, StringComparison.Ordinal) ||
+                !string.Equals(chunk.SessionId, descriptor.SessionId, StringComparison.Ordinal) ||
+                !string.Equals(chunk.SessionGeneration, descriptor.SessionGeneration, StringComparison.Ordinal) ||
+                chunk.FirstEntryIndex != journal.Count || chunk.Entries == null)
+                throw new InvalidOperationException("Ymir journal chunks are incompatible, overlapping, or incomplete.");
+            journal.AddRange(chunk.Entries);
+        }
+        if (journal.Count != descriptor.JournalEntryCount)
+            throw new InvalidOperationException(
+                $"Ymir resume requires {descriptor.JournalEntryCount} journal entries but received {journal.Count}.");
+
+        return Restore(new YmirSessionCheckpoint(
+            YmirSessionCheckpointContract.FormatId,
+            descriptor.RuntimeFingerprint,
+            descriptor.SessionId,
+            descriptor.SessionGeneration,
+            descriptor.Revision,
+            descriptor.StepIndex,
+            descriptor.Time,
+            descriptor.NextBodyGeneration,
+            descriptor.InitialBodies,
+            descriptor.InitialTime,
+            journal,
+            descriptor.JournalDigest,
+            descriptor.World,
+            descriptor.ActiveContactEpisodes));
+    }
+
     public YmirSessionInfo Info
     {
         get
@@ -137,6 +180,45 @@ public sealed class YmirSession : IDisposable
                 JournalDigest(),
                 SnapshotCore(),
                 activeEpisodes);
+        }
+    }
+
+    public YmirSessionPersistenceCapture CapturePersistence(long persistedJournalEntryCount)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_faulted)
+                throw new InvalidOperationException("A faulted Ymir session cannot publish persistence state.");
+            if (persistedJournalEntryCount < 0 || persistedJournalEntryCount > _journal.Count)
+                throw new ArgumentOutOfRangeException(nameof(persistedJournalEntryCount));
+
+            var checkpoint = Checkpoint();
+            var chunk = persistedJournalEntryCount == _journal.Count
+                ? null
+                : new YmirSessionJournalChunk(
+                    YmirSessionCheckpointContract.JournalChunkFormatId,
+                    checkpoint.RuntimeFingerprint,
+                    checkpoint.SessionId,
+                    checkpoint.SessionGeneration,
+                    persistedJournalEntryCount,
+                    _journal.Skip(checked((int)persistedJournalEntryCount)).ToArray());
+            var descriptor = new YmirSessionResumeDescriptor(
+                YmirSessionCheckpointContract.ResumeDescriptorFormatId,
+                checkpoint.RuntimeFingerprint,
+                checkpoint.SessionId,
+                checkpoint.SessionGeneration,
+                checkpoint.Revision,
+                checkpoint.StepIndex,
+                checkpoint.Time,
+                checkpoint.NextBodyGeneration,
+                checkpoint.InitialBodies,
+                checkpoint.InitialTime,
+                checkpoint.Journal.Count,
+                checkpoint.JournalDigest,
+                checkpoint.World,
+                checkpoint.ActiveContactEpisodes);
+            return new YmirSessionPersistenceCapture(chunk, descriptor);
         }
     }
 

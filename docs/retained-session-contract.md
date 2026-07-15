@@ -101,6 +101,20 @@ world verifier, and active episodes. ABI v5 independently validates the exact
 pinned native build id before opening a session. It contains no native Box3D
 handle or contact key.
 
+For incremental host persistence,
+`gamecult.ymir.session_journal_chunk.v1` carries a contiguous command-journal
+suffix and `gamecult.ymir.session_resume.v1` carries the bounded reconstruction
+boundary. `CapturePersistence(persistedJournalEntryCount)` never repeats an
+already acknowledged prefix. Restore orders chunks by their first entry,
+requires exact coverage from zero through the descriptor count, and then uses
+the same full replay and verifier path as a complete checkpoint. Both binary
+forms are independently checksummed.
+
+The cursor is currently an index into a complete in-memory journal. Ymir does
+not yet prune or renumber that journal; storage writes are incremental, memory
+retention is not. Compaction requires a generation/base-sequence contract and
+must not be inferred from a host acknowledging a write.
+
 ## Forbidden Writers
 
 - recurring complete-body synchronization after restore;
@@ -146,8 +160,9 @@ is derived process state: it never appears in a public fact or checkpoint.
 3. Revision-checked retained-session overlap and cast queries: done.
 4. One embedded retained world and physical-payload session per Aetheria run
    and zone: done.
-5. Persist replay journals privately and incrementally behind a bounded resume
-   descriptor; complete history must not ride in public product frames.
+5. Incremental journal chunks and bounded resume descriptors: done. Aetheria
+   stores them in a daemon-private CultCache; complete history does not ride in
+   public product frames. Journal compaction remains separate work.
 6. For optional standalone hosting, add a session registry, generation-bearing
    routed commands, idempotent Create, durable receipts, and CultMesh lowering.
 
