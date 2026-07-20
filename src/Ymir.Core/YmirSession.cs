@@ -148,6 +148,48 @@ public sealed class YmirSession : IDisposable
         }
     }
 
+    /// <summary>
+    /// Gets the number of commands retained in the current persistence generation.
+    /// </summary>
+    public long PersistenceJournalEntryCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                return _journal.Count;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Creates a fresh persistence generation from the current Box3D projection when
+    /// no contact or unstepped mutation state would be lost. The caller owns the
+    /// returned session and remains responsible for disposing this session after swap.
+    /// </summary>
+    public bool TryCreateCompactedPersistenceBaseline(out YmirSession? compacted)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_faulted)
+                throw new InvalidOperationException("A faulted Ymir session cannot compact persistence.");
+            if (_episodesByNativeContact.Count > 0 ||
+                (_journal.Count > 0 && _journal[^1] is not YmirStepSessionJournalEntry))
+            {
+                compacted = null;
+                return false;
+            }
+
+            compacted = new YmirSession(new YmirSessionCreateRequest(
+                _sessionId,
+                _bodies.Values.OrderBy(body => body.Id, StringComparer.Ordinal).ToArray(),
+                _time));
+            return true;
+        }
+    }
+
     public YmirSessionCheckpoint Checkpoint()
     {
         lock (_gate)

@@ -110,10 +110,21 @@ requires exact coverage from zero through the descriptor count, and then uses
 the same full replay and verifier path as a complete checkpoint. Both binary
 forms are independently checksummed.
 
-The cursor is currently an index into a complete in-memory journal. Ymir does
-not yet prune or renumber that journal; storage writes are incremental, memory
-retention is not. Compaction requires a generation/base-sequence contract and
-must not be inferred from a host acknowledging a write.
+The cursor is an index within one session generation. Bounded persistence uses
+an explicit generation rollover, never an inferred acknowledgement side effect.
+`TryCreateCompactedPersistenceBaseline` may create a replacement session only
+when the current journal is empty or ends in an accepted Step and Box3D reports
+no active contact episodes. The replacement starts from the current body
+projection and time with a fresh session generation, revision zero, an empty
+receipt ledger, and an empty journal. The host atomically swaps ownership and
+then disposes the prior session.
+
+Active contacts, pending forces, or other unstepped mutations refuse rollover.
+Those sessions retain replay reconstruction until a later quiescent boundary.
+Ymir does not synthesize contact closure, serialize private Box3D handles, or
+pretend a body snapshot can preserve solver contact state. Old generation
+journals become audit history after the host commits the replacement boundary;
+they are not inputs to the new generation's restore.
 
 ## Forbidden Writers
 
@@ -162,7 +173,8 @@ is derived process state: it never appears in a public fact or checkpoint.
    and zone: done.
 5. Incremental journal chunks and bounded resume descriptors: done. Aetheria
    stores them in a daemon-private CultCache; complete history does not ride in
-   public product frames. Journal compaction remains separate work.
+   public product frames. Quiescent generation rollover provides the compaction
+   primitive; host adoption and old-generation retention policy are separate.
 6. For optional standalone hosting, add a session registry, generation-bearing
    routed commands, idempotent Create, durable receipts, and CultMesh lowering.
 

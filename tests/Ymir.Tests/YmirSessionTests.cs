@@ -199,6 +199,49 @@ public sealed class YmirSessionTests
     }
 
     [Fact]
+    public void QuiescentSessionCanRollToAnEmptyPersistenceGeneration()
+    {
+        using var original = YmirSession.Create(new YmirSessionCreateRequest(
+            "compact-quiescent", [Body("ship", velocityX: 2.0f)]));
+        original.Step(Step("step-1", 0, 0.1f));
+        original.Step(Step("step-2", 1, 0.1f));
+
+        Assert.True(original.TryCreateCompactedPersistenceBaseline(out var compacted));
+        using (compacted!)
+        {
+            var baseline = compacted!;
+            Assert.NotEqual(original.Info.SessionGeneration, baseline.Info.SessionGeneration);
+            Assert.Equal(0, baseline.Info.Revision);
+            Assert.Equal(0, baseline.PersistenceJournalEntryCount);
+            AssertWorldEqual(original.Snapshot(), baseline.Snapshot());
+
+            var capture = baseline.CapturePersistence(0);
+            Assert.Null(capture.JournalChunk);
+            Assert.Equal(0, capture.ResumeDescriptor.JournalEntryCount);
+            using var restored = YmirSession.Restore(capture.ResumeDescriptor, []);
+            AssertWorldEqual(baseline.Snapshot(), restored.Snapshot());
+        }
+    }
+
+    [Fact]
+    public void PersistenceRolloverRefusesActiveContactsAndUnsteppedMutations()
+    {
+        using var touching = YmirSession.Create(new YmirSessionCreateRequest(
+            "compact-contact",
+            [Body("ship", positionX: 0.0f, isStatic: true), Body("pickup", positionX: 1.5f)]));
+        touching.Step(Step("begin", 0, 0.01f));
+        Assert.False(touching.TryCreateCompactedPersistenceBaseline(out var contactBaseline));
+        Assert.Null(contactBaseline);
+
+        using var pendingForce = YmirSession.Create(new YmirSessionCreateRequest(
+            "compact-force", [Body("ship")]));
+        pendingForce.ApplyForce(new YmirApplyForceCommand(
+            Header("force", 0), "ship", new Vec2(10.0f, 0.0f)));
+        Assert.False(pendingForce.TryCreateCompactedPersistenceBaseline(out var forceBaseline));
+        Assert.Null(forceBaseline);
+    }
+
+    [Fact]
     public void RemoveAndRecreateChangesBodyGeneration()
     {
         using var session = YmirSession.Create(new YmirSessionCreateRequest(
@@ -430,4 +473,11 @@ public sealed class YmirSessionTests
             isStatic,
             0.0f,
             new Vec2(0.0f, 1.0f));
+
+    private static void AssertWorldEqual(YmirWorld expected, YmirWorld actual)
+    {
+        Assert.Equal(expected.Time, actual.Time);
+        Assert.Equal(expected.Bodies, actual.Bodies);
+        Assert.Equal(expected.Fields, actual.Fields);
+    }
 }
