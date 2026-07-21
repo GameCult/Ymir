@@ -164,11 +164,13 @@ public sealed class YmirSession : IDisposable
     }
 
     /// <summary>
-    /// Creates a fresh persistence generation from the current Box3D projection when
-    /// no contact or unstepped mutation state would be lost. The caller owns the
-    /// returned session and remains responsible for disposing this session after swap.
+    /// Replaces this session with a fresh persistence generation from the current
+    /// Box3D projection when no contact or unstepped mutation state would be lost.
+    /// The native world owned by this session is released before the replacement is
+    /// allocated so compaction cannot exceed Box3D's fixed world capacity. A successful
+    /// call leaves this session disposed and transfers ownership to the caller.
     /// </summary>
-    public bool TryCreateCompactedPersistenceBaseline(out YmirSession? compacted)
+    public bool TryReplaceWithCompactedPersistenceBaseline(out YmirSession? compacted)
     {
         lock (_gate)
         {
@@ -182,10 +184,13 @@ public sealed class YmirSession : IDisposable
                 return false;
             }
 
-            compacted = new YmirSession(new YmirSessionCreateRequest(
+            var request = new YmirSessionCreateRequest(
                 _sessionId,
                 _bodies.Values.OrderBy(body => body.Id, StringComparer.Ordinal).ToArray(),
-                _time));
+                _time);
+            _native.Dispose();
+            _disposed = true;
+            compacted = new YmirSession(request);
             return true;
         }
     }

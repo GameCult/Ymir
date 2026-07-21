@@ -205,15 +205,17 @@ public sealed class YmirSessionTests
             "compact-quiescent", [Body("ship", velocityX: 2.0f)]));
         original.Step(Step("step-1", 0, 0.1f));
         original.Step(Step("step-2", 1, 0.1f));
+        var expectedWorld = original.Snapshot();
 
-        Assert.True(original.TryCreateCompactedPersistenceBaseline(out var compacted));
+        Assert.True(original.TryReplaceWithCompactedPersistenceBaseline(out var compacted));
         using (compacted!)
         {
             var baseline = compacted!;
             Assert.NotEqual(original.Info.SessionGeneration, baseline.Info.SessionGeneration);
+            Assert.True(original.Info.IsDisposed);
             Assert.Equal(0, baseline.Info.Revision);
             Assert.Equal(0, baseline.PersistenceJournalEntryCount);
-            AssertWorldEqual(original.Snapshot(), baseline.Snapshot());
+            AssertWorldEqual(expectedWorld, baseline.Snapshot());
 
             var capture = baseline.CapturePersistence(0);
             Assert.Null(capture.JournalChunk);
@@ -230,14 +232,14 @@ public sealed class YmirSessionTests
             "compact-contact",
             [Body("ship", positionX: 0.0f, isStatic: true), Body("pickup", positionX: 1.5f)]));
         touching.Step(Step("begin", 0, 0.01f));
-        Assert.False(touching.TryCreateCompactedPersistenceBaseline(out var contactBaseline));
+        Assert.False(touching.TryReplaceWithCompactedPersistenceBaseline(out var contactBaseline));
         Assert.Null(contactBaseline);
 
         using var pendingForce = YmirSession.Create(new YmirSessionCreateRequest(
             "compact-force", [Body("ship")]));
         pendingForce.ApplyForce(new YmirApplyForceCommand(
             Header("force", 0), "ship", new Vec2(10.0f, 0.0f)));
-        Assert.False(pendingForce.TryCreateCompactedPersistenceBaseline(out var forceBaseline));
+        Assert.False(pendingForce.TryReplaceWithCompactedPersistenceBaseline(out var forceBaseline));
         Assert.Null(forceBaseline);
     }
 
