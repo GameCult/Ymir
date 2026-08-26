@@ -11,7 +11,7 @@
     <ProjectReference Include="$(CultLibRoot)\src\GameCult.Caching.MessagePack\GameCult.Caching.MessagePack.csproj" />
     <ProjectReference Include="$(EveRoot)\packages\org.gamecult.eve.surface\GameCult.Eve.Surface.csproj"
                       AdditionalProperties="CultLibRoot=$(CultLibRoot)" />
-    <ProjectReference Include="..\..\..\CultMath\src\CultMath\CultMath.csproj" />
+    <ProjectReference Include="$(CultLibRoot)\packages\cultmath\src\CultMath\CultMath.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
