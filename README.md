@@ -14,6 +14,19 @@ witnesses released behavior at the native boundary; Ymir adds stable ids,
 typed commands and facts, replay memory, and deterministic projection without
 installing a second solver.
 
+## Front Door
+
+- **Value:** a retained Box3D physics session with GameCult world truth around it: stable entity ids, explicit mutation receipts, typed contact facts (Begin/Hit/End), replay-backed checkpoints, and deterministic result ordering.
+- **Problem:** physics authority must not be split between Unity callbacks, gameplay geometry tests and a managed solver. Box3D decides physics, Ymir owns the service boundary, Aetheria supplies intent.
+- **Entry points:**
+  - `src/Ymir.Core/YmirSession.cs`: the public in-process retained session (commands, receipts, stepping, queries, `CapturePersistence`). `YmirSimulator.cs` is the snapshot facade that wraps an isolated session.
+  - `src/Ymir.Box3D/` and `native/Ymir.Box3D/`: the native session ABI and the Ymir-owned Box3D shim (`GameCult.Ymir.Box3D` package).
+  - `tests/Ymir.Box3D.Parity/`: the executable parity contract against pinned Box3D v0.1.0 (`docs/box3d-parity.md`).
+  - `docs/architecture.md`, `docs/retained-session-contract.md`, `docs/aetheria-cutover.md`.
+  - Build and test: `git submodule update --init --recursive`, then `dotnet test Ymir.slnx` (needs CMake and a C17 compiler).
+- **Live:** retained sessions, replay-backed checkpoint reconstruction, parity for overlap and cast queries, tractor membership, contact-begin facts, restitution, torque lifetime, collision filtering and bullet CCD. Aetheria embeds one session per run and zone and stores persistence in a daemon-private CultCache. Package version `0.3.0`.
+- **Planned:** journal compaction, Linux and macOS package RIDs (built and smoked on their own workers), a committed release smoke for packaging, and the optional standalone daemon (`src/ymir-daemon` is a thin command host today and is never in Aetheria's gameplay path).
+
 ## Target Ownership
 
 - Box3D owns rigid-body integration, collision geometry, broadphase, solver
