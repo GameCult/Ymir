@@ -1,6 +1,5 @@
 using GameCult.Caching;
 using GameCult.Caching.MessagePack;
-using GameCult.Eve.Surface;
 using MessagePack;
 
 namespace Ymir.Core;
@@ -91,8 +90,7 @@ public static class YmirServicePublication
             "Box3D-backed circle overlap and cast queries over submitted bodies",
             "deterministic result ordering",
             "checksummed replay checkpoint reconstruction bound to the pinned native build",
-            "CultCache world snapshot v2 with explicit v1/v0 read migration",
-            "diagnostic Eve publication"
+            "CultCache world snapshot v2 with explicit v1/v0 read migration"
         ],
         DoesNotOwn =
         [
@@ -121,31 +119,11 @@ public static class YmirServicePublication
         UpdatedAtUtc = FormatUtc(now)
     };
 
-    public static EveSurfaceDocument EveSurface(YmirOperatorStateDocument diagnostics) =>
-        GameCult.Eve.Surface.EveSurface.Create("ymir.physics.operator")
-            .Provider(diagnostics.ProviderId, "physics.operator")
-            .Title("Ymir Physics")
-            .UpdatedAtUtc(diagnostics.UpdatedAtUtc)
-            .RootColumn("ymir.physics.operator.root", root => root
-                .Metric("ymir.physics.operator.status", "Status", diagnostics.Status)
-                .Metric("ymir.physics.operator.owner", "State owner", diagnostics.StateOwner)
-                .Metric("ymir.physics.operator.math", "Numeric substrate", diagnostics.NumericSubstrate)
-                .Metric("ymir.physics.operator.batch", "Batch kernel", diagnostics.BatchKernel)
-                .Metric("ymir.physics.operator.persistence", "Persistence", diagnostics.Persistence))
-            .Build();
-
-    public static EveSurfaceDocument EveSurface(DateTimeOffset now)
-    {
-        return EveSurface(OperatorState(now));
-    }
-
     private static string FormatUtc(DateTimeOffset value) => value.UtcDateTime.ToString("O");
 }
 
 public static class YmirServicePublicationStore
 {
-    public const string SurfaceRecordKey = "surface:ymir.physics.operator";
-
     public static async Task RegenerateDerivedStoreAsync(string path, DateTimeOffset now)
     {
         DeleteDerivedStore(path);
@@ -173,10 +151,6 @@ public static class YmirServicePublicationStore
             await cache.UpsertAsync(
                 operatorState,
                 new CultRecordHandle<YmirOperatorStateDocument>(new CultRecordKey("ymir:operator:ymir.physics")))
-                .ConfigureAwait(false);
-            await cache.UpsertAsync(
-                YmirServicePublication.EveSurface(operatorState),
-                new CultRecordHandle<EveSurfaceDocument>(new CultRecordKey(SurfaceRecordKey)))
                 .ConfigureAwait(false);
             await cache.FlushAsync().ConfigureAwait(false);
         }

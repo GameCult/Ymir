@@ -64,8 +64,8 @@ public Aetheria frame last. The public frame is the only commit marker. Orphaned
 private records cannot advance gameplay truth, and restart fails closed once
 the persistence capability has been activated. Complete replay history is not
 product state and never rides in public client frames. The current CLI still
-has no named session registry or CultMesh command lowerings; its CultCache and
-Eve output remains a regenerated diagnostic projection.
+has no named session registry or CultMesh command lowerings; its CultCache
+output remains a regenerated diagnostic projection.
 
 ## Target Inputs
 
@@ -98,7 +98,6 @@ not alter their membership or invent missing contacts.
   are not a second live solver.
 - SoA body documents are transport and inspection projections over the live
   session.
-- Eve surfaces are presentation projections over Ymir state and receipts.
 - Unity GameObjects and Electron objects are render state only.
 - Aetheria damage, loot, capacity, faction, and scoring consequences are
   derived from Ymir facts plus Aetheria policy.

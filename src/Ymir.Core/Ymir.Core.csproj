@@ -1,15 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <EveRoot Condition="'$(EveRoot)' == ''">$(MSBuildThisFileDirectory)..\..\..\Eve</EveRoot>
-  </PropertyGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\Ymir.Box3D\Ymir.Box3D.csproj" />
     <ProjectReference Include="$(CultLibRoot)\src\GameCult.Caching\GameCult.Caching.csproj" />
     <ProjectReference Include="$(CultLibRoot)\src\GameCult.Caching.MessagePack\GameCult.Caching.MessagePack.csproj" />
-    <ProjectReference Include="$(EveRoot)\packages\org.gamecult.eve.surface\GameCult.Eve.Surface.csproj"
-                      AdditionalProperties="CultLibRoot=$(CultLibRoot)" />
     <ProjectReference Include="$(CultLibRoot)\packages\cultmath\src\CultMath\CultMath.csproj" />
   </ItemGroup>
 

@@ -23,7 +23,7 @@ installing a second solver.
 - Ymir owns the pinned Box3D version, stable GameCult entity ids,
   native ABI isolation, public in-process retained sessions, explicit mutation
   receipts, typed contact facts, snapshot lowering, deterministic result
-  ordering, versioned CultCache snapshots, and a diagnostic Eve publication.
+  ordering, versioned CultCache snapshots.
 - An optional Ymir daemon may own named session routing, durable command receipts,
   checkpoint reconstruction, CultMesh command/fact publication, and process
   supervision for worlds it hosts. It is not part of Aetheria's gameplay path.
