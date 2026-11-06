@@ -22,6 +22,7 @@ installing a second solver.
   - `src/Ymir.Core/YmirSession.cs`: the public in-process retained session (commands, receipts, stepping, queries, `CapturePersistence`). `YmirSimulator.cs` is the snapshot facade that wraps an isolated session.
   - `src/Ymir.Box3D/` and `native/Ymir.Box3D/`: the native session ABI and the Ymir-owned Box3D shim (`GameCult.Ymir.Box3D` package).
   - `tests/Ymir.Box3D.Parity/`: the executable parity contract against pinned Box3D v0.1.0 (`docs/box3d-parity.md`).
+  - `src/Ymir.Box3D/Box3DSoaWorld.cs` and `native/Ymir.Box3D/ymir_box3d_soa.c`: a headless 3D world (gravity, free rotation) whose state is a structure-of-arrays view read in place (`docs/soa-world.md`). Early slice for Lodur and Bad Day Simulator; spheres and static boxes only.
   - `docs/architecture.md`, `docs/retained-session-contract.md`, `docs/aetheria-cutover.md`.
   - Build and test: `git submodule update --init --recursive`, then `dotnet test Ymir.slnx` (needs CMake and a C17 compiler).
 - **Live:** retained sessions, replay-backed checkpoint reconstruction, parity for overlap and cast queries, tractor membership, contact-begin facts, restitution, torque lifetime, collision filtering and bullet CCD. Aetheria embeds one session per run and zone and stores persistence in a daemon-private CultCache. Package version `0.3.0`.

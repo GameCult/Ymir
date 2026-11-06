@@ -11,7 +11,7 @@ set(BOX3D_VALIDATE ON CACHE BOOL "" FORCE)
 
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../extern/box3d" "${CMAKE_CURRENT_BINARY_DIR}/box3d")
 
-add_library(ymir_box3d SHARED ymir_box3d.c)
+add_library(ymir_box3d SHARED ymir_box3d.c ymir_box3d_soa.c)
 target_link_libraries(ymir_box3d PRIVATE box3d::box3d)
 target_include_directories(ymir_box3d PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../extern/box3d/include")
 target_compile_features(ymir_box3d PRIVATE c_std_17)
