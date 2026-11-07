@@ -30,7 +30,7 @@ internal struct Box3DSoaBodyDesc
     public float RotationX, RotationY, RotationZ, RotationW;
     public float VelocityX, VelocityY, VelocityZ;
     public float Size0, Size1, Size2;
-    public float Density, Friction, Restitution, ReservedFloat;
+    public float Density, Friction, Restitution, RollingResistance;
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_joint_desc</c>.</summary>
@@ -264,9 +264,9 @@ internal sealed class Box3DSoaWorld : IDisposable
     public int AddSphere(
         ulong stableId, (float X, float Y, float Z) position, float radius, float density,
         (float X, float Y, float Z) velocity = default, float friction = 0.6f, float restitution = 0f,
-        int parent = -1, int limb = 0) =>
+        int parent = -1, int limb = 0, float rollingResistance = 0f) =>
         AddBody(Describe(Box3DSoaKind.Sphere, stableId, position, default, (radius, 0f, 0f), density,
-            velocity, friction, restitution, parent, limb));
+            velocity, friction, restitution, parent, limb, rollingResistance));
 
     /// <summary>Adds a static axis-aligned box centred at <paramref name="position"/>.</summary>
     public int AddStaticBox(
@@ -283,9 +283,9 @@ internal sealed class Box3DSoaWorld : IDisposable
     public int AddCapsule(
         ulong stableId, (float X, float Y, float Z) position, float radius, float halfLength, float density,
         (float X, float Y, float Z, float W) rotation = default, float friction = 0.6f, float restitution = 0f,
-        int parent = -1, int limb = 0) =>
+        int parent = -1, int limb = 0, float rollingResistance = 0f) =>
         AddBody(Describe(Box3DSoaKind.Capsule, stableId, position, rotation, (radius, halfLength, 0f), density,
-            default, friction, restitution, parent, limb));
+            default, friction, restitution, parent, limb, rollingResistance));
 
     /// <summary>Adds a dynamic box with the given half extents; rotation as for <see cref="AddCapsule"/>.</summary>
     public int AddBox(
@@ -319,7 +319,7 @@ internal sealed class Box3DSoaWorld : IDisposable
     private static Box3DSoaBodyDesc Describe(
         Box3DSoaKind kind, ulong stableId, (float X, float Y, float Z) position,
         (float X, float Y, float Z, float W) rotation, (float, float, float) size, float density,
-        (float X, float Y, float Z) velocity, float friction, float restitution, int parent, int limb)
+        (float X, float Y, float Z) velocity, float friction, float restitution, int parent, int limb, float rollingResistance = 0f)
     {
         if (rotation == default) rotation = (0f, 0f, 0f, 1f);
         return new Box3DSoaBodyDesc
@@ -329,7 +329,7 @@ internal sealed class Box3DSoaWorld : IDisposable
             RotationX = rotation.X, RotationY = rotation.Y, RotationZ = rotation.Z, RotationW = rotation.W,
             VelocityX = velocity.X, VelocityY = velocity.Y, VelocityZ = velocity.Z,
             Size0 = size.Item1, Size1 = size.Item2, Size2 = size.Item3,
-            Density = density, Friction = friction, Restitution = restitution,
+            Density = density, Friction = friction, Restitution = restitution, RollingResistance = rollingResistance,
         };
     }
 

@@ -71,7 +71,7 @@ typedef struct ymir_box3d_soa_body_desc
     float density;
     float friction;
     float restitution;
-    float reserved_float;
+    float rolling_resistance; // Box3D's surface rolling resistance, >= 0; spheres and capsules roll without it
 } ymir_box3d_soa_body_desc;
 
 // A joint between two bodies, given in world space at creation: the frame has its origin at `anchor`
@@ -362,7 +362,8 @@ static int32_t ymir_soa_check_body(const ymir_box3d_soa_world* world, const ymir
 {
     if (d->kind > YMIR_SOA_KIND_BOX || !ymir_soa_finite3(d->position) || !ymir_soa_finite3(d->velocity) ||
         !ymir_soa_finite3(d->size) || !ymir_soa_finite(d->friction) || !ymir_soa_finite(d->restitution) ||
-        !ymir_soa_finite(d->density) || d->friction < 0.0f || d->restitution < 0.0f)
+        !ymir_soa_finite(d->density) || !ymir_soa_finite(d->rolling_resistance) || d->friction < 0.0f ||
+        d->restitution < 0.0f || d->rolling_resistance < 0.0f)
     {
         return YMIR_SOA_INVALID_ARGUMENT;
     }
@@ -455,6 +456,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_body(
     }
     shape_def.baseMaterial.friction = d->friction;
     shape_def.baseMaterial.restitution = d->restitution;
+    shape_def.baseMaterial.rollingResistance = d->rolling_resistance;
 
     b3ShapeId shape;
     if (d->kind == YMIR_SOA_KIND_SPHERE)
