@@ -5,7 +5,45 @@ namespace Ymir.Box3D;
 internal enum Box3DSoaKind : uint
 {
     Sphere = 0,
-    StaticBox = 1
+    StaticBox = 1,
+    Capsule = 2,
+    Box = 3
+}
+
+internal enum Box3DSoaJointKind : uint
+{
+    Revolute = 0,
+    Spherical = 1,
+    Weld = 2
+}
+
+/// <summary>Native layout of <c>ymir_box3d_soa_body_desc</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct Box3DSoaBodyDesc
+{
+    public ulong StableId;
+    public uint Kind;
+    public int Parent;
+    public int Limb;
+    public uint Reserved;
+    public float PositionX, PositionY, PositionZ;
+    public float RotationX, RotationY, RotationZ, RotationW;
+    public float VelocityX, VelocityY, VelocityZ;
+    public float Size0, Size1, Size2;
+    public float Density, Friction, Restitution, ReservedFloat;
+}
+
+/// <summary>Native layout of <c>ymir_box3d_soa_joint_desc</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct Box3DSoaJointDesc
+{
+    public uint Kind;
+    public int BodyA;
+    public int BodyB;
+    public uint EnableLimit;
+    public float AnchorX, AnchorY, AnchorZ;
+    public float AxisX, AxisY, AxisZ;
+    public float Lower, Upper, ConeAngle, ReservedFloat;
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_view</c>: counts, then one pointer per lane.</summary>
@@ -15,10 +53,14 @@ internal unsafe struct Box3DSoaViewNative
     public uint AbiVersion;
     public int Count;
     public int Capacity;
+    public int JointCount;
+    public int JointCapacity;
     public uint Reserved;
     public ulong StepCount;
     public ulong* StableId;
     public uint* Kind;
+    public int* Parent;
+    public int* Limb;
     public float* PositionX;
     public float* PositionY;
     public float* PositionZ;
@@ -32,6 +74,27 @@ internal unsafe struct Box3DSoaViewNative
     public float* AngularVelocityX;
     public float* AngularVelocityY;
     public float* AngularVelocityZ;
+    public float* ForceX;
+    public float* ForceY;
+    public float* ForceZ;
+    public float* TorqueX;
+    public float* TorqueY;
+    public float* TorqueZ;
+    public uint* JointKind;
+    public int* JointBodyA;
+    public int* JointBodyB;
+    public float* JointAngle;
+    public float* JointFrameX;
+    public float* JointFrameY;
+    public float* JointFrameZ;
+    public float* JointFrameW;
+    public float* JointRotationX;
+    public float* JointRotationY;
+    public float* JointRotationZ;
+    public float* JointRotationW;
+    public float* JointAngularVelocityX;
+    public float* JointAngularVelocityY;
+    public float* JointAngularVelocityZ;
 }
 
 internal static unsafe partial class Box3DSoaNative
@@ -48,7 +111,15 @@ internal static unsafe partial class Box3DSoaNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-    internal static partial int ymir_box3d_soa_create(int capacity, float gx, float gy, float gz, out nint world);
+    internal static partial uint ymir_box3d_soa_get_body_desc_size();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial uint ymir_box3d_soa_get_joint_desc_size();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_create(int capacity, int jointCapacity, float gx, float gy, float gz, out nint world);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -56,15 +127,11 @@ internal static unsafe partial class Box3DSoaNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-    internal static partial int ymir_box3d_soa_add_sphere(
-        nint world, ulong stableId, float px, float py, float pz, float vx, float vy, float vz,
-        float radius, float density, float friction, float restitution, out int index);
+    internal static partial int ymir_box3d_soa_add_body(nint world, in Box3DSoaBodyDesc desc, out int index);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-    internal static partial int ymir_box3d_soa_add_static_box(
-        nint world, ulong stableId, float px, float py, float pz, float hx, float hy, float hz,
-        float friction, float restitution, out int index);
+    internal static partial int ymir_box3d_soa_add_joint(nint world, in Box3DSoaJointDesc desc, out int index);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -93,6 +160,10 @@ internal readonly unsafe struct Box3DSoaView
 
     public ReadOnlySpan<ulong> StableId => new(_v.StableId, Count);
     public ReadOnlySpan<uint> Kind => new(_v.Kind, Count);
+    /// <summary>Lane index of the body's parent in the limb tree, or -1 for a root. Set at creation, not used by Box3D.</summary>
+    public ReadOnlySpan<int> Parent => new(_v.Parent, Count);
+    /// <summary>The caller's limb label for the body. Set at creation, not used by Box3D.</summary>
+    public ReadOnlySpan<int> Limb => new(_v.Limb, Count);
     public ReadOnlySpan<float> PositionX => new(_v.PositionX, Count);
     public ReadOnlySpan<float> PositionY => new(_v.PositionY, Count);
     public ReadOnlySpan<float> PositionZ => new(_v.PositionZ, Count);
@@ -108,6 +179,39 @@ internal readonly unsafe struct Box3DSoaView
     public ReadOnlySpan<float> AngularVelocityY => new(_v.AngularVelocityY, Count);
     public ReadOnlySpan<float> AngularVelocityZ => new(_v.AngularVelocityZ, Count);
 
+    // Write lanes: the caller's per-body world force (N, at the centre of mass) and torque (N m), written
+    // in place before a step. Step applies them to the dynamic bodies and clears them, so a lane holds one
+    // step's intent. A non-finite value makes Step throw before any body is touched.
+    public Span<float> ForceX => new(_v.ForceX, Count);
+    public Span<float> ForceY => new(_v.ForceY, Count);
+    public Span<float> ForceZ => new(_v.ForceZ, Count);
+    public Span<float> TorqueX => new(_v.TorqueX, Count);
+    public Span<float> TorqueY => new(_v.TorqueY, Count);
+    public Span<float> TorqueZ => new(_v.TorqueZ, Count);
+
+    /// <summary>Joints at the moment this view was taken: take it after the last AddJoint.</summary>
+    public int JointCount => _v.JointCount;
+    public ReadOnlySpan<uint> JointKind => new(_v.JointKind, JointCount);
+    /// <summary>Lane indices of the joint's two bodies; the second is the child.</summary>
+    public ReadOnlySpan<int> JointBodyA => new(_v.JointBodyA, JointCount);
+    public ReadOnlySpan<int> JointBodyB => new(_v.JointBodyB, JointCount);
+    /// <summary>Box3D's own angle: revolute angle or spherical twist angle (radians), zero for a weld.</summary>
+    public ReadOnlySpan<float> JointAngle => new(_v.JointAngle, JointCount);
+    /// <summary>World orientation of the joint frame on body A (quaternion x y z w).</summary>
+    public ReadOnlySpan<float> JointFrameX => new(_v.JointFrameX, JointCount);
+    public ReadOnlySpan<float> JointFrameY => new(_v.JointFrameY, JointCount);
+    public ReadOnlySpan<float> JointFrameZ => new(_v.JointFrameZ, JointCount);
+    public ReadOnlySpan<float> JointFrameW => new(_v.JointFrameW, JointCount);
+    /// <summary>Joint frame B relative to frame A (quaternion x y z w, w >= 0); identity at the creation pose.</summary>
+    public ReadOnlySpan<float> JointRotationX => new(_v.JointRotationX, JointCount);
+    public ReadOnlySpan<float> JointRotationY => new(_v.JointRotationY, JointCount);
+    public ReadOnlySpan<float> JointRotationZ => new(_v.JointRotationZ, JointCount);
+    public ReadOnlySpan<float> JointRotationW => new(_v.JointRotationW, JointCount);
+    /// <summary>Body B's angular velocity minus body A's, expressed in frame A (rad/s).</summary>
+    public ReadOnlySpan<float> JointAngularVelocityX => new(_v.JointAngularVelocityX, JointCount);
+    public ReadOnlySpan<float> JointAngularVelocityY => new(_v.JointAngularVelocityY, JointCount);
+    public ReadOnlySpan<float> JointAngularVelocityZ => new(_v.JointAngularVelocityZ, JointCount);
+
     /// <summary>Address of a lane, for tests and interop that need to prove nothing was copied.</summary>
     public nint PositionYAddress => (nint)_v.PositionY;
 }
@@ -118,18 +222,20 @@ internal readonly unsafe struct Box3DSoaView
 /// </summary>
 internal sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 1;
+    private const uint ExpectedAbi = 2;
     private nint _handle;
 
-    public Box3DSoaWorld(int capacity, float gravityX = 0f, float gravityY = -10f, float gravityZ = 0f)
+    public Box3DSoaWorld(int capacity, float gravityX = 0f, float gravityY = -10f, float gravityZ = 0f, int jointCapacity = 0)
     {
         if (Box3DSoaNative.ymir_box3d_soa_get_abi_version() != ExpectedAbi ||
-            Box3DSoaNative.ymir_box3d_soa_get_view_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaViewNative>())
+            Box3DSoaNative.ymir_box3d_soa_get_view_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaViewNative>() ||
+            Box3DSoaNative.ymir_box3d_soa_get_body_desc_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaBodyDesc>() ||
+            Box3DSoaNative.ymir_box3d_soa_get_joint_desc_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaJointDesc>())
         {
             throw new InvalidOperationException("The native Ymir Box3D SoA ABI does not match this build.");
         }
 
-        Check(Box3DSoaNative.ymir_box3d_soa_create(capacity, gravityX, gravityY, gravityZ, out _handle));
+        Check(Box3DSoaNative.ymir_box3d_soa_create(capacity, jointCapacity, gravityX, gravityY, gravityZ, out _handle));
     }
 
     /// <summary>The live lanes. Count and step count are read from native memory each call.</summary>
@@ -157,24 +263,80 @@ internal sealed class Box3DSoaWorld : IDisposable
     /// <summary>Adds a dynamic sphere; returns its lane index.</summary>
     public int AddSphere(
         ulong stableId, (float X, float Y, float Z) position, float radius, float density,
-        (float X, float Y, float Z) velocity = default, float friction = 0.6f, float restitution = 0f)
-    {
-        ObjectDisposedException.ThrowIf(_handle == 0, this);
-        Check(Box3DSoaNative.ymir_box3d_soa_add_sphere(
-            _handle, stableId, position.X, position.Y, position.Z, velocity.X, velocity.Y, velocity.Z,
-            radius, density, friction, restitution, out var index));
-        return index;
-    }
+        (float X, float Y, float Z) velocity = default, float friction = 0.6f, float restitution = 0f,
+        int parent = -1, int limb = 0) =>
+        AddBody(Describe(Box3DSoaKind.Sphere, stableId, position, default, (radius, 0f, 0f), density,
+            velocity, friction, restitution, parent, limb));
 
     /// <summary>Adds a static axis-aligned box centred at <paramref name="position"/>.</summary>
     public int AddStaticBox(
         ulong stableId, (float X, float Y, float Z) position, (float X, float Y, float Z) halfExtents,
-        float friction = 0.6f, float restitution = 0f)
+        float friction = 0.6f, float restitution = 0f) =>
+        AddBody(Describe(Box3DSoaKind.StaticBox, stableId, position, default, halfExtents, 0f,
+            default, friction, restitution, -1, 0));
+
+    /// <summary>
+    /// Adds a dynamic capsule: a segment of <paramref name="halfLength"/> either side of the centre along
+    /// the body's local Y, swept by <paramref name="radius"/>. <paramref name="rotation"/> is a unit quaternion
+    /// x y z w; the default (all zero) means identity.
+    /// </summary>
+    public int AddCapsule(
+        ulong stableId, (float X, float Y, float Z) position, float radius, float halfLength, float density,
+        (float X, float Y, float Z, float W) rotation = default, float friction = 0.6f, float restitution = 0f,
+        int parent = -1, int limb = 0) =>
+        AddBody(Describe(Box3DSoaKind.Capsule, stableId, position, rotation, (radius, halfLength, 0f), density,
+            default, friction, restitution, parent, limb));
+
+    /// <summary>Adds a dynamic box with the given half extents; rotation as for <see cref="AddCapsule"/>.</summary>
+    public int AddBox(
+        ulong stableId, (float X, float Y, float Z) position, (float X, float Y, float Z) halfExtents, float density,
+        (float X, float Y, float Z, float W) rotation = default, float friction = 0.6f, float restitution = 0f,
+        int parent = -1, int limb = 0) =>
+        AddBody(Describe(Box3DSoaKind.Box, stableId, position, rotation, halfExtents, density,
+            default, friction, restitution, parent, limb));
+
+    /// <summary>
+    /// Joins two bodies at a world-space <paramref name="anchor"/>. The joint frame's z axis is
+    /// <paramref name="axis"/> (the hinge axis of a revolute joint); the pose at creation is the joint's zero.
+    /// Limits are radians: the revolute angle, or the spherical twist with <paramref name="coneAngle"/> as swing.
+    /// A weld takes no limits. Returns the joint's lane index. Body B is the child.
+    /// </summary>
+    public int AddJoint(
+        Box3DSoaJointKind kind, int bodyA, int bodyB, (float X, float Y, float Z) anchor,
+        (float X, float Y, float Z) axis, bool limit = false, float lower = 0f, float upper = 0f, float coneAngle = 0f)
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
-        Check(Box3DSoaNative.ymir_box3d_soa_add_static_box(
-            _handle, stableId, position.X, position.Y, position.Z, halfExtents.X, halfExtents.Y, halfExtents.Z,
-            friction, restitution, out var index));
+        var desc = new Box3DSoaJointDesc
+        {
+            Kind = (uint)kind, BodyA = bodyA, BodyB = bodyB, EnableLimit = limit ? 1u : 0u,
+            AnchorX = anchor.X, AnchorY = anchor.Y, AnchorZ = anchor.Z,
+            AxisX = axis.X, AxisY = axis.Y, AxisZ = axis.Z, Lower = lower, Upper = upper, ConeAngle = coneAngle,
+        };
+        Check(Box3DSoaNative.ymir_box3d_soa_add_joint(_handle, desc, out var index));
+        return index;
+    }
+
+    private static Box3DSoaBodyDesc Describe(
+        Box3DSoaKind kind, ulong stableId, (float X, float Y, float Z) position,
+        (float X, float Y, float Z, float W) rotation, (float, float, float) size, float density,
+        (float X, float Y, float Z) velocity, float friction, float restitution, int parent, int limb)
+    {
+        if (rotation == default) rotation = (0f, 0f, 0f, 1f);
+        return new Box3DSoaBodyDesc
+        {
+            StableId = stableId, Kind = (uint)kind, Parent = parent, Limb = limb,
+            PositionX = position.X, PositionY = position.Y, PositionZ = position.Z,
+            RotationX = rotation.X, RotationY = rotation.Y, RotationZ = rotation.Z, RotationW = rotation.W,
+            VelocityX = velocity.X, VelocityY = velocity.Y, VelocityZ = velocity.Z,
+            Size0 = size.Item1, Size1 = size.Item2, Size2 = size.Item3,
+            Density = density, Friction = friction, Restitution = restitution,
+        };
+    }
+
+    private int AddBody(Box3DSoaBodyDesc desc)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        Check(Box3DSoaNative.ymir_box3d_soa_add_body(_handle, desc, out var index));
         return index;
     }
 
