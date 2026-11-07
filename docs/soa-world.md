@@ -14,7 +14,7 @@ separate native object (`ymir_box3d_soa.c`, ABI 1) so the Aetheria session's con
 
 - Native (ABI 2): `ymir_box3d_soa_create(capacity, joint_capacity, gravity) / add_body / add_joint / step /
   get_view / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box; position,
-  rotation, velocity, size, density, friction, restitution, parent, limb). Capacities are fixed at creation,
+  rotation, velocity, size, density, friction, restitution, rolling resistance, parent, limb). Capacities are fixed at creation,
   so lane pointers never move.
 - Body lanes (`ymir_box3d_soa_view`): `stable_id`, `kind`, `parent` and `limb` (set at creation, not read by
   Box3D: the limb tree for the consumer), position xyz, rotation quaternion xyzw, linear and angular
