@@ -151,17 +151,17 @@ internal static unsafe partial class Box3DSoaNative
 public readonly unsafe struct Box3DSoaView
 {
     private readonly Box3DSoaViewNative _v;
-    private readonly Box3DSoaWorld _world;
+    private readonly Box3DSoaWorld? _world;
 
     private ReadOnlySpan<T> Lane<T>(T* p, int n) where T : unmanaged
     {
-        _world.ThrowIfDisposed();
+        (_world ?? throw new InvalidOperationException("This Box3DSoaView has no world; take it from Box3DSoaWorld.View.")).ThrowIfDisposed();
         return new(p, n);
     }
 
     private Span<T> Write<T>(T* p, int n) where T : unmanaged
     {
-        _world.ThrowIfDisposed();
+        (_world ?? throw new InvalidOperationException("This Box3DSoaView has no world; take it from Box3DSoaWorld.View.")).ThrowIfDisposed();
         return new(p, n);
     }
 

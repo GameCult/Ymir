@@ -159,4 +159,11 @@ public sealed unsafe class Box3DSoaWorldTests
         Assert.Throws<ObjectDisposedException>(() => view.ForceX.Length);
         Assert.Throws<ObjectDisposedException>(() => view.JointAngle.Length);
     }
+
+    [Fact]
+    public void A_default_view_refuses_lane_access()
+    {
+        var view = default(Box3DSoaView);
+        Assert.Throws<InvalidOperationException>(() => view.PositionY.Length);
+    }
 }

@@ -23,11 +23,11 @@
   </ItemGroup>
 
   <Target Name="BuildBox3DParityOracle" BeforeTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
-    <Exec Command="&quot;$(CMakeExe)&quot; -S &quot;$(NativeSourceDir)&quot; -B &quot;$(NativeBuildDir)&quot; -DBUILD_SHARED_LIBS=OFF" />
+    <Exec Command="&quot;$(CMakeExe)&quot; -S &quot;$(NativeSourceDir)&quot; -B &quot;$(NativeBuildDir)&quot; -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=$(Configuration)" />
     <Exec Command="&quot;$(CMakeExe)&quot; --build &quot;$(NativeBuildDir)&quot; --config $(Configuration) --target ymir_box3d" />
     <Copy SourceFiles="$(NativeBuildDir)\bin\$(Configuration)\ymir_box3d.dll" DestinationFolder="$(OutDir)" Condition="'$(OS)' == 'Windows_NT'" />
-    <Copy SourceFiles="$(NativeBuildDir)\bin\libymir_box3d.so" DestinationFolder="$(OutDir)" Condition="'$(OS)' != 'Windows_NT' and !$([MSBuild]::IsOSPlatform('OSX'))" />
-    <Copy SourceFiles="$(NativeBuildDir)\bin\libymir_box3d.dylib" DestinationFolder="$(OutDir)" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
+    <Copy SourceFiles="$(NativeBuildDir)\bin\$(Configuration)\libymir_box3d.so" DestinationFolder="$(OutDir)" Condition="'$(OS)' != 'Windows_NT' and !$([MSBuild]::IsOSPlatform('OSX'))" />
+    <Copy SourceFiles="$(NativeBuildDir)\bin\$(Configuration)\libymir_box3d.dylib" DestinationFolder="$(OutDir)" Condition="$([MSBuild]::IsOSPlatform('OSX'))" />
   </Target>
 
 </Project>

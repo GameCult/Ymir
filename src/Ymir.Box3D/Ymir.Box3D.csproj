@@ -27,14 +27,14 @@
           Pack="true"
           PackagePath="runtimes/win-x64/native/ymir_box3d.dll"
           Condition="'$(OS)' == 'Windows_NT'" />
-    <None Include="$(NativeBuildDir)\bin\libymir_box3d.so"
+    <None Include="$(NativeBuildDir)\bin\$(Configuration)\libymir_box3d.so"
           Link="libymir_box3d.so"
           CopyToOutputDirectory="PreserveNewest"
           CopyToPublishDirectory="PreserveNewest"
           Pack="true"
           PackagePath="runtimes/linux-x64/native/libymir_box3d.so"
           Condition="'$(OS)' != 'Windows_NT' and !$([MSBuild]::IsOSPlatform('OSX'))" />
-    <None Include="$(NativeBuildDir)\bin\libymir_box3d.dylib"
+    <None Include="$(NativeBuildDir)\bin\$(Configuration)\libymir_box3d.dylib"
           Link="libymir_box3d.dylib"
           CopyToOutputDirectory="PreserveNewest"
           CopyToPublishDirectory="PreserveNewest"
@@ -51,7 +51,7 @@
   <Target Name="BuildYmirBox3DNative"
           BeforeTargets="PrepareForBuild;GetCopyToOutputDirectoryItems;GetCopyToPublishDirectoryItems"
           Condition="'$(DesignTimeBuild)' != 'true'">
-    <Exec Command="&quot;$(CMakeExe)&quot; -S &quot;$(NativeSourceDir)&quot; -B &quot;$(NativeBuildDir)&quot; -DBUILD_SHARED_LIBS=OFF" />
+    <Exec Command="&quot;$(CMakeExe)&quot; -S &quot;$(NativeSourceDir)&quot; -B &quot;$(NativeBuildDir)&quot; -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=$(Configuration)" />
     <Exec Command="&quot;$(CMakeExe)&quot; --build &quot;$(NativeBuildDir)&quot; --config $(Configuration) --target ymir_box3d" />
   </Target>
 

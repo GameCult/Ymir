@@ -59,9 +59,11 @@ Unity consumption is unrun; cross-platform bit-identity is unclaimed.
 
 - Native library name: `ymir_box3d.dll` on Windows (MinGW needs `PREFIX ""`, set under `if(MINGW)`; MSVC emits it
   natively), `libymir_box3d.so` on Linux, `libymir_box3d.dylib` on macOS. `Ymir.Box3D.csproj` copies from
-  `bin\$(Configuration)\` on Windows, which is where a multi-config generator writes.
+  `bin\$(Configuration)\` on every platform: `CMakeLists.txt` writes `bin/$<CONFIG>/` and the csproj passes `-DCMAKE_BUILD_TYPE=$(Configuration)`, so single- and multi-config generators land in the same place.
 - Windows run: MinGW gcc with `CMAKE_GENERATOR="Ninja Multi-Config" CC=gcc`; `Ymir.Box3D.Soa.Tests` passes.
-  Linux run (Yggdrasil, default generator, gcc): the same tests pass and emit `bin/libymir_box3d.so`. macOS is unrun.
+  Linux run (Yggdrasil, default generator, gcc): the same tests pass and emit `bin/Debug/libymir_box3d.so`. macOS is unrun.
 - `Box3DSoaWorld` is not thread-safe: `Dispose` must not race `Step` or a lane read. A `Box3DSoaView` refuses
-  lane access (ObjectDisposedException) once its world is disposed. Known limit: an undisposed world leaks its
+  to hand out a lane (ObjectDisposedException) once its world is disposed, and a `default` view refuses with
+  InvalidOperationException. The check guards obtaining a span, not a span already held: a span taken from a
+  view must not be used after the world is disposed. Known limit: an undisposed world leaks its
   native memory; there is no finalizer or SafeHandle.
