@@ -30,7 +30,7 @@ separate native object (`ymir_box3d_soa.c`, ABI 1) so the Aetheria session's con
   w >= 0) and `joint_angular_velocity` (B minus A, in frame A). A consumer can compute a joint torque from
   these and write it as equal and opposite torques on the two body lanes.
 - State lanes change only inside `step`. Between steps a caller may read any state lane in place.
-- Managed (`src/Ymir.Box3D/Box3DSoaWorld.cs`, internal): `Box3DSoaView` exposes each lane as a span over
+- Managed (`src/Ymir.Box3D/Box3DSoaWorld.cs`, public: `Box3DSoaWorld`, `Box3DSoaView`, `Box3DSoaKind`, `Box3DSoaJointKind`; the native structs and the view constructor stay internal): `Box3DSoaView` exposes each lane as a span over
   native memory (`ReadOnlySpan` for state, `Span` for write lanes). Spans are invalid after `Dispose`.
   `Count` and `JointCount` are as of when the view was taken, so take it after the last add.
 - Determinism: one Box3D worker, bodies stepped in insertion order, same inputs give identical lane
@@ -52,5 +52,5 @@ a torque-driven jointed body.
 
 Contact facts for the SoA world (Begin/Hit/End), body removal with a stable ordering rule, compound bodies
 and per-shape material, joint motors and springs (Lodur drives joints from torque lanes instead), and a
-public typed surface in `Ymir.Core` (the wrapper is internal, visible to the test assembly). Windows build
+a typed surface in `Ymir.Core` (the SoA world is public in `Ymir.Box3D`). Windows build
 and Unity consumption are unrun; cross-platform bit-identity is unclaimed.

@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 
 namespace Ymir.Box3D;
 
-internal enum Box3DSoaKind : uint
+public enum Box3DSoaKind : uint
 {
     Sphere = 0,
     StaticBox = 1,
@@ -10,7 +10,7 @@ internal enum Box3DSoaKind : uint
     Box = 3
 }
 
-internal enum Box3DSoaJointKind : uint
+public enum Box3DSoaJointKind : uint
 {
     Revolute = 0,
     Spherical = 1,
@@ -148,7 +148,7 @@ internal static unsafe partial class Box3DSoaNative
 /// world's life, the contents change only inside <see cref="Box3DSoaWorld.Step"/>, and every span is
 /// invalid once the world is disposed.
 /// </summary>
-internal readonly unsafe struct Box3DSoaView
+public readonly unsafe struct Box3DSoaView
 {
     private readonly Box3DSoaViewNative _v;
 
@@ -220,7 +220,7 @@ internal readonly unsafe struct Box3DSoaView
 /// A headless 3D Box3D world: N bodies stepped deterministically (one worker, fixed order) with a
 /// structure-of-arrays state view read in place. Ymir writes no solver; Box3D decides everything.
 /// </summary>
-internal sealed class Box3DSoaWorld : IDisposable
+public sealed class Box3DSoaWorld : IDisposable
 {
     private const uint ExpectedAbi = 2;
     private nint _handle;
