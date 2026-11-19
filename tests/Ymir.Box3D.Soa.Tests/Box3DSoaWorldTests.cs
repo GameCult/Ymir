@@ -123,6 +123,46 @@ public sealed unsafe class Box3DSoaWorldTests
     }
 
     [Fact]
+    public void Each_kind_reads_back_its_size_lanes_at_its_lane_index_and_step_never_changes_them()
+    {
+        // All four kinds interleaved, so a wrong lane-major offset would read one kind's size from another's slot.
+        using var world = new Box3DSoaWorld(capacity: 16);
+        var ground = world.AddStaticBox(1, (0f, -0.5f, 0f), (40f, 0.5f, 30f));
+        var sphere = world.AddSphere(2, (0f, 4f, 0f), radius: 0.7f, density: 1f);
+        var capsule = world.AddCapsule(3, (3f, 4f, 0f), radius: 0.3f, halfLength: 0.9f, density: 1f);
+        var box = world.AddBox(4, (-3f, 4f, 0f), (0.4f, 0.6f, 0.8f), density: 1f);
+        var wall = world.AddStaticBox(5, (0f, 2f, 20f), (2f, 3f, 0.25f));
+        var sphere2 = world.AddSphere(6, (6f, 4f, 0f), radius: 0.2f, density: 1f);
+
+        (float, float, float)[] expected = new (float, float, float)[6];
+        expected[ground] = (40f, 0.5f, 30f);
+        expected[sphere] = (0.7f, 0f, 0f);
+        expected[capsule] = (0.3f, 0.9f, 0f);
+        expected[box] = (0.4f, 0.6f, 0.8f);
+        expected[wall] = (2f, 3f, 0.25f);
+        expected[sphere2] = (0.2f, 0f, 0f);
+
+        var view = world.View;
+        byte[] Sizes(Box3DSoaView v) =>
+            MemoryMarshal.AsBytes(v.Size0).ToArray().Concat(MemoryMarshal.AsBytes(v.Size1).ToArray())
+                .Concat(MemoryMarshal.AsBytes(v.Size2).ToArray()).ToArray();
+        void AssertSizes(Box3DSoaView v)
+        {
+            Assert.Equal(6, v.Size0.Length);
+            for (var i = 0; i < expected.Length; i++)
+            {
+                Assert.Equal(expected[i], (v.Size0[i], v.Size1[i], v.Size2[i]));
+            }
+        }
+
+        AssertSizes(view);
+        var before = Sizes(view);
+        Run(world, 120);
+        AssertSizes(world.View);
+        Assert.True(before.AsSpan().SequenceEqual(Sizes(world.View)));
+    }
+
+    [Fact]
     public void Refuses_bad_input_and_a_full_or_duplicate_world()
     {
         using var world = new Box3DSoaWorld(capacity: 2);

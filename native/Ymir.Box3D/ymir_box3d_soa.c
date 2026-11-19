@@ -54,7 +54,7 @@ enum
     YMIR_SOA_JOINT_WELD = 2
 };
 
-#define YMIR_SOA_ABI_VERSION 2u
+#define YMIR_SOA_ABI_VERSION 3u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -110,6 +110,11 @@ typedef struct ymir_box3d_soa_view
     const uint32_t* kind;
     const int32_t* parent;
     const int32_t* limb;
+    // The body's shape size, read-only, same per-kind meaning as the body desc size: sphere {radius},
+    // capsule {radius, half_length}, box and static box {half_x, half_y, half_z}; unused components are 0.
+    const float* size_0;
+    const float* size_1;
+    const float* size_2;
     const float* position_x;
     const float* position_y;
     const float* position_z;
@@ -165,6 +170,7 @@ typedef struct ymir_box3d_soa_world
     uint32_t* kind;
     int32_t* parent;
     int32_t* limb;
+    float* size; // 3 arrays of `capacity` floats, lane-major; written once in add_body
     float* lanes; // YMIR_SOA_BODY_FLOAT_LANES arrays of `capacity` floats, lane-major
     b3JointId* joints;
     uint32_t* joint_kind;
@@ -275,6 +281,7 @@ static void ymir_soa_free(ymir_box3d_soa_world* world)
     free(world->kind);
     free(world->parent);
     free(world->limb);
+    free(world->size);
     free(world->lanes);
     free(world->joints);
     free(world->joint_kind);
@@ -315,6 +322,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     world->kind = (uint32_t*)calloc(n, sizeof(uint32_t));
     world->parent = (int32_t*)calloc(n, sizeof(int32_t));
     world->limb = (int32_t*)calloc(n, sizeof(int32_t));
+    world->size = (float*)calloc(n * 3, sizeof(float));
     world->lanes = (float*)calloc(n * YMIR_SOA_BODY_FLOAT_LANES, sizeof(float));
     world->joints = (b3JointId*)calloc(m, sizeof(b3JointId));
     world->joint_kind = (uint32_t*)calloc(m, sizeof(uint32_t));
@@ -324,7 +332,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     world->joint_local_b = (b3Quat*)calloc(m, sizeof(b3Quat));
     world->joint_lanes = (float*)calloc(m * YMIR_SOA_JOINT_FLOAT_LANES, sizeof(float));
     if (world->bodies == NULL || world->stable_id == NULL || world->kind == NULL || world->parent == NULL ||
-        world->limb == NULL || world->lanes == NULL || world->joints == NULL || world->joint_kind == NULL ||
+        world->limb == NULL || world->size == NULL || world->lanes == NULL || world->joints == NULL || world->joint_kind == NULL ||
         world->joint_body_a == NULL || world->joint_body_b == NULL || world->joint_local_a == NULL ||
         world->joint_local_b == NULL || world->joint_lanes == NULL)
     {
@@ -488,6 +496,10 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_body(
     world->kind[i] = d->kind;
     world->parent[i] = d->parent;
     world->limb[i] = d->limb;
+    for (int k = 0; k < 3; k++)
+    {
+        world->size[(size_t)k * (size_t)world->capacity + (size_t)i] = d->size[k];
+    }
     ymir_soa_refresh(world, i);
     if (index != NULL)
     {
@@ -672,6 +684,9 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         .kind = world->kind,
         .parent = world->parent,
         .limb = world->limb,
+        .size_0 = world->size + 0 * n,
+        .size_1 = world->size + 1 * n,
+        .size_2 = world->size + 2 * n,
         .position_x = base + 0 * n,
         .position_y = base + 1 * n,
         .position_z = base + 2 * n,

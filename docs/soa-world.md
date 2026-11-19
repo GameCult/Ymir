@@ -8,16 +8,19 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 1) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 3) so the Aetheria session's contract is untouched.
 
 ## Contract
 
-- Native (ABI 2): `ymir_box3d_soa_create(capacity, joint_capacity, gravity) / add_body / add_joint / step /
+- Native (ABI 3): `ymir_box3d_soa_create(capacity, joint_capacity, gravity) / add_body / add_joint / step /
   get_view / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, parent, limb). Capacities are fixed at creation,
   so lane pointers never move.
 - Body lanes (`ymir_box3d_soa_view`): `stable_id`, `kind`, `parent` and `limb` (set at creation, not read by
-  Box3D: the limb tree for the consumer), position xyz, rotation quaternion xyzw, linear and angular
+  Box3D: the limb tree for the consumer), `size_0`, `size_1`, `size_2` (read-only shape size set at creation,
+  never changed by `step`: sphere {radius}, capsule {radius, half_length} along local Y, box and static box
+  {half_x, half_y, half_z}; unused components 0; shapes are centred on the body origin, so a renderer draws
+  every body from kind and size), position xyz, rotation quaternion xyzw, linear and angular
   velocity xyz. One contiguous array per component, indexed by body.
 - Write lanes: per-body world `force` (at the centre of mass) and `torque`, xyz, mutable through the view.
   `step` applies them to the dynamic bodies and clears them, so a lane holds one step's intent. A

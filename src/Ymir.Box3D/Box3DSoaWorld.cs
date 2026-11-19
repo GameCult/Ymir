@@ -61,6 +61,9 @@ internal unsafe struct Box3DSoaViewNative
     public uint* Kind;
     public int* Parent;
     public int* Limb;
+    public float* Size0;
+    public float* Size1;
+    public float* Size2;
     public float* PositionX;
     public float* PositionY;
     public float* PositionZ;
@@ -181,6 +184,12 @@ public readonly unsafe struct Box3DSoaView
     public ReadOnlySpan<int> Parent => Lane(_v.Parent, Count);
     /// <summary>The caller's limb label for the body. Set at creation, not used by Box3D.</summary>
     public ReadOnlySpan<int> Limb => Lane(_v.Limb, Count);
+    /// <summary>The body's shape size, read-only, set at creation and never changed by Step. Size0 is the sphere or
+    /// capsule radius, or the box half-extent x; Size1 is the capsule half-length (along local Y) or the box half-extent y;
+    /// Size2 is the box half-extent z. Unused components are 0. Shapes are centred on the body origin.</summary>
+    public ReadOnlySpan<float> Size0 => Lane(_v.Size0, Count);
+    public ReadOnlySpan<float> Size1 => Lane(_v.Size1, Count);
+    public ReadOnlySpan<float> Size2 => Lane(_v.Size2, Count);
     public ReadOnlySpan<float> PositionX => Lane(_v.PositionX, Count);
     public ReadOnlySpan<float> PositionY => Lane(_v.PositionY, Count);
     public ReadOnlySpan<float> PositionZ => Lane(_v.PositionZ, Count);
@@ -241,7 +250,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 2;
+    private const uint ExpectedAbi = 3;
     private nint _handle;
 
     public Box3DSoaWorld(int capacity, float gravityX = 0f, float gravityY = -10f, float gravityZ = 0f, int jointCapacity = 0)
