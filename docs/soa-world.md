@@ -35,8 +35,7 @@ separate native object (`ymir_box3d_soa.c`, ABI 1) so the Aetheria session's con
   `Count` and `JointCount` are as of when the view was taken, so take it after the last add.
 - Determinism: one Box3D worker, bodies stepped in insertion order, same inputs give identical lane
   bytes on the same build. It is not claimed across platforms or CPUs.
-- Concurrency: creating Box3D worlds from several threads at once aborts the process (seen in tests);
-  create worlds one at a time.
+- Concurrency: see Threading below; world creation and destruction are serialized by Ymir's native lock.
 
 ## Tests
 
@@ -64,8 +63,9 @@ Unity consumption is unrun; cross-platform bit-identity is unclaimed.
   Linux run (Yggdrasil, default generator, gcc): the same tests pass and emit `bin/Debug/libymir_box3d.so`. macOS is unrun.
 - Threading: creating and destroying worlds is safe from any number of threads at once (a process-wide lock in the native
   layer serializes `b3CreateWorld`/`b3DestroyWorld`, which otherwise scan and rewrite Box3D's global world pool unsynchronized;
-  the retained session and pair-step paths take the same lock). Stepping distinct worlds concurrently is safe. A single world
+  the retained session and pair-step paths take the same lock). Stepping distinct worlds concurrently is not known to race: Box3D's own docs promise no thread safety, and this rests on a reading of the pinned source and one light test. A single world
   is still not thread-safe. `Box3DSoaConcurrentCreateTests` creates, steps and disposes worlds from eight threads.
+- At most 128 live worlds per process (Box3D's `B3_MAX_WORLDS`); creating more trips a Box3D assert, not a managed error.
 - `Box3DSoaWorld` is not thread-safe: `Dispose` must not race `Step` or a lane read. A `Box3DSoaView` refuses
   to hand out a lane (ObjectDisposedException) once its world is disposed, and a `default` view refuses with
   InvalidOperationException. The check guards obtaining a span, not a span already held: a span taken from a
