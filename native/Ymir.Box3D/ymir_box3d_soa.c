@@ -14,6 +14,8 @@
 #include <box3d/math_functions.h>
 #include <box3d/types.h>
 
+#include "ymir_world_lock.h"
+
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -334,7 +336,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     def.gravity = (b3Vec3){gravity_x, gravity_y, gravity_z};
     def.enableSleep = false;
     def.workerCount = 1; // one worker: the step order is fixed, which determinism rests on
-    world->world_id = b3CreateWorld(&def);
+    world->world_id = ymir_create_world_locked(&def);
     if (B3_IS_NULL(world->world_id))
     {
         ymir_soa_free(world);
@@ -353,7 +355,7 @@ YMIR_EXPORT void YMIR_CALL ymir_box3d_soa_destroy(ymir_box3d_soa_world* world)
     }
     if (B3_IS_NON_NULL(world->world_id) && b3World_IsValid(world->world_id))
     {
-        b3DestroyWorld(world->world_id);
+        ymir_destroy_world_locked(world->world_id);
     }
     ymir_soa_free(world);
 }

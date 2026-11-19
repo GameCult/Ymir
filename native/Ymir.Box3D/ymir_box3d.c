@@ -10,6 +10,39 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ymir_world_lock.h"
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+static SRWLOCK ymir_world_pool_lock = SRWLOCK_INIT;
+#define YMIR_WORLD_POOL_LOCK() AcquireSRWLockExclusive(&ymir_world_pool_lock)
+#define YMIR_WORLD_POOL_UNLOCK() ReleaseSRWLockExclusive(&ymir_world_pool_lock)
+#else
+#include <pthread.h>
+static pthread_mutex_t ymir_world_pool_lock = PTHREAD_MUTEX_INITIALIZER;
+#define YMIR_WORLD_POOL_LOCK() pthread_mutex_lock(&ymir_world_pool_lock)
+#define YMIR_WORLD_POOL_UNLOCK() pthread_mutex_unlock(&ymir_world_pool_lock)
+#endif
+
+b3WorldId ymir_create_world_locked(const b3WorldDef* def)
+{
+    YMIR_WORLD_POOL_LOCK();
+    b3WorldId world_id = b3CreateWorld(def);
+    YMIR_WORLD_POOL_UNLOCK();
+    return world_id;
+}
+
+void ymir_destroy_world_locked(b3WorldId world_id)
+{
+    YMIR_WORLD_POOL_LOCK();
+    b3DestroyWorld(world_id);
+    YMIR_WORLD_POOL_UNLOCK();
+}
+
+
 #if defined(_WIN32)
 #define YMIR_EXPORT __declspec(dllexport)
 #define YMIR_CALL __cdecl
@@ -1164,7 +1197,7 @@ YMIR_EXPORT void YMIR_CALL ymir_box3d_step_pair(
     world_def.gravity = b3Vec3_zero;
     world_def.enableSleep = false;
     world_def.restitutionThreshold = restitution_threshold;
-    b3WorldId world_id = b3CreateWorld(&world_def);
+    b3WorldId world_id = ymir_create_world_locked(&world_def);
 
     b3BodyId body_a = ymir_create_body(world_id, body_a_input);
     b3BodyId body_b = ymir_create_body(world_id, body_b_input);
@@ -1177,7 +1210,7 @@ YMIR_EXPORT void YMIR_CALL ymir_box3d_step_pair(
     result->end_contact_count = events.endCount;
     result->hit_contact_count = events.hitCount;
 
-    b3DestroyWorld(world_id);
+    ymir_destroy_world_locked(world_id);
 }
 
 YMIR_EXPORT ymir_box3d_torque_result YMIR_CALL ymir_box3d_torque_lifetime(float torque, float time_step, int32_t sub_step_count)
@@ -1185,7 +1218,7 @@ YMIR_EXPORT ymir_box3d_torque_result YMIR_CALL ymir_box3d_torque_lifetime(float 
     b3WorldDef world_def = b3DefaultWorldDef();
     world_def.gravity = b3Vec3_zero;
     world_def.enableSleep = false;
-    b3WorldId world_id = b3CreateWorld(&world_def);
+    b3WorldId world_id = ymir_create_world_locked(&world_def);
 
     ymir_box3d_body_input input = {
         .radius = 1.0f,
@@ -1199,7 +1232,7 @@ YMIR_EXPORT ymir_box3d_torque_result YMIR_CALL ymir_box3d_torque_lifetime(float 
 
     b3World_Step(world_id, time_step, sub_step_count);
     float after_unforced_step = b3Body_GetAngularVelocity(body_id).y;
-    b3DestroyWorld(world_id);
+    ymir_destroy_world_locked(world_id);
 
     return (ymir_box3d_torque_result){after_applied_step, after_unforced_step};
 }
@@ -1253,7 +1286,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_session_create(ymir_box3d_session** out
     world_def.gravity = b3Vec3_zero;
     world_def.enableSleep = false;
     world_def.workerCount = 1;
-    session->world_id = b3CreateWorld(&world_def);
+    session->world_id = ymir_create_world_locked(&world_def);
     if (B3_IS_NULL(session->world_id))
     {
         free(session);
@@ -1273,7 +1306,7 @@ YMIR_EXPORT void YMIR_CALL ymir_box3d_session_destroy(ymir_box3d_session* sessio
 
     if (B3_IS_NON_NULL(session->world_id) && b3World_IsValid(session->world_id))
     {
-        b3DestroyWorld(session->world_id);
+        ymir_destroy_world_locked(session->world_id);
     }
     free(session->bodies);
     free(session->contact_events);

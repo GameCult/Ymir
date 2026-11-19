@@ -62,6 +62,10 @@ Unity consumption is unrun; cross-platform bit-identity is unclaimed.
   `bin\$(Configuration)\` on every platform: `CMakeLists.txt` writes `bin/$<CONFIG>/` and the csproj passes `-DCMAKE_BUILD_TYPE=$(Configuration)`, so single- and multi-config generators land in the same place.
 - Windows run: MinGW gcc with `CMAKE_GENERATOR="Ninja Multi-Config" CC=gcc`; `Ymir.Box3D.Soa.Tests` passes.
   Linux run (Yggdrasil, default generator, gcc): the same tests pass and emit `bin/Debug/libymir_box3d.so`. macOS is unrun.
+- Threading: creating and destroying worlds is safe from any number of threads at once (a process-wide lock in the native
+  layer serializes `b3CreateWorld`/`b3DestroyWorld`, which otherwise scan and rewrite Box3D's global world pool unsynchronized;
+  the retained session and pair-step paths take the same lock). Stepping distinct worlds concurrently is safe. A single world
+  is still not thread-safe. `Box3DSoaConcurrentCreateTests` creates, steps and disposes worlds from eight threads.
 - `Box3DSoaWorld` is not thread-safe: `Dispose` must not race `Step` or a lane read. A `Box3DSoaView` refuses
   to hand out a lane (ObjectDisposedException) once its world is disposed, and a `default` view refuses with
   InvalidOperationException. The check guards obtaining a span, not a span already held: a span taken from a
