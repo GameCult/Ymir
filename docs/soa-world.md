@@ -51,6 +51,17 @@ a torque-driven jointed body.
 ## Not done
 
 Contact facts for the SoA world (Begin/Hit/End), body removal with a stable ordering rule, compound bodies
-and per-shape material, joint motors and springs (Lodur drives joints from torque lanes instead), and a
-a typed surface in `Ymir.Core` (the SoA world is public in `Ymir.Box3D`). Windows build
-and Unity consumption are unrun; cross-platform bit-identity is unclaimed.
+and per-shape material, and joint motors and springs (Lodur drives joints from torque lanes instead).
+`Ymir.Core` has no session-level surface over the SoA world yet; consumers use `Ymir.Box3D` directly.
+Unity consumption is unrun; cross-platform bit-identity is unclaimed.
+
+## Build and lifetime notes
+
+- Native library name: `ymir_box3d.dll` on Windows (MinGW needs `PREFIX ""`, set under `if(MINGW)`; MSVC emits it
+  natively), `libymir_box3d.so` on Linux, `libymir_box3d.dylib` on macOS. `Ymir.Box3D.csproj` copies from
+  `bin\$(Configuration)\` on Windows, which is where a multi-config generator writes.
+- Windows run: MinGW gcc with `CMAKE_GENERATOR="Ninja Multi-Config" CC=gcc`; `Ymir.Box3D.Soa.Tests` passes.
+  Linux run (Yggdrasil, default generator, gcc): the same tests pass and emit `bin/libymir_box3d.so`. macOS is unrun.
+- `Box3DSoaWorld` is not thread-safe: `Dispose` must not race `Step` or a lane read. A `Box3DSoaView` refuses
+  lane access (ObjectDisposedException) once its world is disposed. Known limit: an undisposed world leaks its
+  native memory; there is no finalizer or SafeHandle.

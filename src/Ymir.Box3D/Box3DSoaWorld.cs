@@ -151,66 +151,83 @@ internal static unsafe partial class Box3DSoaNative
 public readonly unsafe struct Box3DSoaView
 {
     private readonly Box3DSoaViewNative _v;
+    private readonly Box3DSoaWorld _world;
 
-    internal Box3DSoaView(Box3DSoaViewNative v) => _v = v;
+    private ReadOnlySpan<T> Lane<T>(T* p, int n) where T : unmanaged
+    {
+        _world.ThrowIfDisposed();
+        return new(p, n);
+    }
+
+    private Span<T> Write<T>(T* p, int n) where T : unmanaged
+    {
+        _world.ThrowIfDisposed();
+        return new(p, n);
+    }
+
+    internal Box3DSoaView(Box3DSoaViewNative v, Box3DSoaWorld world)
+    {
+        _v = v;
+        _world = world;
+    }
 
     /// <summary>Bodies at the moment this view was taken: take it after the last Add. Only the lane contents are live.</summary>
     public int Count => _v.Count;
     public int Capacity => _v.Capacity;
 
-    public ReadOnlySpan<ulong> StableId => new(_v.StableId, Count);
-    public ReadOnlySpan<uint> Kind => new(_v.Kind, Count);
+    public ReadOnlySpan<ulong> StableId => Lane(_v.StableId, Count);
+    public ReadOnlySpan<uint> Kind => Lane(_v.Kind, Count);
     /// <summary>Lane index of the body's parent in the limb tree, or -1 for a root. Set at creation, not used by Box3D.</summary>
-    public ReadOnlySpan<int> Parent => new(_v.Parent, Count);
+    public ReadOnlySpan<int> Parent => Lane(_v.Parent, Count);
     /// <summary>The caller's limb label for the body. Set at creation, not used by Box3D.</summary>
-    public ReadOnlySpan<int> Limb => new(_v.Limb, Count);
-    public ReadOnlySpan<float> PositionX => new(_v.PositionX, Count);
-    public ReadOnlySpan<float> PositionY => new(_v.PositionY, Count);
-    public ReadOnlySpan<float> PositionZ => new(_v.PositionZ, Count);
+    public ReadOnlySpan<int> Limb => Lane(_v.Limb, Count);
+    public ReadOnlySpan<float> PositionX => Lane(_v.PositionX, Count);
+    public ReadOnlySpan<float> PositionY => Lane(_v.PositionY, Count);
+    public ReadOnlySpan<float> PositionZ => Lane(_v.PositionZ, Count);
     /// <summary>Unit quaternion, x y z w.</summary>
-    public ReadOnlySpan<float> RotationX => new(_v.RotationX, Count);
-    public ReadOnlySpan<float> RotationY => new(_v.RotationY, Count);
-    public ReadOnlySpan<float> RotationZ => new(_v.RotationZ, Count);
-    public ReadOnlySpan<float> RotationW => new(_v.RotationW, Count);
-    public ReadOnlySpan<float> VelocityX => new(_v.VelocityX, Count);
-    public ReadOnlySpan<float> VelocityY => new(_v.VelocityY, Count);
-    public ReadOnlySpan<float> VelocityZ => new(_v.VelocityZ, Count);
-    public ReadOnlySpan<float> AngularVelocityX => new(_v.AngularVelocityX, Count);
-    public ReadOnlySpan<float> AngularVelocityY => new(_v.AngularVelocityY, Count);
-    public ReadOnlySpan<float> AngularVelocityZ => new(_v.AngularVelocityZ, Count);
+    public ReadOnlySpan<float> RotationX => Lane(_v.RotationX, Count);
+    public ReadOnlySpan<float> RotationY => Lane(_v.RotationY, Count);
+    public ReadOnlySpan<float> RotationZ => Lane(_v.RotationZ, Count);
+    public ReadOnlySpan<float> RotationW => Lane(_v.RotationW, Count);
+    public ReadOnlySpan<float> VelocityX => Lane(_v.VelocityX, Count);
+    public ReadOnlySpan<float> VelocityY => Lane(_v.VelocityY, Count);
+    public ReadOnlySpan<float> VelocityZ => Lane(_v.VelocityZ, Count);
+    public ReadOnlySpan<float> AngularVelocityX => Lane(_v.AngularVelocityX, Count);
+    public ReadOnlySpan<float> AngularVelocityY => Lane(_v.AngularVelocityY, Count);
+    public ReadOnlySpan<float> AngularVelocityZ => Lane(_v.AngularVelocityZ, Count);
 
     // Write lanes: the caller's per-body world force (N, at the centre of mass) and torque (N m), written
     // in place before a step. Step applies them to the dynamic bodies and clears them, so a lane holds one
     // step's intent. A non-finite value makes Step throw before any body is touched.
-    public Span<float> ForceX => new(_v.ForceX, Count);
-    public Span<float> ForceY => new(_v.ForceY, Count);
-    public Span<float> ForceZ => new(_v.ForceZ, Count);
-    public Span<float> TorqueX => new(_v.TorqueX, Count);
-    public Span<float> TorqueY => new(_v.TorqueY, Count);
-    public Span<float> TorqueZ => new(_v.TorqueZ, Count);
+    public Span<float> ForceX => Write(_v.ForceX, Count);
+    public Span<float> ForceY => Write(_v.ForceY, Count);
+    public Span<float> ForceZ => Write(_v.ForceZ, Count);
+    public Span<float> TorqueX => Write(_v.TorqueX, Count);
+    public Span<float> TorqueY => Write(_v.TorqueY, Count);
+    public Span<float> TorqueZ => Write(_v.TorqueZ, Count);
 
     /// <summary>Joints at the moment this view was taken: take it after the last AddJoint.</summary>
     public int JointCount => _v.JointCount;
-    public ReadOnlySpan<uint> JointKind => new(_v.JointKind, JointCount);
+    public ReadOnlySpan<uint> JointKind => Lane(_v.JointKind, JointCount);
     /// <summary>Lane indices of the joint's two bodies; the second is the child.</summary>
-    public ReadOnlySpan<int> JointBodyA => new(_v.JointBodyA, JointCount);
-    public ReadOnlySpan<int> JointBodyB => new(_v.JointBodyB, JointCount);
+    public ReadOnlySpan<int> JointBodyA => Lane(_v.JointBodyA, JointCount);
+    public ReadOnlySpan<int> JointBodyB => Lane(_v.JointBodyB, JointCount);
     /// <summary>Box3D's own angle: revolute angle or spherical twist angle (radians), zero for a weld.</summary>
-    public ReadOnlySpan<float> JointAngle => new(_v.JointAngle, JointCount);
+    public ReadOnlySpan<float> JointAngle => Lane(_v.JointAngle, JointCount);
     /// <summary>World orientation of the joint frame on body A (quaternion x y z w).</summary>
-    public ReadOnlySpan<float> JointFrameX => new(_v.JointFrameX, JointCount);
-    public ReadOnlySpan<float> JointFrameY => new(_v.JointFrameY, JointCount);
-    public ReadOnlySpan<float> JointFrameZ => new(_v.JointFrameZ, JointCount);
-    public ReadOnlySpan<float> JointFrameW => new(_v.JointFrameW, JointCount);
+    public ReadOnlySpan<float> JointFrameX => Lane(_v.JointFrameX, JointCount);
+    public ReadOnlySpan<float> JointFrameY => Lane(_v.JointFrameY, JointCount);
+    public ReadOnlySpan<float> JointFrameZ => Lane(_v.JointFrameZ, JointCount);
+    public ReadOnlySpan<float> JointFrameW => Lane(_v.JointFrameW, JointCount);
     /// <summary>Joint frame B relative to frame A (quaternion x y z w, w >= 0); identity at the creation pose.</summary>
-    public ReadOnlySpan<float> JointRotationX => new(_v.JointRotationX, JointCount);
-    public ReadOnlySpan<float> JointRotationY => new(_v.JointRotationY, JointCount);
-    public ReadOnlySpan<float> JointRotationZ => new(_v.JointRotationZ, JointCount);
-    public ReadOnlySpan<float> JointRotationW => new(_v.JointRotationW, JointCount);
+    public ReadOnlySpan<float> JointRotationX => Lane(_v.JointRotationX, JointCount);
+    public ReadOnlySpan<float> JointRotationY => Lane(_v.JointRotationY, JointCount);
+    public ReadOnlySpan<float> JointRotationZ => Lane(_v.JointRotationZ, JointCount);
+    public ReadOnlySpan<float> JointRotationW => Lane(_v.JointRotationW, JointCount);
     /// <summary>Body B's angular velocity minus body A's, expressed in frame A (rad/s).</summary>
-    public ReadOnlySpan<float> JointAngularVelocityX => new(_v.JointAngularVelocityX, JointCount);
-    public ReadOnlySpan<float> JointAngularVelocityY => new(_v.JointAngularVelocityY, JointCount);
-    public ReadOnlySpan<float> JointAngularVelocityZ => new(_v.JointAngularVelocityZ, JointCount);
+    public ReadOnlySpan<float> JointAngularVelocityX => Lane(_v.JointAngularVelocityX, JointCount);
+    public ReadOnlySpan<float> JointAngularVelocityY => Lane(_v.JointAngularVelocityY, JointCount);
+    public ReadOnlySpan<float> JointAngularVelocityZ => Lane(_v.JointAngularVelocityZ, JointCount);
 
     /// <summary>Address of a lane, for tests and interop that need to prove nothing was copied.</summary>
     public nint PositionYAddress => (nint)_v.PositionY;
@@ -219,6 +236,8 @@ public readonly unsafe struct Box3DSoaView
 /// <summary>
 /// A headless 3D Box3D world: N bodies stepped deterministically (one worker, fixed order) with a
 /// structure-of-arrays state view read in place. Ymir writes no solver; Box3D decides everything.
+/// Not thread-safe: Dispose must not race Step or a lane read. Dispose frees the native world; an
+/// undisposed world leaks it (no finalizer by design in this cut).
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
@@ -245,7 +264,7 @@ public sealed class Box3DSoaWorld : IDisposable
         {
             ObjectDisposedException.ThrowIf(_handle == 0, this);
             Check(Box3DSoaNative.ymir_box3d_soa_get_view(_handle, out var v));
-            return new Box3DSoaView(v);
+            return new Box3DSoaView(v, this);
         }
     }
 
@@ -345,6 +364,8 @@ public sealed class Box3DSoaWorld : IDisposable
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         Check(Box3DSoaNative.ymir_box3d_soa_step(_handle, timeStep, subStepCount));
     }
+
+    internal void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _handle) == 0, this);
 
     public void Dispose()
     {

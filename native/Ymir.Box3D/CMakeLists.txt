@@ -23,5 +23,8 @@ set_target_properties(ymir_box3d PROPERTIES
     C_VISIBILITY_PRESET hidden
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    PREFIX "")
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+if(MINGW)
+    # MinGW would emit libymir_box3d.dll; the managed side loads ymir_box3d.dll.
+    set_property(TARGET ymir_box3d PROPERTY PREFIX "")
+endif()

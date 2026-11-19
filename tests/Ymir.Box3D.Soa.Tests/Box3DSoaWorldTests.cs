@@ -147,4 +147,16 @@ public sealed unsafe class Box3DSoaWorldTests
         Assert.Throws<ObjectDisposedException>(() => world.Step(Dt));
         Assert.Throws<ObjectDisposedException>(() => world.View);
     }
+
+    [Fact]
+    public void A_view_taken_before_dispose_refuses_lane_access_after()
+    {
+        var world = Build();
+        var view = world.View;
+        Assert.True(view.PositionY.Length > 0);
+        world.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => view.PositionY.Length);
+        Assert.Throws<ObjectDisposedException>(() => view.ForceX.Length);
+        Assert.Throws<ObjectDisposedException>(() => view.JointAngle.Length);
+    }
 }
