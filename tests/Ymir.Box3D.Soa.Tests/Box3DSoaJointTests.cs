@@ -59,34 +59,53 @@ public sealed class Box3DSoaJointTests
         Assert.Equal(-1, view.Parent[anchor]);
     }
 
+    private static (float X, float Y, float Z) Rotate((float X, float Y, float Z, float W) q, (float X, float Y, float Z) o)
+    {
+        var (tx, ty, tz) = (2f * (q.Y * o.Z - q.Z * o.Y), 2f * (q.Z * o.X - q.X * o.Z), 2f * (q.X * o.Y - q.Y * o.X)); // 2 (q.v x o)
+        return (o.X + q.W * tx + (q.Y * tz - q.Z * ty), o.Y + q.W * ty + (q.Z * tx - q.X * tz), o.Z + q.W * tz + (q.X * ty - q.Y * tx));
+    }
+
     [Fact]
     public void Joint_origin_lane_equals_the_anchor_at_creation_and_follows_body_a()
     {
-        // Two dynamic bodies, no gravity, joined off-centre: A at the origin, anchor 0.5 m out along X and 0.25 m up.
+        // No gravity. Body A is translated AND rotated, so the world anchor and the local offset differ in every
+        // component: a lane that stored the world anchor (or the local offset) instead of A's pose applied to it fails.
         using var world = new Box3DSoaWorld(capacity: 2, gravityY: 0f, jointCapacity: 1);
-        var a = world.AddBox(1, (0f, 0f, 0f), (0.2f, 0.2f, 0.2f), 1f);
-        var b = world.AddBox(2, (1f, 0.25f, 0f), (0.2f, 0.2f, 0.2f), 1f, parent: a);
-        var anchor = (0.5f, 0.25f, 0f);
+        var (ax, ay, az) = (0.5f, 1f, 0.2f);
+        var n = MathF.Sqrt(ax * ax + ay * ay + az * az);
+        var half = 0.4f;
+        var rotA = (X: ax / n * MathF.Sin(half), Y: ay / n * MathF.Sin(half), Z: az / n * MathF.Sin(half), W: MathF.Cos(half));
+        var posA = (X: 2f, Y: 3f, Z: -1f);
+        var anchor = (X: 2.4f, Y: 3.3f, Z: -0.7f);
+        var a = world.AddBox(1, posA, (0.2f, 0.2f, 0.2f), 1f, rotation: rotA);
+        var b = world.AddBox(2, (3f, 3.3f, -1f), (0.2f, 0.2f, 0.2f), 1f, parent: a);
         var j = world.AddJoint(Box3DSoaJointKind.Spherical, a, b, anchor, (0f, 0f, 1f));
         var v = world.View;
-        Assert.Equal(anchor.Item1, v.JointOriginX[j], 1e-5f);
-        Assert.Equal(anchor.Item2, v.JointOriginY[j], 1e-5f);
-        Assert.Equal(0f, v.JointOriginZ[j], 1e-5f);
+        Assert.Equal(anchor.X, v.JointOriginX[j], 1e-4f);
+        Assert.Equal(anchor.Y, v.JointOriginY[j], 1e-4f);
+        Assert.Equal(anchor.Z, v.JointOriginZ[j], 1e-4f);
 
-        // Kick body A off-centre so it both moves and turns; the lane is A's pose applied to the creation offset.
-        world.ApplyImpulse(a, (0f, 1f, 0f), (-0.1f, 0f, 0f));
-        for (var i = 0; i < 60; i++) world.Step(Dt);
-        var (qx, qy, qz, qw) = (v.RotationX[a], v.RotationY[a], v.RotationZ[a], v.RotationW[a]);
-        var (ox, oy, oz) = anchor; // body A started at the origin, unrotated: the creation offset is the anchor
-        var (tx, ty, tz) = (2f * (qy * oz - qz * oy), 2f * (qz * ox - qx * oz), 2f * (qx * oy - qy * ox)); // 2 (q.v x o)
-        var expectedX = v.PositionX[a] + ox + qw * tx + (qy * tz - qz * ty);
-        var expectedY = v.PositionY[a] + oy + qw * ty + (qz * tx - qx * tz);
-        var expectedZ = v.PositionZ[a] + oz + qw * tz + (qx * ty - qy * tx);
-        Assert.True(MathF.Abs(qz) > 0.05f && v.PositionY[a] > 0.2f, "body A moved and turned");
-        Assert.Equal(expectedX, v.JointOriginX[j], 1e-4f);
-        Assert.Equal(expectedY, v.JointOriginY[j], 1e-4f);
-        Assert.Equal(expectedZ, v.JointOriginZ[j], 1e-4f);
-        Assert.True(MathF.Abs(v.JointOriginY[j] - anchor.Item2) > 0.1f, "not a copy of the creation anchor");
+        // The creation-time offsets, found by undoing A's and B's creation poses (conjugate = inverse of a unit quaternion).
+        var conjA = (-rotA.X, -rotA.Y, -rotA.Z, rotA.W);
+        var localA = Rotate(conjA, (anchor.X - posA.X, anchor.Y - posA.Y, anchor.Z - posA.Z));
+        var localB = (X: anchor.X - 3f, Y: anchor.Y - 3.3f, Z: anchor.Z + 1f); // B was created unrotated
+
+        // Kick body A off-centre so it moves and turns for 240 steps; the lane is A's current pose applied to the offset.
+        world.ApplyImpulse(a, (0f, 1f, 0.5f), (posA.X - 0.1f, posA.Y, posA.Z));
+        for (var i = 0; i < 240; i++) world.Step(Dt);
+        var qa = (v.RotationX[a], v.RotationY[a], v.RotationZ[a], v.RotationW[a]);
+        var o = Rotate(qa, localA);
+        var (ex, ey, ez) = (v.PositionX[a] + o.X, v.PositionY[a] + o.Y, v.PositionZ[a] + o.Z);
+        Assert.True(MathF.Abs(v.PositionY[a] - posA.Y) > 0.5f && MathF.Abs(qa.Item3 - rotA.Z) > 0.05f, "body A moved and turned");
+        Assert.Equal(ex, v.JointOriginX[j], 1e-4f);
+        Assert.Equal(ey, v.JointOriginY[j], 1e-4f);
+        Assert.Equal(ez, v.JointOriginZ[j], 1e-4f);
+
+        // The joint holds the two bodies together: B's own anchor point stays within 0.05 m (the soft constraint's slack) of the lane.
+        var qb = (v.RotationX[b], v.RotationY[b], v.RotationZ[b], v.RotationW[b]);
+        var ob = Rotate(qb, localB);
+        var (dx, dy, dz) = (v.PositionX[b] + ob.X - v.JointOriginX[j], v.PositionY[b] + ob.Y - v.JointOriginY[j], v.PositionZ[b] + ob.Z - v.JointOriginZ[j]);
+        Assert.True(MathF.Sqrt(dx * dx + dy * dy + dz * dz) < 0.05f, "the lane stays at B's own anchor point");
     }
 
     [Fact]
