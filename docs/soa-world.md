@@ -8,7 +8,7 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 5) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 6) so the Aetheria session's contract is untouched.
 
 ## Contract
 
