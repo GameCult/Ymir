@@ -138,6 +138,40 @@ public sealed class Box3DSoaGrabTests
     }
 
     [Fact]
+    public void A_stale_release_cannot_destroy_a_later_grab_in_a_reused_slot()
+    {
+        using var world = new Box3DSoaWorld(capacity: 3, gravityY: 0f, jointCapacity: 1);
+        var sphere = world.AddSphere(1, (0f, 0f, 0f), Radius, Density);
+        var anchor = world.AddAnchor(2, (0f, 0f, 0f));
+        var first = world.AddMotorJoint(anchor, sphere, (0f, 0f, 0f), (5f, 0.7f, 1e6f), (0f, 0f, 0f));
+        world.Step(Dt);
+        world.DestroyJoint(first);
+        world.Step(Dt); // the slot may now be reused
+        var second = world.AddMotorJoint(anchor, sphere, (0f, 0f, 0f), (5f, 0.7f, 1e6f), (0f, 0f, 0f));
+        Assert.Equal(first.Lane, second.Lane);
+        Assert.NotEqual(first.Generation, second.Generation);
+        Assert.Equal(second.Generation, world.View.JointGeneration[second.Lane]);
+
+        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(first)); // the UI's second release click
+        var view = world.View;
+        Assert.Equal((uint)Box3DSoaJointKind.Motor, view.JointKind[second.Lane]);
+        for (var i = 0; i < 90; i++) { world.SetAnchorTarget(anchor, (1f, 0f, 0f), default, Dt); world.Step(Dt); }
+        Assert.Equal(1f, view.PositionX[sphere], 0.02f); // the second grab still holds
+
+        world.DestroyJoint(second);
+        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(second));
+    }
+
+    [Fact]
+    public void The_managed_side_refuses_a_native_library_of_another_abi_in_either_direction()
+    {
+        Assert.Equal(6u, Box3DSoaNative.ymir_box3d_soa_get_abi_version());
+        Box3DSoaWorld.RequireNativeAbi(6);
+        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(5)); // an older native under this managed build
+        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(7)); // a newer one
+    }
+
+    [Fact]
     public void Only_a_live_motor_joint_can_be_destroyed()
     {
         using var world = new Box3DSoaWorld(capacity: 4, gravityY: 0f, jointCapacity: 3);
@@ -149,8 +183,8 @@ public sealed class Box3DSoaGrabTests
         var motor = world.AddMotorJoint(anchor, sphere, (1f, 5f, 0f), (5f, 0.7f, 100f), (0f, 0f, 0f));
         Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(hinge));
         Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(weld));
-        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(-1));
-        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(3));
+        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(new Box3DSoaJointHandle(-1, 0)));
+        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(new Box3DSoaJointHandle(3, 0)));
         var view = world.View;
         Assert.Equal((uint)Box3DSoaJointKind.Revolute, view.JointKind[hinge]);
         world.DestroyJoint(motor);

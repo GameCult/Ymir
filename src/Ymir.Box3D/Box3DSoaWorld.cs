@@ -67,6 +67,15 @@ internal struct Box3DSoaRayHitNative
     public uint Reserved;
 }
 
+/// <summary>
+/// A joint's identity: its lane and the slot's generation when it was added. Converts to the lane for reading lanes;
+/// <see cref="Box3DSoaWorld.DestroyJoint"/> takes the whole handle and refuses one from an earlier occupant of the slot.
+/// </summary>
+public readonly record struct Box3DSoaJointHandle(int Lane, uint Generation)
+{
+    public static implicit operator int(Box3DSoaJointHandle handle) => handle.Lane;
+}
+
 /// <summary>The closest hit of a ray. <see cref="Hit"/> false is a miss and every other field is then default.</summary>
 public readonly record struct Box3DSoaRayHit(
     bool Hit, int Lane, ulong StableId, (float X, float Y, float Z) Point, (float X, float Y, float Z) Normal, float Fraction);
@@ -126,6 +135,7 @@ internal unsafe struct Box3DSoaViewNative
     public float* LastSubstepForce;
     public int* ContactCount;
     public ulong* MaterialId;
+    public uint* JointGeneration;
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_facts</c>: counts, dropped counters, then three pointers.</summary>
@@ -271,7 +281,7 @@ internal static unsafe partial class Box3DSoaNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-    internal static partial int ymir_box3d_soa_destroy_joint(nint world, int joint);
+    internal static partial int ymir_box3d_soa_destroy_joint(nint world, int joint, uint generation);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -368,6 +378,10 @@ public readonly unsafe struct Box3DSoaView
     /// <summary>The material id the body was added with (0 by default).</summary>
     public ReadOnlySpan<ulong> MaterialId => Lane(_v.MaterialId, Count);
 
+    /// <summary>Per joint slot, the number of times it has been destroyed. A joint's handle is its lane and the generation read
+    /// when it was added; <see cref="Box3DSoaWorld.DestroyJoint"/> refuses a handle from an earlier occupant of the slot.</summary>
+    public ReadOnlySpan<uint> JointGeneration => Lane(_v.JointGeneration, JointCount);
+
     /// <summary>Joints at the moment this view was taken: take it after the last AddJoint.</summary>
     public int JointCount => _v.JointCount;
     public ReadOnlySpan<uint> JointKind => Lane(_v.JointKind, JointCount);
@@ -403,7 +417,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 5;
+    private const uint ExpectedAbi = 6;
     private nint _handle;
 
     /// <summary>
@@ -414,8 +428,8 @@ public sealed class Box3DSoaWorld : IDisposable
         int capacity, float gravityX = 0f, float gravityY = -10f, float gravityZ = 0f, int jointCapacity = 0,
         int? factCapacity = null, float hitThreshold = 1f)
     {
-        if (Box3DSoaNative.ymir_box3d_soa_get_abi_version() != ExpectedAbi ||
-            Box3DSoaNative.ymir_box3d_soa_get_view_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaViewNative>() ||
+        RequireNativeAbi(Box3DSoaNative.ymir_box3d_soa_get_abi_version());
+        if (Box3DSoaNative.ymir_box3d_soa_get_view_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaViewNative>() ||
             Box3DSoaNative.ymir_box3d_soa_get_body_desc_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaBodyDesc>() ||
             Box3DSoaNative.ymir_box3d_soa_get_joint_desc_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaJointDesc>() ||
             Box3DSoaNative.ymir_box3d_soa_get_facts_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaFactsNative>() ||
@@ -427,6 +441,15 @@ public sealed class Box3DSoaWorld : IDisposable
         }
 
         Check(Box3DSoaNative.ymir_box3d_soa_create(capacity, jointCapacity, gravityX, gravityY, gravityZ, factCapacity ?? checked(capacity * 4), hitThreshold, out _handle));
+    }
+
+    /// <summary>Fails closed when the native library is not the ABI this build expects, in either direction.</summary>
+    internal static void RequireNativeAbi(uint nativeAbi)
+    {
+        if (nativeAbi != ExpectedAbi)
+        {
+            throw new InvalidOperationException($"The native Ymir Box3D SoA ABI is {nativeAbi}; this build expects {ExpectedAbi}.");
+        }
     }
 
     /// <summary>The live lanes. Count and step count are read from native memory each call.</summary>
@@ -501,9 +524,9 @@ public sealed class Box3DSoaWorld : IDisposable
     /// Joins two bodies at a world-space <paramref name="anchor"/>. The joint frame's z axis is
     /// <paramref name="axis"/> (the hinge axis of a revolute joint); the pose at creation is the joint's zero.
     /// Limits are radians: the revolute angle, or the spherical twist with <paramref name="coneAngle"/> as swing.
-    /// A weld takes no limits. Returns the joint's lane index. Body B is the child.
+    /// A weld takes no limits. Returns the joint's handle (lane and generation). Body B is the child.
     /// </summary>
-    public int AddJoint(
+    public Box3DSoaJointHandle AddJoint(
         Box3DSoaJointKind kind, int bodyA, int bodyB, (float X, float Y, float Z) anchor,
         (float X, float Y, float Z) axis, bool limit = false, float lower = 0f, float upper = 0f, float coneAngle = 0f)
     {
@@ -515,16 +538,18 @@ public sealed class Box3DSoaWorld : IDisposable
             AxisX = axis.X, AxisY = axis.Y, AxisZ = axis.Z, Lower = lower, Upper = upper, ConeAngle = coneAngle,
         };
         Check(Box3DSoaNative.ymir_box3d_soa_add_joint(_handle, desc, out var index));
-        return index;
+        return HandleOf(index);
     }
 
     /// <summary>
     /// A motor joint: position springs that pull body B's frame onto body A's. The frame sits at the world-space
     /// <paramref name="anchor"/> at creation (axes aligned with the world), so the spring pulls B's anchor point onto A's.
     /// <c>Hertz</c> 0 turns that spring off; <c>MaxForce</c> (N) and <c>MaxTorque</c> (N m) bound it. All are finite and
-    /// not negative. Pair an anchor (body A) with the body to grab (body B). Returns the joint's lane index.
+    /// not negative. Pair an anchor (body A) with the body to grab (body B). Returns the joint's handle (lane and generation).
+    /// Create the anchor only when a joint will follow (check <see cref="FreeJointSlots"/>): the joint validates its spring
+    /// fields, so a grab that fails there leaves the anchor behind. One long-lived anchor per cursor is the intended use.
     /// </summary>
-    public int AddMotorJoint(
+    public Box3DSoaJointHandle AddMotorJoint(
         int bodyA, int bodyB, (float X, float Y, float Z) anchor,
         (float Hertz, float Damping, float MaxForce) linear, (float Hertz, float Damping, float MaxTorque) angular)
     {
@@ -537,19 +562,26 @@ public sealed class Box3DSoaWorld : IDisposable
             AngularHertz = angular.Hertz, AngularDamping = angular.Damping, MaxTorque = angular.MaxTorque,
         };
         Check(Box3DSoaNative.ymir_box3d_soa_add_joint(_handle, desc, out var index));
-        return index;
+        return HandleOf(index);
     }
 
     /// <summary>
     /// Releases a motor joint (a grab); the anchor and the grabbed body stay. The joint's lane becomes a tombstone:
     /// kind <see cref="Box3DSoaJointKind.Removed"/>, bodies -1, every other lane 0. It is reused by a later AddJoint only
     /// once a <see cref="Step"/> has completed, so lanes read this step stay valid. Throws for any other kind of joint
-    /// (general removal is another cut's) or a lane that is not a live joint.
+    /// (general removal is another cut's), a lane that is not a live joint, or a handle whose generation is not the slot's:
+    /// a release made with a stale handle never destroys a later grab in a reused slot.
     /// </summary>
-    public void DestroyJoint(int jointLane)
+    public void DestroyJoint(Box3DSoaJointHandle joint)
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
-        Check(Box3DSoaNative.ymir_box3d_soa_destroy_joint(_handle, jointLane));
+        Check(Box3DSoaNative.ymir_box3d_soa_destroy_joint(_handle, joint.Lane, joint.Generation));
+    }
+
+    private unsafe Box3DSoaJointHandle HandleOf(int lane)
+    {
+        Check(Box3DSoaNative.ymir_box3d_soa_get_view(_handle, out var v));
+        return new Box3DSoaJointHandle(lane, v.JointGeneration[lane]);
     }
 
     /// <summary>Joints AddJoint could create right now: unused capacity plus tombstones whose step has completed.

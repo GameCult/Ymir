@@ -57,7 +57,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a destroyed joint's lane: never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 5u
+#define YMIR_SOA_ABI_VERSION 6u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -177,6 +177,9 @@ typedef struct ymir_box3d_soa_view
     const float* last_substep_force;
     const int32_t* contact_count;
     const uint64_t* material_id;
+    // Per joint slot: counts the destroys of that slot. A grab's handle is (lane, generation); destroy_joint refuses
+    // a handle whose generation is not the slot's, so a stale release cannot destroy a later grab in a reused slot.
+    const uint32_t* joint_generation;
 } ymir_box3d_soa_view;
 
 // A begin or end of touch between two bodies: their lane indices and the shapes' stable ids.
@@ -266,6 +269,7 @@ typedef struct ymir_box3d_soa_world
     float* lanes; // YMIR_SOA_BODY_FLOAT_LANES arrays of `capacity` floats, lane-major
     b3JointId* joints;
     uint32_t* joint_kind;
+    uint32_t* joint_generation;
     uint64_t* joint_removed_at; // step_count when the slot was destroyed; reusable once a step has passed
     int32_t* joint_body_a;
     int32_t* joint_body_b;
@@ -412,6 +416,7 @@ static void ymir_soa_free(ymir_box3d_soa_world* world)
     free(world->joints);
     free(world->joint_kind);
     free(world->joint_removed_at);
+    free(world->joint_generation);
     free(world->joint_body_a);
     free(world->joint_body_b);
     free(world->joint_local_a);
@@ -461,6 +466,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     world->joints = (b3JointId*)calloc(m, sizeof(b3JointId));
     world->joint_kind = (uint32_t*)calloc(m, sizeof(uint32_t));
     world->joint_removed_at = (uint64_t*)calloc(m, sizeof(uint64_t));
+    world->joint_generation = (uint32_t*)calloc(m, sizeof(uint32_t));
     world->joint_body_a = (int32_t*)calloc(m, sizeof(int32_t));
     world->joint_body_b = (int32_t*)calloc(m, sizeof(int32_t));
     world->joint_local_a = (b3Quat*)calloc(m, sizeof(b3Quat));
@@ -476,7 +482,8 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
         world->bodies == NULL || world->stable_id == NULL || world->kind == NULL || world->parent == NULL ||
         world->limb == NULL || world->size == NULL || world->lanes == NULL || world->joints == NULL || world->joint_kind == NULL ||
         world->joint_body_a == NULL || world->joint_body_b == NULL || world->joint_local_a == NULL ||
-        world->joint_local_b == NULL || world->joint_lanes == NULL || world->joint_removed_at == NULL)
+        world->joint_local_b == NULL || world->joint_lanes == NULL || world->joint_removed_at == NULL ||
+        world->joint_generation == NULL)
     {
         ymir_soa_free(world);
         return YMIR_SOA_OUT_OF_MEMORY;
@@ -810,11 +817,14 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
     return YMIR_SOA_OK;
 }
 
-// Releases a motor joint (a grab). Only motor joints: general joint removal is another cut's. The lane becomes a
-// tombstone, kind REMOVED, bodies -1 and every lane 0, until a later step lets add_joint reuse it.
-YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_destroy_joint(ymir_box3d_soa_world* world, int32_t joint)
+// Releases a motor joint (a grab) named by its lane and the slot's generation read when it was added. Only motor
+// joints: general joint removal is another cut's. A generation that is not the slot's current one is refused, so
+// a stale handle never destroys a later joint in a reused slot. The lane becomes a tombstone, kind REMOVED,
+// bodies -1 and every lane 0, until a later step lets add_joint reuse it.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_destroy_joint(ymir_box3d_soa_world* world, int32_t joint, uint32_t generation)
 {
-    if (world == NULL || joint < 0 || joint >= world->joint_count || world->joint_kind[joint] != YMIR_SOA_JOINT_MOTOR)
+    if (world == NULL || joint < 0 || joint >= world->joint_count || world->joint_kind[joint] != YMIR_SOA_JOINT_MOTOR ||
+        world->joint_generation[joint] != generation)
     {
         return YMIR_SOA_INVALID_ARGUMENT;
     }
@@ -824,6 +834,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_destroy_joint(ymir_box3d_soa_world*
     world->joint_body_a[joint] = -1;
     world->joint_body_b[joint] = -1;
     world->joint_removed_at[joint] = world->step_count;
+    world->joint_generation[joint] += 1;
     for (int lane = 0; lane < YMIR_SOA_JOINT_FLOAT_LANES; ++lane)
     {
         ymir_soa_joint_lane(world, lane)[joint] = 0.0f;
@@ -1161,6 +1172,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         .last_substep_force = base + YMIR_SOA_LAST_SUBSTEP_FORCE_LANE * n,
         .contact_count = world->contact_count,
         .material_id = world->material_id,
+        .joint_generation = world->joint_generation,
     };
     return YMIR_SOA_OK;
 }
