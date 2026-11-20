@@ -57,7 +57,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a destroyed joint's lane: never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 7u
+#define YMIR_SOA_ABI_VERSION 8u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -168,6 +168,10 @@ typedef struct ymir_box3d_soa_view
     const float* joint_angular_velocity_x;
     const float* joint_angular_velocity_y;
     const float* joint_angular_velocity_z;
+    // World position of the joint frame origin on body A (the joint anchor), refreshed every step like joint_frame.
+    const float* joint_origin_x;
+    const float* joint_origin_y;
+    const float* joint_origin_z;
     // Contact lanes, read-only, refreshed every step. contact_impulse is N s: the sum over the body's touching
     // contact manifold points of stepNormalImpulse, the normal impulse the contacts delivered to the body over
     // the whole step (0 for a body touching nothing). Exact, normal channel only: Box3D exposes no tangent
@@ -242,7 +246,7 @@ typedef struct ymir_box3d_soa_ray_hit
 #define YMIR_SOA_WRITE_LANES 6
 #define YMIR_SOA_CONTACT_IMPULSE_LANE (YMIR_SOA_STATE_LANES + YMIR_SOA_WRITE_LANES)
 #define YMIR_SOA_BODY_FLOAT_LANES (YMIR_SOA_CONTACT_IMPULSE_LANE + 1)
-#define YMIR_SOA_JOINT_FLOAT_LANES 12
+#define YMIR_SOA_JOINT_FLOAT_LANES 15
 
 typedef struct ymir_box3d_soa_world
 {
@@ -268,6 +272,7 @@ typedef struct ymir_box3d_soa_world
     int32_t* joint_body_a;
     int32_t* joint_body_b;
     b3Quat* joint_local_a; // joint frame in body A, kept so the state is read without asking Box3D
+    b3Vec3* joint_local_origin_a; // the frame origin in body A, kept for the same reason
     b3Quat* joint_local_b;
     float* joint_lanes; // YMIR_SOA_JOINT_FLOAT_LANES arrays of `joint_capacity` floats, lane-major
     uint32_t fact_capacity;
@@ -323,6 +328,13 @@ static void ymir_soa_refresh(ymir_box3d_soa_world* world, int index)
     }
 }
 
+static b3Transform ymir_soa_body_transform(b3BodyId body)
+{
+    b3Pos p = b3Body_GetPosition(body);
+    b3Transform t = {{p.x, p.y, p.z}, b3Body_GetRotation(body)};
+    return t;
+}
+
 // Joint state from the bodies: the world orientation of frame A, frame B relative to frame A (as a
 // quaternion with w >= 0, the shorter arc) and the relative angular velocity in frame A. The angle
 // lane is Box3D's own: the revolute angle or the spherical twist angle, zero for a weld.
@@ -331,6 +343,7 @@ static void ymir_soa_refresh_joint(ymir_box3d_soa_world* world, int j)
     int a = world->joint_body_a[j];
     int b = world->joint_body_b[j];
     b3Quat qa = b3MulQuat(b3Body_GetRotation(world->bodies[a]), world->joint_local_a[j]);
+    b3Vec3 origin = b3TransformPoint(ymir_soa_body_transform(world->bodies[a]), world->joint_local_origin_a[j]);
     b3Quat qb = b3MulQuat(b3Body_GetRotation(world->bodies[b]), world->joint_local_b[j]);
     b3Quat rel = b3InvMulQuat(qa, qb);
     if (rel.s < 0.0f)
@@ -349,7 +362,7 @@ static void ymir_soa_refresh_joint(ymir_box3d_soa_world* world, int j)
         angle = b3SphericalJoint_GetTwistAngle(world->joints[j]);
     }
     const float values[YMIR_SOA_JOINT_FLOAT_LANES] = {
-        angle, qa.v.x, qa.v.y, qa.v.z, qa.s, rel.v.x, rel.v.y, rel.v.z, rel.s, w.x, w.y, w.z};
+        angle, qa.v.x, qa.v.y, qa.v.z, qa.s, rel.v.x, rel.v.y, rel.v.z, rel.s, w.x, w.y, w.z, origin.x, origin.y, origin.z};
     for (int lane = 0; lane < YMIR_SOA_JOINT_FLOAT_LANES; ++lane)
     {
         ymir_soa_joint_lane(world, lane)[j] = values[lane];
@@ -414,6 +427,7 @@ static void ymir_soa_free(ymir_box3d_soa_world* world)
     free(world->joint_body_a);
     free(world->joint_body_b);
     free(world->joint_local_a);
+    free(world->joint_local_origin_a);
     free(world->joint_local_b);
     free(world->joint_lanes);
     free(world->begin_facts);
@@ -464,6 +478,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     world->joint_body_a = (int32_t*)calloc(m, sizeof(int32_t));
     world->joint_body_b = (int32_t*)calloc(m, sizeof(int32_t));
     world->joint_local_a = (b3Quat*)calloc(m, sizeof(b3Quat));
+    world->joint_local_origin_a = (b3Vec3*)calloc(m, sizeof(b3Vec3));
     world->joint_local_b = (b3Quat*)calloc(m, sizeof(b3Quat));
     world->joint_lanes = (float*)calloc(m * YMIR_SOA_JOINT_FLOAT_LANES, sizeof(float));
     world->fact_capacity = (uint32_t)fact_capacity;
@@ -475,7 +490,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
         world->end_facts == NULL || world->hit_facts == NULL || world->contact_scratch == NULL ||
         world->bodies == NULL || world->stable_id == NULL || world->kind == NULL || world->parent == NULL ||
         world->limb == NULL || world->size == NULL || world->lanes == NULL || world->joints == NULL || world->joint_kind == NULL ||
-        world->joint_body_a == NULL || world->joint_body_b == NULL || world->joint_local_a == NULL ||
+        world->joint_body_a == NULL || world->joint_body_b == NULL || world->joint_local_a == NULL || world->joint_local_origin_a == NULL ||
         world->joint_local_b == NULL || world->joint_lanes == NULL || world->joint_removed_at == NULL ||
         world->joint_generation == NULL)
     {
@@ -666,13 +681,6 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_body(
     return YMIR_SOA_OK;
 }
 
-static b3Transform ymir_soa_body_transform(b3BodyId body)
-{
-    b3Pos p = b3Body_GetPosition(body);
-    b3Transform t = {{p.x, p.y, p.z}, b3Body_GetRotation(body)};
-    return t;
-}
-
 // The lane a new joint takes: the lowest tombstone whose destroying step has completed, else the next fresh
 // slot, else -1. A destroyed lane is not reused within the step that destroyed it, so lanes a caller read
 // that step stay meaningful.
@@ -802,6 +810,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
     world->joint_body_a[j] = d->body_a;
     world->joint_body_b[j] = d->body_b;
     world->joint_local_a[j] = local_a.q;
+    world->joint_local_origin_a[j] = local_a.p;
     world->joint_local_b[j] = local_b.q;
     ymir_soa_refresh_joint(world, j);
     if (index != NULL)
@@ -1163,6 +1172,9 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         .joint_angular_velocity_x = jb + 9 * m,
         .joint_angular_velocity_y = jb + 10 * m,
         .joint_angular_velocity_z = jb + 11 * m,
+        .joint_origin_x = jb + 12 * m,
+        .joint_origin_y = jb + 13 * m,
+        .joint_origin_z = jb + 14 * m,
         .contact_impulse = base + YMIR_SOA_CONTACT_IMPULSE_LANE * n,
         .contact_count = world->contact_count,
         .material_id = world->material_id,

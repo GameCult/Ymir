@@ -132,6 +132,9 @@ internal unsafe struct Box3DSoaViewNative
     public float* JointAngularVelocityX;
     public float* JointAngularVelocityY;
     public float* JointAngularVelocityZ;
+    public float* JointOriginX;
+    public float* JointOriginY;
+    public float* JointOriginZ;
     public float* ContactImpulse;
     public int* ContactCount;
     public ulong* MaterialId;
@@ -404,6 +407,10 @@ public readonly unsafe struct Box3DSoaView
     public ReadOnlySpan<float> JointAngularVelocityX => Lane(_v.JointAngularVelocityX, JointCount);
     public ReadOnlySpan<float> JointAngularVelocityY => Lane(_v.JointAngularVelocityY, JointCount);
     public ReadOnlySpan<float> JointAngularVelocityZ => Lane(_v.JointAngularVelocityZ, JointCount);
+    /// <summary>World position of the joint frame origin on body A (the joint anchor); at creation it is the anchor add_joint was given.</summary>
+    public ReadOnlySpan<float> JointOriginX => Lane(_v.JointOriginX, JointCount);
+    public ReadOnlySpan<float> JointOriginY => Lane(_v.JointOriginY, JointCount);
+    public ReadOnlySpan<float> JointOriginZ => Lane(_v.JointOriginZ, JointCount);
 
     /// <summary>Address of a lane, for tests and interop that need to prove nothing was copied.</summary>
     public nint PositionYAddress => (nint)_v.PositionY;
@@ -417,7 +424,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 7;
+    private const uint ExpectedAbi = 8;
     private nint _handle;
 
     /// <summary>

@@ -8,11 +8,11 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 7) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 8) so the Aetheria session's contract is untouched.
 
 ## Contract
 
-- Native (ABI 7): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold) /
+- Native (ABI 8): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold) /
   add_body / add_joint / step / get_view / get_facts / set_anchor_target / destroy_joint / free_joint_slots / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
   so lane pointers never move.
@@ -29,7 +29,7 @@ separate native object (`ymir_box3d_soa.c`, ABI 7) so the Aetheria session's con
   (revolute, spherical, weld). The joint frame has its z axis on the axis (the hinge axis); the creation
   pose is the joint's zero. Optional limits: revolute angle, spherical swing cone and twist. Joint lanes:
   `joint_kind`, `joint_body_a/b`, `joint_angle` (Box3D's revolute angle or spherical twist), `joint_frame`
-  (world orientation of frame A, quaternion), `joint_rotation` (frame B relative to frame A, quaternion,
+  (world orientation of frame A, quaternion), `joint_origin` (world position of frame A's origin, the anchor), `joint_rotation` (frame B relative to frame A, quaternion,
   w >= 0) and `joint_angular_velocity` (B minus A, in frame A). A consumer can compute a joint torque from
   these and write it as equal and opposite torques on the two body lanes.
 - Contact lanes (read-only, rewritten by every `step`): `contact_impulse` (N s: the normal impulse the

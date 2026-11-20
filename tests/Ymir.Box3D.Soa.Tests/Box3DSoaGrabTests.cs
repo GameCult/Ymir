@@ -95,12 +95,14 @@ public sealed class Box3DSoaGrabTests
             var joint = world.AddMotorJoint(anchor, grabbed, at, (5f, 0.7f, strong), (0f, 0f, 0f));
             Assert.Equal(0, joint);
             world.Step(Dt);
+            Assert.Equal(at.Item2, world.View.JointOriginY[joint], 0.05f); // live, the origin is the grab point
             world.DestroyJoint(joint);
             var jv = world.View; // joint count is as of when the view was taken
             // A destroyed lane is a tombstone this step and is not reused within it.
             Assert.Equal((uint)Box3DSoaJointKind.Removed, jv.JointKind[joint]);
             Assert.Equal((-1, -1), (jv.JointBodyA[joint], jv.JointBodyB[joint]));
             Assert.Equal(0f, jv.JointFrameW[joint]);
+            Assert.Equal((0f, 0f, 0f), (jv.JointOriginX[joint], jv.JointOriginY[joint], jv.JointOriginZ[joint]));
             Assert.Equal(0, world.FreeJointSlots);
             Assert.Throws<InvalidOperationException>(() => world.AddMotorJoint(anchor, grabbed, at, (5f, 0.7f, strong), (0f, 0f, 0f)));
             world.Step(Dt);
@@ -165,10 +167,10 @@ public sealed class Box3DSoaGrabTests
     [Fact]
     public void The_managed_side_refuses_a_native_library_of_another_abi_in_either_direction()
     {
-        Assert.Equal(7u, Box3DSoaNative.ymir_box3d_soa_get_abi_version());
-        Box3DSoaWorld.RequireNativeAbi(7);
-        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(6)); // an older native under this managed build
-        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(8)); // a newer one
+        Assert.Equal(8u, Box3DSoaNative.ymir_box3d_soa_get_abi_version());
+        Box3DSoaWorld.RequireNativeAbi(8);
+        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(7)); // an older native under this managed build
+        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(9)); // a newer one
     }
 
     [Fact]

@@ -60,6 +60,36 @@ public sealed class Box3DSoaJointTests
     }
 
     [Fact]
+    public void Joint_origin_lane_equals_the_anchor_at_creation_and_follows_body_a()
+    {
+        // Two dynamic bodies, no gravity, joined off-centre: A at the origin, anchor 0.5 m out along X and 0.25 m up.
+        using var world = new Box3DSoaWorld(capacity: 2, gravityY: 0f, jointCapacity: 1);
+        var a = world.AddBox(1, (0f, 0f, 0f), (0.2f, 0.2f, 0.2f), 1f);
+        var b = world.AddBox(2, (1f, 0.25f, 0f), (0.2f, 0.2f, 0.2f), 1f, parent: a);
+        var anchor = (0.5f, 0.25f, 0f);
+        var j = world.AddJoint(Box3DSoaJointKind.Spherical, a, b, anchor, (0f, 0f, 1f));
+        var v = world.View;
+        Assert.Equal(anchor.Item1, v.JointOriginX[j], 1e-5f);
+        Assert.Equal(anchor.Item2, v.JointOriginY[j], 1e-5f);
+        Assert.Equal(0f, v.JointOriginZ[j], 1e-5f);
+
+        // Kick body A off-centre so it both moves and turns; the lane is A's pose applied to the creation offset.
+        world.ApplyImpulse(a, (0f, 1f, 0f), (-0.1f, 0f, 0f));
+        for (var i = 0; i < 60; i++) world.Step(Dt);
+        var (qx, qy, qz, qw) = (v.RotationX[a], v.RotationY[a], v.RotationZ[a], v.RotationW[a]);
+        var (ox, oy, oz) = anchor; // body A started at the origin, unrotated: the creation offset is the anchor
+        var (tx, ty, tz) = (2f * (qy * oz - qz * oy), 2f * (qz * ox - qx * oz), 2f * (qx * oy - qy * ox)); // 2 (q.v x o)
+        var expectedX = v.PositionX[a] + ox + qw * tx + (qy * tz - qz * ty);
+        var expectedY = v.PositionY[a] + oy + qw * ty + (qz * tx - qx * tz);
+        var expectedZ = v.PositionZ[a] + oz + qw * tz + (qx * ty - qy * tx);
+        Assert.True(MathF.Abs(qz) > 0.05f && v.PositionY[a] > 0.2f, "body A moved and turned");
+        Assert.Equal(expectedX, v.JointOriginX[j], 1e-4f);
+        Assert.Equal(expectedY, v.JointOriginY[j], 1e-4f);
+        Assert.Equal(expectedZ, v.JointOriginZ[j], 1e-4f);
+        Assert.True(MathF.Abs(v.JointOriginY[j] - anchor.Item2) > 0.1f, "not a copy of the creation anchor");
+    }
+
+    [Fact]
     public void An_off_axis_hinge_gets_a_frame_rotated_onto_its_axis()
     {
         using var world = new Box3DSoaWorld(capacity: 2, jointCapacity: 1);
