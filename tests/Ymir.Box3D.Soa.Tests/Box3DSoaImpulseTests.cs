@@ -130,6 +130,106 @@ public sealed class Box3DSoaImpulseTests
         }
     }
 
+    [Fact]
+    public void A_swung_arm_into_a_wall_delivers_the_whole_arms_momentum_change()
+    {
+        // The swing the probe measured: impulses launch the upper arm and the forearm off-centre (spin included) at 6 m/s,
+        // no gravity, and the forearm meets a slab. The wall's impulse is the three bodies' momentum change.
+        var (world, arm) = Arm(0f);
+        using var _w = world;
+        world.AddStaticBox(9, (1.0f, 0.2f - 0.04f - 0.5f - 0.1f, 0f), (0.3f, 0.1f, 0.5f), friction: 0f); // under the forearm only; frictionless, as the lane is the normal channel only
+        const int fore = 2;
+        world.ApplyImpulse(1, (0f, -arm[1].Mass * 6f, 0f), (0.55f, 0.2f, 0f));
+        world.ApplyImpulse(fore, (0f, -arm[2].Mass * 6f, 0f), (0.95f, 0.2f, 0f));
+        // The swung forearm meets the slab at a tilt, so the impulse is along the contact normal, not Y: the truth is the
+        // length of the momentum change vector (every contact point of the one contact shares its normal).
+        var before = (X: 0.0, Y: -(double)(arm[1].Mass + arm[2].Mass) * 6f, Z: 0.0);
+        var dt = 1f / 60f;
+        var truths = new List<double>();
+        var lanes = new List<float>();
+        for (var i = 0; i < 8; i++) // the impact is step 3; after it the forearm swings into its own torso, an internal contact whose impulses cancel in the sum
+        {
+            world.Step(dt, 4);
+            var v = world.View;
+            var after = (X: 0.0, Y: 0.0, Z: 0.0);
+            foreach (var (lane, mass) in arm) after = (after.X + (double)mass * v.VelocityX[lane], after.Y + (double)mass * v.VelocityY[lane], after.Z + (double)mass * v.VelocityZ[lane]);
+            var dx = after.X - before.X; var dy = after.Y - before.Y; var dz = after.Z - before.Z;
+            truths.Add(Math.Sqrt(dx * dx + dy * dy + dz * dz));
+            before = after;
+            lanes.Add(v.ContactImpulse[fore]);
+        }
+        var peak = truths.Max(Math.Abs);
+        Assert.True(peak > 5.0, $"the arm hit the slab (peak {peak} N s)");
+        for (var i = 0; i < truths.Count; i++)
+        {
+            Assert.True(Math.Abs(lanes[i] - truths[i]) <= 1e-4 * peak, $"step {i}: {lanes[i]} vs {truths[i]}");
+        }
+    }
+
+    [Theory]
+    [InlineData(0f)]
+    [InlineData(0.5f)]
+    public void A_body_with_more_contacts_than_graph_colours_still_reads_every_one(float restitution)
+    {
+        // One big sphere with 60 small ones converging on it: more contacts on the big body than Box3D has graph colours,
+        // so some are solved by its overflow path. Each small ball has one contact, so its lane is its own momentum
+        // change; the big ball's lane is the sum of theirs.
+        const int count = 60;
+        const float bigRadius = 0.5f, smallRadius = 0.05f, speed = 4f;
+        using var world = new Box3DSoaWorld(capacity: count + 2, gravityY: 0f);
+        var big = world.AddSphere(1, (0f, 0f, 0f), bigRadius, 500f, restitution: restitution);
+        var smallMass = SphereMass(smallRadius, 500f);
+        var smalls = new int[count];
+        var dirs = new (float X, float Y, float Z)[count];
+        for (var i = 0; i < count; i++)
+        {
+            var y = 1f - 2f * (i + 0.5f) / count;
+            var r = MathF.Sqrt(1f - y * y);
+            var a = i * MathF.PI * (3f - MathF.Sqrt(5f));
+            dirs[i] = (r * MathF.Cos(a), y, r * MathF.Sin(a));
+            var d = bigRadius + smallRadius - 0.001f;
+            smalls[i] = world.AddSphere((ulong)(10 + i), (dirs[i].X * d, dirs[i].Y * d, dirs[i].Z * d), smallRadius, 500f, restitution: restitution);
+        }
+        var dt = 1f / 60f;
+        world.Step(dt);
+        world.Step(dt);
+        Assert.True(world.View.ContactCount[big] > 24, $"the big ball has {world.View.ContactCount[big]} contacts, more than Box3D has graph colours");
+        for (var i = 0; i < count; i++)
+        {
+            world.ApplyImpulse(smalls[i], (-dirs[i].X * smallMass * speed, -dirs[i].Y * smallMass * speed, -dirs[i].Z * smallMass * speed),
+                (dirs[i].X * bigRadius, dirs[i].Y * bigRadius, dirs[i].Z * bigRadius));
+        }
+        var launched = new (double X, double Y, double Z)[count];
+        for (var i = 0; i < count; i++) launched[i] = (-dirs[i].X * smallMass * speed, -dirs[i].Y * smallMass * speed, -dirs[i].Z * smallMass * speed);
+        var peak = 0.0;
+        var steps = 12;
+        var sumOfSmalls = new double[steps];
+        var bigLane = new float[steps];
+        var worst = new double[steps];
+        for (var s = 0; s < steps; s++)
+        {
+            world.Step(dt);
+            var v = world.View;
+            for (var i = 0; i < count; i++)
+            {
+                var l = smalls[i];
+                var now = (X: (double)smallMass * v.VelocityX[l], Y: (double)smallMass * v.VelocityY[l], Z: (double)smallMass * v.VelocityZ[l]);
+                var dp = Math.Sqrt((now.X - launched[i].X) * (now.X - launched[i].X) + (now.Y - launched[i].Y) * (now.Y - launched[i].Y) + (now.Z - launched[i].Z) * (now.Z - launched[i].Z));
+                launched[i] = now;
+                sumOfSmalls[s] += v.ContactImpulse[l];
+                worst[s] = Math.Max(worst[s], Math.Abs(v.ContactImpulse[l] - dp));
+                peak = Math.Max(peak, dp);
+            }
+            bigLane[s] = v.ContactImpulse[big];
+        }
+        Assert.True(peak > 0.5, $"the small balls hit (peak {peak} N s)");
+        for (var s = 0; s < steps; s++)
+        {
+            Assert.True(Math.Abs(bigLane[s] - sumOfSmalls[s]) <= 1e-4 * sumOfSmalls.Max(), $"step {s}: big {bigLane[s]} vs the smalls' sum {sumOfSmalls[s]}");
+            Assert.True(worst[s] <= 1e-3 * peak, $"step {s}: a small ball's lane is off its momentum change by {worst[s]}");
+        }
+    }
+
     [Theory]
     [InlineData(60, 1, 0f)]
     [InlineData(60, 4, 0f)]

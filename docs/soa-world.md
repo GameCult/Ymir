@@ -34,8 +34,12 @@ separate native object (`ymir_box3d_soa.c`, ABI 7) so the Aetheria session's con
   these and write it as equal and opposite torques on the two body lanes.
 - Contact lanes (read-only, rewritten by every `step`): `contact_impulse` (N s: the normal impulse the
   body's touching contacts delivered to it over the whole step, the sum of Box3D's `stepNormalImpulse` over
-  its manifold points; 0 for a body touching nothing; a resting load is `contact_impulse / dt`; exact, so a
-  jointed limb's reading is what the contacts really delivered, not a mass formula's guess), `contact_count`
+  its manifold points; 0 for a body touching nothing; exact, so a jointed limb's reading is what the contacts
+  really delivered, not a mass formula's guess. It is a sum of magnitudes over all the body's contacts, not the
+  net: a ball under a ball reads support plus load, 3 m g dt, not m g dt. At rest it equals the weight only on
+  average: heavy balls in a pile alternate between about 1.5 and 0.5 m g dt from step to step, so a consumer
+  must not threshold a single step; average over steps or use `contact_impulse / dt` as a load estimate over a
+  window), `contact_count`
   (touching contacts) and `material_id` (the body's `material_id`, also set as the shape's Box3D user
   material). `stepNormalImpulse` is the GameCult Box3D fork's observed field (see `box3d-parity.md`); it is
   the normal channel only, since Box3D exposes no tangent impulse. Sleep is off in SoA worlds, so manifolds
@@ -108,7 +112,7 @@ step), capsule and box rest heights with parent and limb lanes, refusals, and bi
 a torque-driven jointed body. `Box3DSoaGrabTests`: a strong grab reaching a target 1 m away within 1 s, a weak grab falling at least `g - F/m`, an anchor that does not collide and is not hit by a ray, force lanes not moving an anchor, an off-centre impulse (linear `J/m` and the spin's sign and size), the ray's nearest body with lane, stable id, point and fraction, refusals changing nothing, and bit-identical repeat runs with a moving anchor and an impulse. `Box3DSoaContactTests`: a drop gives one begin and one hit (speed within 5%
 of sqrt(2gh), point and normal), lifting gives one end, dropped counters resetting each step, materials on
 hits, facts lasting one step, overflow counted, per-step byte determinism of facts and contact lanes, and
-no allocation across 100 steps with fact reads. `Box3DSoaImpulseTests`: `contact_impulse` and the hit `impulse` equal the momentum change of the bodies the contact acted on, plus their weight, within 1e-4 of the peak at every step: a 5 kg ball and a 0.3 g BB at 100 m/s onto a jointed forearm (the BB reads 0.030 N s, the ball over 400 times more), the arm falling forearm-first onto a slab, a sphere dropped 1.4 m at 60 and 240 Hz, 1 and 4 sub-steps, restitution 0 and 0.5, two free bodies at restitution 0 and 0.5; and at rest `contact_impulse / dt` is the weight (0.1%) while a body touching nothing reads 0.
+no allocation across 100 steps with fact reads. `Box3DSoaImpulseTests`: `contact_impulse` and the hit `impulse` equal the momentum change of the bodies the contact acted on, plus their weight, within 1e-4 of the peak at every step: a 5 kg ball and a 0.3 g BB at 100 m/s onto a jointed forearm (the BB reads 0.030 N s, the ball over 400 times more), the arm falling forearm-first onto a slab, a sphere dropped 1.4 m at 60 and 240 Hz, 1 and 4 sub-steps, restitution 0 and 0.5, two free bodies at restitution 0 and 0.5; a swung arm into a slab, a big sphere with 60 small ones converging (more contacts than graph colours, so the scalar overflow solver runs: the big lane is the sum of the small lanes, each equal to its own momentum change), and at rest `contact_impulse / dt` is the weight (0.1%, a lone sphere) while a body touching nothing reads 0.
 
 ## Not done
 
