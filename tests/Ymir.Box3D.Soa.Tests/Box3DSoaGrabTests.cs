@@ -49,6 +49,18 @@ public sealed class Box3DSoaGrabTests
     }
 
     [Fact]
+    public void An_anchor_reaches_its_target_at_the_end_of_the_very_next_step()
+    {
+        using var world = new Box3DSoaWorld(capacity: 1, gravityY: 0f);
+        var anchor = world.AddAnchor(1, (0f, 0f, 0f));
+        var view = world.View;
+        world.SetAnchorTarget(anchor, (1f, 2f, 0f), default, Dt);
+        world.Step(Dt);
+        Assert.Equal(1f, view.PositionX[anchor], 1e-3f);
+        Assert.Equal(2f, view.PositionY[anchor], 1e-3f);
+    }
+
+    [Fact]
     public void The_angular_spring_turns_the_grabbed_body_to_the_anchors_rotation_and_off_leaves_it_free()
     {
         static float Turned(float angularHertz)
