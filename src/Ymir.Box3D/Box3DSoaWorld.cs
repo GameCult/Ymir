@@ -18,7 +18,9 @@ public enum Box3DSoaJointKind : uint
     Spherical = 1,
     Weld = 2,
     /// <summary>Position springs pulling body B's frame onto body A's, bounded by a maximum force and torque.</summary>
-    Motor = 3
+    Motor = 3,
+    /// <summary>The kind lane of a destroyed joint (a tombstone): bodies read -1 and every other lane 0.</summary>
+    Removed = 4
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_body_desc</c>.</summary>
@@ -266,6 +268,14 @@ internal static unsafe partial class Box3DSoaNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ymir_box3d_soa_get_facts(nint world, out Box3DSoaFactsNative facts);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_destroy_joint(nint world, int joint);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_free_joint_slots(nint world);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -530,13 +540,47 @@ public sealed class Box3DSoaWorld : IDisposable
         return index;
     }
 
+    /// <summary>
+    /// Releases a motor joint (a grab); the anchor and the grabbed body stay. The joint's lane becomes a tombstone:
+    /// kind <see cref="Box3DSoaJointKind.Removed"/>, bodies -1, every other lane 0. It is reused by a later AddJoint only
+    /// once a <see cref="Step"/> has completed, so lanes read this step stay valid. Throws for any other kind of joint
+    /// (general removal is another cut's) or a lane that is not a live joint.
+    /// </summary>
+    public void DestroyJoint(int jointLane)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        Check(Box3DSoaNative.ymir_box3d_soa_destroy_joint(_handle, jointLane));
+    }
+
+    /// <summary>Joints AddJoint could create right now: unused capacity plus tombstones whose step has completed.
+    /// Check it before adding an anchor for a grab, so a full world leaves no orphan anchor.</summary>
+    public int FreeJointSlots
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_handle == 0, this);
+            return Box3DSoaNative.ymir_box3d_soa_free_joint_slots(_handle);
+        }
+    }
+
+    /// <summary>Bodies that can still be added. Bodies are never removed here; keep one anchor per cursor and reuse it.</summary>
+    public int FreeBodySlots
+    {
+        get
+        {
+            var v = View;
+            return v.Capacity - v.Count;
+        }
+    }
+
     /// <summary>Adds a kinematic anchor with no shape (rotation as for <see cref="AddCapsule"/>); returns its lane index.</summary>
     public int AddAnchor(ulong stableId, (float X, float Y, float Z) position, (float X, float Y, float Z, float W) rotation = default) =>
         AddBody(Describe(Box3DSoaKind.Anchor, stableId, position, rotation, default, 0f, default, 0f, 0f, -1, 0));
 
     /// <summary>
     /// Sets an anchor's pose for the coming step. Box3D gives the anchor the velocity that reaches it after
-    /// <paramref name="timeStep"/>, so pass the same dt as the next <see cref="Step"/> and the anchor arrives at its end.
+    /// <paramref name="timeStep"/>, so pass the same dt as the next <see cref="Step"/> and the anchor arrives at its end,
+    /// where Step stops it: with no new target it holds still (its velocity lanes read 0).
     /// Throws for a lane that is not an anchor, a non-finite or non-unit input, or a non-positive time step.
     /// </summary>
     public unsafe void SetAnchorTarget(

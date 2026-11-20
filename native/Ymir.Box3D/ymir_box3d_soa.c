@@ -53,7 +53,8 @@ enum
     YMIR_SOA_JOINT_REVOLUTE = 0,
     YMIR_SOA_JOINT_SPHERICAL = 1,
     YMIR_SOA_JOINT_WELD = 2,
-    YMIR_SOA_JOINT_MOTOR = 3
+    YMIR_SOA_JOINT_MOTOR = 3,
+    YMIR_SOA_JOINT_REMOVED = 4 // a destroyed joint's lane: never accepted by add_joint
 };
 
 #define YMIR_SOA_ABI_VERSION 5u
@@ -90,6 +91,8 @@ typedef struct ymir_box3d_soa_body_desc
 // frame origin onto body A's (so B's anchor point onto A's), the angular spring pulls B's frame orientation onto
 // A's. `*_hertz` 0 turns that spring off; `max_force` (N) and `max_torque` (N m) bound what it may apply, so a
 // weak grab hangs below its target. All six are finite and >= 0 and are ignored by the other kinds.
+// `ymir_box3d_soa_destroy_joint` releases a motor joint: its lane becomes a tombstone (kind REMOVED = 4, bodies -1,
+// every lane 0) that add_joint may reuse only once a step has completed since.
 typedef struct ymir_box3d_soa_joint_desc
 {
     uint32_t kind;
@@ -263,6 +266,7 @@ typedef struct ymir_box3d_soa_world
     float* lanes; // YMIR_SOA_BODY_FLOAT_LANES arrays of `capacity` floats, lane-major
     b3JointId* joints;
     uint32_t* joint_kind;
+    uint64_t* joint_removed_at; // step_count when the slot was destroyed; reusable once a step has passed
     int32_t* joint_body_a;
     int32_t* joint_body_b;
     b3Quat* joint_local_a; // joint frame in body A, kept so the state is read without asking Box3D
@@ -407,6 +411,7 @@ static void ymir_soa_free(ymir_box3d_soa_world* world)
     free(world->lanes);
     free(world->joints);
     free(world->joint_kind);
+    free(world->joint_removed_at);
     free(world->joint_body_a);
     free(world->joint_body_b);
     free(world->joint_local_a);
@@ -455,6 +460,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     world->lanes = (float*)calloc(n * YMIR_SOA_BODY_FLOAT_LANES, sizeof(float));
     world->joints = (b3JointId*)calloc(m, sizeof(b3JointId));
     world->joint_kind = (uint32_t*)calloc(m, sizeof(uint32_t));
+    world->joint_removed_at = (uint64_t*)calloc(m, sizeof(uint64_t));
     world->joint_body_a = (int32_t*)calloc(m, sizeof(int32_t));
     world->joint_body_b = (int32_t*)calloc(m, sizeof(int32_t));
     world->joint_local_a = (b3Quat*)calloc(m, sizeof(b3Quat));
@@ -470,7 +476,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
         world->bodies == NULL || world->stable_id == NULL || world->kind == NULL || world->parent == NULL ||
         world->limb == NULL || world->size == NULL || world->lanes == NULL || world->joints == NULL || world->joint_kind == NULL ||
         world->joint_body_a == NULL || world->joint_body_b == NULL || world->joint_local_a == NULL ||
-        world->joint_local_b == NULL || world->joint_lanes == NULL)
+        world->joint_local_b == NULL || world->joint_lanes == NULL || world->joint_removed_at == NULL)
     {
         ymir_soa_free(world);
         return YMIR_SOA_OUT_OF_MEMORY;
@@ -666,6 +672,36 @@ static b3Transform ymir_soa_body_transform(b3BodyId body)
     return t;
 }
 
+// The lane a new joint takes: the lowest tombstone whose destroying step has completed, else the next fresh
+// slot, else -1. A destroyed lane is not reused within the step that destroyed it, so lanes a caller read
+// that step stay meaningful.
+static int ymir_soa_joint_slot(const ymir_box3d_soa_world* world)
+{
+    for (int j = 0; j < world->joint_count; ++j)
+    {
+        if (world->joint_kind[j] == YMIR_SOA_JOINT_REMOVED && world->step_count > world->joint_removed_at[j])
+        {
+            return j;
+        }
+    }
+    return world->joint_count < world->joint_capacity ? world->joint_count : -1;
+}
+
+// Joints that add_joint could create right now.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_free_joint_slots(const ymir_box3d_soa_world* world)
+{
+    if (world == NULL)
+    {
+        return 0;
+    }
+    int32_t free_slots = world->joint_capacity - world->joint_count;
+    for (int j = 0; j < world->joint_count; ++j)
+    {
+        free_slots += world->joint_kind[j] == YMIR_SOA_JOINT_REMOVED && world->step_count > world->joint_removed_at[j];
+    }
+    return free_slots;
+}
+
 // Creates a joint between two existing bodies. The joint frame is built in world space (origin at the
 // anchor, z along the axis) and expressed in each body's local frame, so the creation pose is zero.
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
@@ -688,7 +724,8 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
     {
         return YMIR_SOA_INVALID_ARGUMENT;
     }
-    if (world->joint_count >= world->joint_capacity)
+    int slot = ymir_soa_joint_slot(world);
+    if (slot < 0)
     {
         return YMIR_SOA_FULL;
     }
@@ -754,7 +791,11 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
         return YMIR_SOA_INTERNAL_ERROR;
     }
 
-    int j = world->joint_count++;
+    int j = slot;
+    if (j == world->joint_count)
+    {
+        world->joint_count++;
+    }
     world->joints[j] = joint;
     world->joint_kind[j] = d->kind;
     world->joint_body_a[j] = d->body_a;
@@ -765,6 +806,27 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
     if (index != NULL)
     {
         *index = j;
+    }
+    return YMIR_SOA_OK;
+}
+
+// Releases a motor joint (a grab). Only motor joints: general joint removal is another cut's. The lane becomes a
+// tombstone, kind REMOVED, bodies -1 and every lane 0, until a later step lets add_joint reuse it.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_destroy_joint(ymir_box3d_soa_world* world, int32_t joint)
+{
+    if (world == NULL || joint < 0 || joint >= world->joint_count || world->joint_kind[joint] != YMIR_SOA_JOINT_MOTOR)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    b3DestroyJoint(world->joints[joint], true);
+    world->joints[joint] = (b3JointId){0};
+    world->joint_kind[joint] = YMIR_SOA_JOINT_REMOVED;
+    world->joint_body_a[joint] = -1;
+    world->joint_body_b[joint] = -1;
+    world->joint_removed_at[joint] = world->step_count;
+    for (int lane = 0; lane < YMIR_SOA_JOINT_FLOAT_LANES; ++lane)
+    {
+        ymir_soa_joint_lane(world, lane)[joint] = 0.0f;
     }
     return YMIR_SOA_OK;
 }
@@ -931,6 +993,16 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_step(ymir_box3d_soa_world* world, f
         return status;
     }
     b3World_Step(world->world_id, time_step, sub_step_count);
+    // An anchor moves only on a target: the one just applied has been reached, so it holds still until the
+    // next target. Otherwise its velocity would carry it on past the pose (and fling what it holds).
+    for (int i = 0; i < world->count; ++i)
+    {
+        if (ymir_soa_is_anchor(world->kind[i]))
+        {
+            b3Body_SetLinearVelocity(world->bodies[i], b3Vec3_zero);
+            b3Body_SetAngularVelocity(world->bodies[i], b3Vec3_zero);
+        }
+    }
     ymir_soa_collect_facts(world);
     ymir_soa_collect_contact_lanes(world, time_step, sub_step_count);
     for (int i = 0; i < world->count; ++i)
@@ -939,7 +1011,10 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_step(ymir_box3d_soa_world* world, f
     }
     for (int j = 0; j < world->joint_count; ++j)
     {
-        ymir_soa_refresh_joint(world, j);
+        if (world->joint_kind[j] != YMIR_SOA_JOINT_REMOVED)
+        {
+            ymir_soa_refresh_joint(world, j);
+        }
     }
     world->step_count += 1;
     return YMIR_SOA_OK;
@@ -948,7 +1023,8 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_step(ymir_box3d_soa_world* world, f
 // Grab and poke input, each an immediate command on the caller's say-so. Ymir decides nothing about grabbing.
 
 // Sets an anchor's pose for the coming step: Box3D gives it the velocity that reaches the pose after
-// `time_step` seconds, so pass the step's own dt and the anchor arrives at the end of that step.
+// `time_step` seconds, so pass the step's own dt and the anchor arrives at the end of that step, where `step`
+// stops it (velocity 0) until the next target.
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_set_anchor_target(
     ymir_box3d_soa_world* world, int32_t lane, const float* position, const float* rotation, float time_step)
 {

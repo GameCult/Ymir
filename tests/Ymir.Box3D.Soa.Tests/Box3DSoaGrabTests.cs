@@ -61,6 +61,120 @@ public sealed class Box3DSoaGrabTests
     }
 
     [Fact]
+    public void An_anchor_holds_still_once_it_arrives_and_a_skipped_frame_flings_nothing()
+    {
+        using var world = new Box3DSoaWorld(capacity: 3, gravityY: 0f, jointCapacity: 1);
+        var sphere = world.AddSphere(1, (0f, 0f, 0f), Radius, Density);
+        var anchor = world.AddAnchor(2, (0f, 0f, 0f));
+        world.AddMotorJoint(anchor, sphere, (0f, 0f, 0f), (5f, 0.7f, 1e6f), (0f, 0f, 0f));
+        var view = world.View;
+        world.SetAnchorTarget(anchor, (1f, 0f, 0f), default, Dt); // one target, 1 m away, then the caller sets no more
+        for (var i = 0; i < 150; i++) world.Step(Dt);
+        Assert.Equal(1f, view.PositionX[anchor], 1e-4f);
+        Assert.Equal(0f, view.VelocityX[anchor]);
+        Assert.Equal(1f, view.PositionX[sphere], 0.02f);
+        Assert.True(MathF.Abs(view.VelocityX[sphere]) < 0.05f, "the grabbed body is not flung");
+    }
+
+    [Fact]
+    public void A_grab_can_be_released_and_repeated_without_the_slots_growing()
+    {
+        using var world = new Box3DSoaWorld(capacity: 4, gravityY: -Gravity, jointCapacity: 1);
+        var a = world.AddSphere(1, (0f, 5f, 0f), Radius, Density);
+        var b = world.AddSphere(2, (3f, 5f, 0f), Radius, Density);
+        var anchor = world.AddAnchor(3, (0f, 5f, 0f));
+        var view = world.View;
+        var strong = 20f * Mass * Gravity;
+        for (var cycle = 0; cycle < 1000; cycle++)
+        {
+            var grabbed = cycle % 2 == 0 ? a : b;
+            var at = (view.PositionX[grabbed], view.PositionY[grabbed], view.PositionZ[grabbed]);
+            world.SetAnchorTarget(anchor, at, default, Dt);
+            world.Step(Dt); // the anchor is on the body before the joint is made
+            Assert.Equal(1, world.FreeJointSlots);
+            var joint = world.AddMotorJoint(anchor, grabbed, at, (5f, 0.7f, strong), (0f, 0f, 0f));
+            Assert.Equal(0, joint);
+            world.Step(Dt);
+            world.DestroyJoint(joint);
+            var jv = world.View; // joint count is as of when the view was taken
+            // A destroyed lane is a tombstone this step and is not reused within it.
+            Assert.Equal((uint)Box3DSoaJointKind.Removed, jv.JointKind[joint]);
+            Assert.Equal((-1, -1), (jv.JointBodyA[joint], jv.JointBodyB[joint]));
+            Assert.Equal(0f, jv.JointFrameW[joint]);
+            Assert.Equal(0, world.FreeJointSlots);
+            Assert.Throws<InvalidOperationException>(() => world.AddMotorJoint(anchor, grabbed, at, (5f, 0.7f, strong), (0f, 0f, 0f)));
+            world.Step(Dt);
+        }
+        Assert.Equal(3, world.View.Count);
+        Assert.Equal(1, world.View.JointCount);
+        // Released, the sphere is free: it fell.
+        Assert.True(view.PositionY[b] < 5f - 0.01f, "a released body falls");
+    }
+
+    [Fact]
+    public void A_regrab_after_release_follows_the_anchor()
+    {
+        using var world = new Box3DSoaWorld(capacity: 3, gravityY: 0f, jointCapacity: 1);
+        var sphere = world.AddSphere(1, (0f, 5f, 0f), Radius, Density);
+        var anchor = world.AddAnchor(2, (0f, 5f, 0f));
+        var view = world.View;
+        var strong = 20f * Mass * Gravity;
+        for (var round = 0; round < 3; round++)
+        {
+            var at = (view.PositionX[sphere], view.PositionY[sphere], view.PositionZ[sphere]);
+            world.SetAnchorTarget(anchor, at, default, Dt);
+            world.Step(Dt);
+            var joint = world.AddMotorJoint(anchor, sphere, at, (5f, 0.7f, strong), (0f, 0f, 0f));
+            var target = (1f + round, at.Item2, 0f);
+            for (var i = 0; i < 90; i++) { world.SetAnchorTarget(anchor, target, default, Dt); world.Step(Dt); }
+            Assert.True(Distance(view, sphere, target) < 0.02f, $"round {round}: {Distance(view, sphere, target)} m from the target");
+            world.DestroyJoint(joint);
+            world.Step(Dt);
+            // Released: the anchor can go elsewhere and the sphere stays where it was left.
+            var away = (target.Item1 + 5f, target.Item2, 0f);
+            for (var i = 0; i < 30; i++) { world.SetAnchorTarget(anchor, away, default, Dt); world.Step(Dt); }
+            Assert.True(MathF.Abs(view.PositionX[sphere] - target.Item1) < 0.1f, "the released sphere did not follow the anchor");
+        }
+    }
+
+    [Fact]
+    public void Only_a_live_motor_joint_can_be_destroyed()
+    {
+        using var world = new Box3DSoaWorld(capacity: 4, gravityY: 0f, jointCapacity: 3);
+        var pin = world.AddStaticBox(1, (0f, 5f, 0f), (0.1f, 0.1f, 0.1f));
+        var sphere = world.AddSphere(2, (1f, 5f, 0f), Radius, Density);
+        var anchor = world.AddAnchor(3, (1f, 5f, 0f));
+        var hinge = world.AddJoint(Box3DSoaJointKind.Revolute, pin, sphere, (0f, 5f, 0f), (0f, 0f, 1f));
+        var weld = world.AddJoint(Box3DSoaJointKind.Weld, anchor, sphere, (1f, 5f, 0f), (0f, 0f, 1f));
+        var motor = world.AddMotorJoint(anchor, sphere, (1f, 5f, 0f), (5f, 0.7f, 100f), (0f, 0f, 0f));
+        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(hinge));
+        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(weld));
+        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(-1));
+        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(3));
+        var view = world.View;
+        Assert.Equal((uint)Box3DSoaJointKind.Revolute, view.JointKind[hinge]);
+        world.DestroyJoint(motor);
+        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(motor)); // already gone
+        world.Step(Dt); // the live joints still step
+        Assert.Equal((uint)Box3DSoaJointKind.Weld, view.JointKind[weld]);
+    }
+
+    [Fact]
+    public void A_world_with_no_joint_slot_is_seen_before_an_anchor_is_added()
+    {
+        using var world = new Box3DSoaWorld(capacity: 4, jointCapacity: 0);
+        var sphere = world.AddSphere(1, (0f, 5f, 0f), Radius, Density);
+        Assert.Equal(0, world.FreeJointSlots);
+        Assert.Equal(3, world.FreeBodySlots);
+        var anchorLane = -1;
+        if (world.FreeJointSlots > 0) anchorLane = world.AddAnchor(2, (0f, 5f, 0f)); // the caller's check: no grab, no anchor
+        Assert.Equal(-1, anchorLane);
+        Assert.Equal(3, world.FreeBodySlots);
+        Assert.Throws<InvalidOperationException>(() => world.AddMotorJoint(sphere, sphere, (0f, 5f, 0f), (5f, 0.7f, 1f), (0f, 0f, 0f)));
+        Assert.Equal(1, world.View.Count);
+    }
+
+    [Fact]
     public void The_angular_spring_turns_the_grabbed_body_to_the_anchors_rotation_and_off_leaves_it_free()
     {
         static float Turned(float angularHertz)
