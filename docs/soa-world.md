@@ -12,7 +12,7 @@ separate native object (`ymir_box3d_soa.c`, ABI 5) so the Aetheria session's con
 
 ## Contract
 
-- Native (ABI 5): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold) /
+- Native (ABI 6): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold) /
   add_body / add_joint / step / get_view / get_facts / set_anchor_target / destroy_joint / free_joint_slots / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
   so lane pointers never move.
@@ -68,7 +68,7 @@ separate native object (`ymir_box3d_soa.c`, ABI 5) so the Aetheria session's con
     `max_torque` bound the pull: with a max force below the weight the body hangs below the target. `joint_angle`
     reads 0.
   - Release: the cursor's anchor is long-lived (a client creates one per cursor and keeps it; bodies are never
-    removed here). `destroy_joint(joint)` releases a grab by destroying the motor joint only; the anchor and the
+    removed here). `destroy_joint(joint, generation)` releases a grab by destroying the motor joint only; the anchor and the
     grabbed body stay. Only motor joints can be destroyed (general joint and body removal belongs to
     `ymir-break-and-remove`); anything else is refused. The joint's lane becomes a tombstone: `joint_kind` 4
     (Removed), `joint_body_a/b` -1 and every joint lane 0. `joint_count` counts slots ever used, tombstones included.
@@ -76,6 +76,12 @@ separate native object (`ymir_box3d_soa.c`, ABI 5) so the Aetheria session's con
     step stay valid; until then the slot is not free. `free_joint_slots` (managed `FreeJointSlots`) is what
     `add_joint` could create right now: check it, and `FreeBodySlots`, before adding an anchor for a grab, so a full
     world leaves no orphan anchor. Repeated grab and release on one slot do not grow the world.
+    A joint's handle is its lane and the slot's generation (`joint_generation` lane, counts destroys of the slot;
+    managed `Box3DSoaJointHandle`, returned by `AddJoint` and `AddMotorJoint`, converts to the lane). `destroy_joint`
+    refuses a generation that is not the slot's, so a second release click with an old handle never destroys a later
+    grab that reused the slot. Anchor creation must be followed by a joint that validates (its spring fields are
+    checked there), or the anchor is left behind: with one long-lived anchor per cursor that is accepted, and an atomic
+    `AddGrab` is a follow-up only if cursors become dynamic.
   - `apply_impulse(lane, impulse, point)`: a one-shot world impulse (N s) at a world point; off the centre of mass it
     also spins the body. Dynamic bodies only (a static body or anchor is refused), non-finite input refused.
   - `cast_ray_closest(origin, translation)` fills a `ymir_box3d_soa_ray_hit` {hit, lane, stable_id, point, normal,
