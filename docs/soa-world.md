@@ -8,11 +8,11 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 6) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 7) so the Aetheria session's contract is untouched.
 
 ## Contract
 
-- Native (ABI 6): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold) /
+- Native (ABI 7): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold) /
   add_body / add_joint / step / get_view / get_facts / set_anchor_target / destroy_joint / free_joint_slots / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
   so lane pointers never move.
@@ -32,19 +32,15 @@ separate native object (`ymir_box3d_soa.c`, ABI 6) so the Aetheria session's con
   (world orientation of frame A, quaternion), `joint_rotation` (frame B relative to frame A, quaternion,
   w >= 0) and `joint_angular_velocity` (B minus A, in frame A). A consumer can compute a joint torque from
   these and write it as equal and opposite torques on the two body lanes.
-- Contact lanes (read-only, rewritten by every `step`): `last_substep_force` (N: the final sub-step's
-  `normalImpulse` summed over the body's touching manifold points, times sub-steps over dt; 0 for a body
-  touching nothing; the weight at rest; NOT an impact measure, it sees one sub-step and misses an impact
-  step by 0.02x to 1.9x), `contact_count` (touching contacts) and `material_id` (the body's
-  `material_id`, also set as the shape's Box3D user material). Box3D exposes no whole-step impulse:
-  `totalNormalImpulse` adds the accumulated impulse once per solve and once per relax pass (so it reads twice
-  the weight at rest, and on impacts is no fixed multiple of the step's impulse). For impact severity see the
-  hit fact. `impulse_estimate` (N s) is `approach_speed * (1 + e) /
-  (1/mA + 1/mB)`, e the larger shape restitution and only above Box3D's restitution threshold, a static
-  body's 1/m taken as 0. It is exact for a centre-to-centre hit between free bodies, can over-count when one
-  collision yields several hit facts (box corners, tilted capsules: they sum), and undercounts heavily for
-  jointed bodies (it takes the limb's own mass, not the joint-coupled effective mass). It is not a bound.
-  A mass-aware per-body impulse that holds for jointed bodies is being designed.
+- Contact lanes (read-only, rewritten by every `step`): `contact_impulse` (N s: the normal impulse the
+  body's touching contacts delivered to it over the whole step, the sum of Box3D's `stepNormalImpulse` over
+  its manifold points; 0 for a body touching nothing; a resting load is `contact_impulse / dt`; exact, so a
+  jointed limb's reading is what the contacts really delivered, not a mass formula's guess), `contact_count`
+  (touching contacts) and `material_id` (the body's `material_id`, also set as the shape's Box3D user
+  material). `stepNormalImpulse` is the GameCult Box3D fork's observed field (see `box3d-parity.md`); it is
+  the normal channel only, since Box3D exposes no tangent impulse. Sleep is off in SoA worlds, so manifolds
+  hold no stale values; if sleep is ever enabled, zero the lanes of sleeping bodies. The hit fact's `impulse`
+  (N s) is the same sum over the manifold of the hit's two shapes, read after the step.
 - Contact facts: every shape is created with contact and hit events on (Box3D's default is off). After each
   `step`, `ymir_box3d_soa_get_facts` returns pointers and counts into buffers fixed at create (`fact_capacity`
   per kind, no allocation in the step): Begin and End `{lane_a, lane_b, stable_id_a, stable_id_b}` and Hit
@@ -110,10 +106,9 @@ lanes agreeing, an off-axis hinge, a limit and a weld, a spherical joint leaving
 torque lanes (exact acceleration, cleared after the step, static bodies ignoring them, NaN refusing the
 step), capsule and box rest heights with parent and limb lanes, refusals, and bit-identical repeat runs of
 a torque-driven jointed body. `Box3DSoaGrabTests`: a strong grab reaching a target 1 m away within 1 s, a weak grab falling at least `g - F/m`, an anchor that does not collide and is not hit by a ray, force lanes not moving an anchor, an off-centre impulse (linear `J/m` and the spin's sign and size), the ray's nearest body with lane, stable id, point and fraction, refusals changing nothing, and bit-identical repeat runs with a moving anchor and an impulse. `Box3DSoaContactTests`: a drop gives one begin and one hit (speed within 5%
-of sqrt(2gh), point and normal), lifting gives one end, resting `last_substep_force` is the weight, the hit `impulse_estimate` (a free sphere on a slab, and two free spheres at mass ratios 1:1, 1:10, 10:1) matches the ball's momentum change
-(plus gravity's share) at 60 and 240 Hz, 1 and 4 sub-steps, restitution 0 and 0.5, dropped counters resetting each step, materials on
+of sqrt(2gh), point and normal), lifting gives one end, dropped counters resetting each step, materials on
 hits, facts lasting one step, overflow counted, per-step byte determinism of facts and contact lanes, and
-no allocation across 100 steps with fact reads.
+no allocation across 100 steps with fact reads. `Box3DSoaImpulseTests`: `contact_impulse` and the hit `impulse` equal the momentum change of the bodies the contact acted on, plus their weight, within 1e-4 of the peak at every step: a 5 kg ball and a 0.3 g BB at 100 m/s onto a jointed forearm (the BB reads 0.030 N s, the ball over 400 times more), the arm falling forearm-first onto a slab, a sphere dropped 1.4 m at 60 and 240 Hz, 1 and 4 sub-steps, restitution 0 and 0.5, two free bodies at restitution 0 and 0.5; and at rest `contact_impulse / dt` is the weight (0.1%) while a body touching nothing reads 0.
 
 ## Not done
 

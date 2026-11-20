@@ -73,7 +73,8 @@ path and must never become a competing copy of Aetheria world truth.
 ## Current Cutover State
 
 Box3D v0.1.0 is pinned at commit
-`8441b4a06d6d09dcfb0b0f704df4d847d1437b92`. A Ymir-owned native shim and
+`8441b4a06d6d09dcfb0b0f704df4d847d1437b92` plus the GameCult fork's two-commit
+step-impulse observation (`docs/box3d-parity.md`). A Ymir-owned native shim and
 parity suite already witness released Box3D behavior for:
 
 - sphere overlap and shape casts
