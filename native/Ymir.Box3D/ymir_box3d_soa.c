@@ -152,7 +152,7 @@ typedef struct ymir_box3d_soa_view
     const float* joint_angular_velocity_y;
     const float* joint_angular_velocity_z;
     // Contact lanes, read-only, refreshed every step. contact_force is N: the sum over the body's touching
-    // contact manifolds of totalNormalImpulse / dt (0 for a body touching nothing); contact_count is the
+    // contact manifold points of normalImpulse * sub_steps / dt (0 for a body touching nothing); contact_count is the
     // number of touching contacts. material_id is the body's desc material_id.
     const float* contact_force;
     const int32_t* contact_count;
@@ -786,9 +786,11 @@ static void ymir_soa_collect_facts(ymir_box3d_soa_world* world)
     }
 }
 
-// Per body: the touching contacts' count and the force they carry, totalNormalImpulse over every
-// sub-step of the step, summed over manifold points, divided by the step.
-static void ymir_soa_collect_contact_lanes(ymir_box3d_soa_world* world, float time_step)
+// Per body: the touching contacts' count and the force they carry. normalImpulse is the final sub-step's
+// impulse, so over a sub-step of time_step / sub_step_count it is a force of normalImpulse * sub_steps /
+// time_step. (totalNormalImpulse is not that: Box3D adds the accumulated impulse once per solve pass and
+// once per relax pass, so at rest it reads twice the step's impulse.)
+static void ymir_soa_collect_contact_lanes(ymir_box3d_soa_world* world, float time_step, int32_t sub_step_count)
 {
     float* force = ymir_soa_lane(world, YMIR_SOA_CONTACT_FORCE_LANE);
     for (int i = 0; i < world->count; ++i)
@@ -803,12 +805,12 @@ static void ymir_soa_collect_contact_lanes(ymir_box3d_soa_world* world, float ti
                 const b3Manifold* manifold = data->manifolds + m;
                 for (int p = 0; p < manifold->pointCount; ++p)
                 {
-                    impulse += manifold->points[p].totalNormalImpulse;
+                    impulse += manifold->points[p].normalImpulse;
                 }
             }
         }
         world->contact_count[i] = n;
-        force[i] = impulse / time_step;
+        force[i] = impulse * (float)sub_step_count / time_step;
     }
 }
 
@@ -825,7 +827,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_step(ymir_box3d_soa_world* world, f
     }
     b3World_Step(world->world_id, time_step, sub_step_count);
     ymir_soa_collect_facts(world);
-    ymir_soa_collect_contact_lanes(world, time_step);
+    ymir_soa_collect_contact_lanes(world, time_step, sub_step_count);
     for (int i = 0; i < world->count; ++i)
     {
         ymir_soa_refresh(world, i);

@@ -304,7 +304,7 @@ public readonly unsafe struct Box3DSoaView
     public Span<float> TorqueZ => Write(_v.TorqueZ, Count);
 
     // Contact lanes, read-only, refreshed by every Step.
-    /// <summary>Newtons: the sum over the body's touching contact manifolds of totalNormalImpulse / dt. 0 for a body touching nothing.</summary>
+    /// <summary>Newtons: the sum over the body's touching contact manifold points of normalImpulse * sub-steps / dt (the final sub-step's impulse as a force). 0 for a body touching nothing.</summary>
     public ReadOnlySpan<float> ContactForce => Lane(_v.ContactForce, Count);
     /// <summary>Number of touching contacts.</summary>
     public ReadOnlySpan<int> ContactCount => Lane(_v.ContactCount, Count);
