@@ -58,6 +58,7 @@ public sealed class Box3DSoaImpulseTests
         var truths = new double[steps];
         var lanes = new float[steps];
         var hitImpulse = new float[steps];
+        var hitSteps = new bool[steps];
         var hits = 0;
         var before = launched;
         for (var i = 0; i < steps; i++)
@@ -67,13 +68,13 @@ public sealed class Box3DSoaImpulseTests
             truths[i] = after - before;
             before = after;
             lanes[i] = world.View.ContactImpulse[fore];
-            foreach (var hit in world.Facts.Hit) { hitImpulse[i] += hit.Impulse; hits++; }
+            foreach (var hit in world.Facts.Hit) { hitImpulse[i] += hit.Impulse; hitSteps[i] = true; hits++; }
         }
         var peak = truths.Max(Math.Abs);
         for (var i = 0; i < steps; i++)
         {
             Assert.True(Math.Abs(lanes[i] - truths[i]) <= 1e-4 * peak, $"step {i}: forearm ContactImpulse {lanes[i]} vs the ball's momentum change {truths[i]}");
-            if (hitImpulse[i] != 0f) Assert.Equal(lanes[i], hitImpulse[i], 1e-4 * peak);
+            if (hitSteps[i]) Assert.Equal(lanes[i], hitImpulse[i], 1e-4 * peak);
         }
         var delivered = (double)lanes.Sum();
         var truth = truths.Sum();
@@ -169,6 +170,31 @@ public sealed class Box3DSoaImpulseTests
         {
             Assert.True(Math.Abs(lanes[i] - truths[i]) <= 1e-4 * peak, $"step {i}: {lanes[i]} vs {truths[i]}");
         }
+    }
+
+    [Fact]
+    public void Each_hit_reads_its_own_pair_when_the_slab_has_several_contacts()
+    {
+        // Two balls of different mass land on the slab in the same step: the slab's contact list holds both, and each hit
+        // fact is its own ball's impulse, whichever of the slab's contacts Box3D lists first.
+        using var world = new Box3DSoaWorld(capacity: 8, gravityY: -G);
+        world.AddStaticBox(1, (0f, -0.5f, 0f), (50f, 0.5f, 50f));
+        var light = world.AddSphere(2, (-1f, 1.5f, 0f), 0.1f, 125f);
+        var heavy = world.AddSphere(3, (1f, 1.5f, 0f), 0.1f, 500f);
+        var dt = 1f / 60f;
+        var checkedHits = 0;
+        for (var i = 0; i < 90; i++)
+        {
+            world.Step(dt);
+            foreach (var hit in world.Facts.Hit)
+            {
+                var ball = hit.LaneA == light || hit.LaneB == light ? light : heavy;
+                Assert.Equal(world.View.ContactImpulse[ball], hit.Impulse, 1e-3f);
+                checkedHits++;
+            }
+        }
+        Assert.Equal(2, checkedHits);
+        Assert.Equal(world.View.ContactImpulse[heavy] / 4f, world.View.ContactImpulse[light], 1e-3f); // resting: weight scales with mass
     }
 
     [Fact]
