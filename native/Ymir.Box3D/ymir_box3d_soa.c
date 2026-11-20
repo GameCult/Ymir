@@ -44,21 +44,26 @@ enum
     YMIR_SOA_KIND_SPHERE = 0,
     YMIR_SOA_KIND_STATIC_BOX = 1,
     YMIR_SOA_KIND_CAPSULE = 2,
-    YMIR_SOA_KIND_BOX = 3
+    YMIR_SOA_KIND_BOX = 3,
+    YMIR_SOA_KIND_ANCHOR = 4
 };
 
 enum
 {
     YMIR_SOA_JOINT_REVOLUTE = 0,
     YMIR_SOA_JOINT_SPHERICAL = 1,
-    YMIR_SOA_JOINT_WELD = 2
+    YMIR_SOA_JOINT_WELD = 2,
+    YMIR_SOA_JOINT_MOTOR = 3
 };
 
-#define YMIR_SOA_ABI_VERSION 4u
+#define YMIR_SOA_ABI_VERSION 5u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
 // or -1; `limb` is the caller's label. Neither is used by Box3D: they are lanes for the consumer.
+// An anchor (kind 4) is a kinematic body with no shape: it is never hit and never collides, and size,
+// density, friction, restitution, rolling resistance and material are ignored. Its pose is set with
+// `ymir_box3d_soa_set_anchor_target`; the force and torque lanes never move it.
 typedef struct ymir_box3d_soa_body_desc
 {
     uint64_t stable_id;
@@ -81,6 +86,10 @@ typedef struct ymir_box3d_soa_body_desc
 // and its z axis along `axis`; the creation pose is the joint's zero. Revolute turns about that z axis.
 // `enable_limit` applies `lower`/`upper` (revolute angle, spherical twist), and `cone_angle` (spherical
 // swing) when it is positive. Weld ignores limits.
+// A motor joint (kind 3) is a pair of position springs, no velocity target: the linear spring pulls body B's
+// frame origin onto body A's (so B's anchor point onto A's), the angular spring pulls B's frame orientation onto
+// A's. `*_hertz` 0 turns that spring off; `max_force` (N) and `max_torque` (N m) bound what it may apply, so a
+// weak grab hangs below its target. All six are finite and >= 0 and are ignored by the other kinds.
 typedef struct ymir_box3d_soa_joint_desc
 {
     uint32_t kind;
@@ -92,7 +101,12 @@ typedef struct ymir_box3d_soa_joint_desc
     float lower;
     float upper;
     float cone_angle;
-    float reserved_float;
+    float linear_hertz;
+    float linear_damping;
+    float max_force;
+    float angular_hertz;
+    float angular_damping;
+    float max_torque;
 } ymir_box3d_soa_joint_desc;
 
 // Pointers first and in lane order, so the layout is the same on every 64-bit target. Lanes the caller
@@ -211,6 +225,19 @@ typedef struct ymir_box3d_soa_facts
     const ymir_box3d_soa_hit_fact* hit;
 } ymir_box3d_soa_facts;
 
+// The closest hit of a ray. `hit` is 0 for a miss and every other field is then 0. `lane` and `stable_id` name
+// the body and shape hit; `fraction` is of the ray's translation.
+typedef struct ymir_box3d_soa_ray_hit
+{
+    int32_t hit;
+    int32_t lane;
+    uint64_t stable_id;
+    float point[3];
+    float normal[3];
+    float fraction;
+    uint32_t reserved;
+} ymir_box3d_soa_ray_hit;
+
 #define YMIR_SOA_STATE_LANES 13
 #define YMIR_SOA_WRITE_LANES 6
 #define YMIR_SOA_LAST_SUBSTEP_FORCE_LANE (YMIR_SOA_STATE_LANES + YMIR_SOA_WRITE_LANES)
@@ -269,9 +296,14 @@ static int ymir_soa_finite3(const float* v)
     return ymir_soa_finite(v[0]) && ymir_soa_finite(v[1]) && ymir_soa_finite(v[2]);
 }
 
+static int ymir_soa_is_anchor(uint32_t kind)
+{
+    return kind == YMIR_SOA_KIND_ANCHOR;
+}
+
 static int ymir_soa_is_dynamic(uint32_t kind)
 {
-    return kind != YMIR_SOA_KIND_STATIC_BOX;
+    return kind != YMIR_SOA_KIND_STATIC_BOX && !ymir_soa_is_anchor(kind);
 }
 
 static void ymir_soa_refresh(ymir_box3d_soa_world* world, int index)
@@ -340,6 +372,11 @@ YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_soa_get_body_desc_size(void)
 YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_soa_get_joint_desc_size(void)
 {
     return (uint32_t)sizeof(ymir_box3d_soa_joint_desc);
+}
+
+YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_soa_get_ray_hit_size(void)
+{
+    return (uint32_t)sizeof(ymir_box3d_soa_ray_hit);
 }
 
 YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_soa_get_touch_fact_size(void)
@@ -470,7 +507,7 @@ YMIR_EXPORT void YMIR_CALL ymir_box3d_soa_destroy(ymir_box3d_soa_world* world)
 
 static int32_t ymir_soa_check_body(const ymir_box3d_soa_world* world, const ymir_box3d_soa_body_desc* d)
 {
-    if (d->kind > YMIR_SOA_KIND_BOX || !ymir_soa_finite3(d->position) || !ymir_soa_finite3(d->velocity) ||
+    if (d->kind > YMIR_SOA_KIND_ANCHOR || !ymir_soa_finite3(d->position) || !ymir_soa_finite3(d->velocity) ||
         !ymir_soa_finite3(d->size) || !ymir_soa_finite(d->friction) || !ymir_soa_finite(d->restitution) ||
         !ymir_soa_finite(d->density) || !ymir_soa_finite(d->rolling_resistance) || d->friction < 0.0f ||
         d->restitution < 0.0f || d->rolling_resistance < 0.0f)
@@ -500,6 +537,8 @@ static int32_t ymir_soa_check_body(const ymir_box3d_soa_world* world, const ymir
     }
     switch (d->kind)
     {
+        case YMIR_SOA_KIND_ANCHOR:
+            break; // no shape: nothing to size
         case YMIR_SOA_KIND_SPHERE:
             if (d->size[0] <= 0.0f)
             {
@@ -548,7 +587,9 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_body(
     }
 
     b3BodyDef body_def = b3DefaultBodyDef();
-    body_def.type = ymir_soa_is_dynamic(d->kind) ? b3_dynamicBody : b3_staticBody;
+    body_def.type = ymir_soa_is_anchor(d->kind) ? b3_kinematicBody
+                    : ymir_soa_is_dynamic(d->kind) ? b3_dynamicBody
+                                                   : b3_staticBody;
     body_def.position = (b3Vec3){d->position[0], d->position[1], d->position[2]};
     body_def.rotation = (b3Quat){{d->rotation[0], d->rotation[1], d->rotation[2]}, d->rotation[3]};
     body_def.linearVelocity = (b3Vec3){d->velocity[0], d->velocity[1], d->velocity[2]};
@@ -559,39 +600,42 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_body(
     {
         return YMIR_SOA_INTERNAL_ERROR;
     }
-    b3ShapeDef shape_def = b3DefaultShapeDef();
-    shape_def.userData = (void*)(uintptr_t)d->stable_id;
-    shape_def.enableContactEvents = true; // off by default in Box3D
-    shape_def.enableHitEvents = true;
-    shape_def.baseMaterial.userMaterialId = d->material_id;
-    if (ymir_soa_is_dynamic(d->kind))
+    if (!ymir_soa_is_anchor(d->kind)) // an anchor has no shape
     {
-        shape_def.density = d->density;
-    }
-    shape_def.baseMaterial.friction = d->friction;
-    shape_def.baseMaterial.restitution = d->restitution;
-    shape_def.baseMaterial.rollingResistance = d->rolling_resistance;
+        b3ShapeDef shape_def = b3DefaultShapeDef();
+        shape_def.userData = (void*)(uintptr_t)d->stable_id;
+        shape_def.enableContactEvents = true; // off by default in Box3D
+        shape_def.enableHitEvents = true;
+        shape_def.baseMaterial.userMaterialId = d->material_id;
+        if (ymir_soa_is_dynamic(d->kind))
+        {
+            shape_def.density = d->density;
+        }
+        shape_def.baseMaterial.friction = d->friction;
+        shape_def.baseMaterial.restitution = d->restitution;
+        shape_def.baseMaterial.rollingResistance = d->rolling_resistance;
 
-    b3ShapeId shape;
-    if (d->kind == YMIR_SOA_KIND_SPHERE)
-    {
-        b3Sphere sphere = {{0.0f, 0.0f, 0.0f}, d->size[0]};
-        shape = b3CreateSphereShape(body, &shape_def, &sphere);
-    }
-    else if (d->kind == YMIR_SOA_KIND_CAPSULE)
-    {
-        b3Capsule capsule = {{0.0f, -d->size[1], 0.0f}, {0.0f, d->size[1], 0.0f}, d->size[0]};
-        shape = b3CreateCapsuleShape(body, &shape_def, &capsule);
-    }
-    else
-    {
-        b3BoxHull box = b3MakeBoxHull(d->size[0], d->size[1], d->size[2]);
-        shape = b3CreateHullShape(body, &shape_def, &box.base);
-    }
-    if (B3_IS_NULL(shape))
-    {
-        b3DestroyBody(body);
-        return YMIR_SOA_INTERNAL_ERROR;
+        b3ShapeId shape;
+        if (d->kind == YMIR_SOA_KIND_SPHERE)
+        {
+            b3Sphere sphere = {{0.0f, 0.0f, 0.0f}, d->size[0]};
+            shape = b3CreateSphereShape(body, &shape_def, &sphere);
+        }
+        else if (d->kind == YMIR_SOA_KIND_CAPSULE)
+        {
+            b3Capsule capsule = {{0.0f, -d->size[1], 0.0f}, {0.0f, d->size[1], 0.0f}, d->size[0]};
+            shape = b3CreateCapsuleShape(body, &shape_def, &capsule);
+        }
+        else
+        {
+            b3BoxHull box = b3MakeBoxHull(d->size[0], d->size[1], d->size[2]);
+            shape = b3CreateHullShape(body, &shape_def, &box.base);
+        }
+        if (B3_IS_NULL(shape))
+        {
+            b3DestroyBody(body);
+            return YMIR_SOA_INTERNAL_ERROR;
+        }
     }
 
     int i = world->count++;
@@ -600,9 +644,9 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_body(
     world->kind[i] = d->kind;
     world->parent[i] = d->parent;
     world->limb[i] = d->limb;
-    world->material_id[i] = d->material_id;
+    world->material_id[i] = ymir_soa_is_anchor(d->kind) ? 0 : d->material_id;
     /* Publish only the components the kind uses; unused ones read 0 whatever the caller passed. */
-    int used = d->kind == YMIR_SOA_KIND_SPHERE ? 1 : d->kind == YMIR_SOA_KIND_CAPSULE ? 2 : 3;
+    int used = ymir_soa_is_anchor(d->kind) ? 0 : d->kind == YMIR_SOA_KIND_SPHERE ? 1 : d->kind == YMIR_SOA_KIND_CAPSULE ? 2 : 3;
     for (int k = 0; k < 3; k++)
     {
         world->size[(size_t)k * (size_t)world->capacity + (size_t)i] = k < used ? d->size[k] : 0.0f;
@@ -627,10 +671,14 @@ static b3Transform ymir_soa_body_transform(b3BodyId body)
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
     ymir_box3d_soa_world* world, const ymir_box3d_soa_joint_desc* d, int32_t* index)
 {
-    if (world == NULL || d == NULL || d->kind > YMIR_SOA_JOINT_WELD || d->body_a < 0 || d->body_a >= world->count ||
+    if (world == NULL || d == NULL || d->kind > YMIR_SOA_JOINT_MOTOR || d->body_a < 0 || d->body_a >= world->count ||
         d->body_b < 0 || d->body_b >= world->count || d->body_a == d->body_b || !ymir_soa_finite3(d->anchor) ||
         !ymir_soa_finite3(d->axis) || !ymir_soa_finite(d->lower) || !ymir_soa_finite(d->upper) ||
-        !ymir_soa_finite(d->cone_angle) || d->cone_angle < 0.0f || d->cone_angle > B3_PI)
+        !ymir_soa_finite(d->cone_angle) || d->cone_angle < 0.0f || d->cone_angle > B3_PI ||
+        !ymir_soa_finite(d->linear_hertz) || !ymir_soa_finite(d->linear_damping) || !ymir_soa_finite(d->max_force) ||
+        !ymir_soa_finite(d->angular_hertz) || !ymir_soa_finite(d->angular_damping) || !ymir_soa_finite(d->max_torque) ||
+        d->linear_hertz < 0.0f || d->linear_damping < 0.0f || d->max_force < 0.0f || d->angular_hertz < 0.0f ||
+        d->angular_damping < 0.0f || d->max_torque < 0.0f)
     {
         return YMIR_SOA_INVALID_ARGUMENT;
     }
@@ -676,6 +724,21 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
         def.lowerTwistAngle = d->lower;
         def.upperTwistAngle = d->upper;
         joint = b3CreateSphericalJoint(world->world_id, &def);
+    }
+    else if (d->kind == YMIR_SOA_JOINT_MOTOR)
+    {
+        b3MotorJointDef def = b3DefaultMotorJointDef();
+        def.base.bodyIdA = world->bodies[d->body_a];
+        def.base.bodyIdB = world->bodies[d->body_b];
+        def.base.localFrameA = local_a;
+        def.base.localFrameB = local_b;
+        def.linearHertz = d->linear_hertz;
+        def.linearDampingRatio = d->linear_damping;
+        def.maxSpringForce = d->max_force;
+        def.angularHertz = d->angular_hertz;
+        def.angularDampingRatio = d->angular_damping;
+        def.maxSpringTorque = d->max_torque;
+        joint = b3CreateMotorJoint(world->world_id, &def);
     }
     else
     {
@@ -879,6 +942,85 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_step(ymir_box3d_soa_world* world, f
         ymir_soa_refresh_joint(world, j);
     }
     world->step_count += 1;
+    return YMIR_SOA_OK;
+}
+
+// Grab and poke input, each an immediate command on the caller's say-so. Ymir decides nothing about grabbing.
+
+// Sets an anchor's pose for the coming step: Box3D gives it the velocity that reaches the pose after
+// `time_step` seconds, so pass the step's own dt and the anchor arrives at the end of that step.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_set_anchor_target(
+    ymir_box3d_soa_world* world, int32_t lane, const float* position, const float* rotation, float time_step)
+{
+    if (world == NULL || position == NULL || rotation == NULL || lane < 0 || lane >= world->count ||
+        !ymir_soa_is_anchor(world->kind[lane]) || !ymir_soa_finite3(position) || !ymir_soa_finite(time_step) ||
+        time_step <= 0.0f)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    float q2 = 0.0f;
+    for (int i = 0; i < 4; ++i)
+    {
+        if (!ymir_soa_finite(rotation[i]))
+        {
+            return YMIR_SOA_INVALID_ARGUMENT;
+        }
+        q2 += rotation[i] * rotation[i];
+    }
+    if (fabsf(q2 - 1.0f) > 1e-3f)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    b3WorldTransform target = {
+        {position[0], position[1], position[2]}, {{rotation[0], rotation[1], rotation[2]}, rotation[3]}};
+    b3Body_SetTargetTransform(world->bodies[lane], target, time_step, true);
+    return YMIR_SOA_OK;
+}
+
+// A one-shot world impulse (N s) applied at a world point, so it turns the body when the point is off the
+// centre of mass. Dynamic bodies only.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_apply_impulse(
+    ymir_box3d_soa_world* world, int32_t lane, const float* impulse, const float* point)
+{
+    if (world == NULL || impulse == NULL || point == NULL || lane < 0 || lane >= world->count ||
+        !ymir_soa_is_dynamic(world->kind[lane]) || !ymir_soa_finite3(impulse) || !ymir_soa_finite3(point))
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    b3Body_ApplyLinearImpulse(
+        world->bodies[lane], (b3Vec3){impulse[0], impulse[1], impulse[2]}, (b3Pos){point[0], point[1], point[2]}, true);
+    return YMIR_SOA_OK;
+}
+
+// The closest shape along origin + t * translation, t in [0, 1], with Box3D's default filter. A miss is a
+// success with `hit` 0. Refuses a non-finite or zero-length translation.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_cast_ray_closest(
+    const ymir_box3d_soa_world* world, const float* origin, const float* translation, ymir_box3d_soa_ray_hit* out)
+{
+    if (world == NULL || origin == NULL || translation == NULL || out == NULL || !ymir_soa_finite3(origin) ||
+        !ymir_soa_finite3(translation) ||
+        translation[0] * translation[0] + translation[1] * translation[1] + translation[2] * translation[2] <= 0.0f)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    memset(out, 0, sizeof(*out));
+    b3RayResult r = b3World_CastRayClosest(
+        world->world_id, (b3Pos){origin[0], origin[1], origin[2]},
+        (b3Vec3){translation[0], translation[1], translation[2]}, b3DefaultQueryFilter());
+    if (!r.hit)
+    {
+        return YMIR_SOA_OK;
+    }
+    out->hit = 1;
+    out->lane = ymir_soa_shape_lane(r.shapeId);
+    out->stable_id = (uint64_t)(uintptr_t)b3Shape_GetUserData(r.shapeId);
+    out->point[0] = (float)r.point.x;
+    out->point[1] = (float)r.point.y;
+    out->point[2] = (float)r.point.z;
+    out->normal[0] = r.normal.x;
+    out->normal[1] = r.normal.y;
+    out->normal[2] = r.normal.z;
+    out->fraction = r.fraction;
     return YMIR_SOA_OK;
 }
 

@@ -7,14 +7,18 @@ public enum Box3DSoaKind : uint
     Sphere = 0,
     StaticBox = 1,
     Capsule = 2,
-    Box = 3
+    Box = 3,
+    /// <summary>A kinematic body with no shape: it never collides or is hit, and only <see cref="Box3DSoaWorld.SetAnchorTarget"/> moves it.</summary>
+    Anchor = 4
 }
 
 public enum Box3DSoaJointKind : uint
 {
     Revolute = 0,
     Spherical = 1,
-    Weld = 2
+    Weld = 2,
+    /// <summary>Position springs pulling body B's frame onto body A's, bounded by a maximum force and torque.</summary>
+    Motor = 3
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_body_desc</c>.</summary>
@@ -44,8 +48,26 @@ internal struct Box3DSoaJointDesc
     public uint EnableLimit;
     public float AnchorX, AnchorY, AnchorZ;
     public float AxisX, AxisY, AxisZ;
-    public float Lower, Upper, ConeAngle, ReservedFloat;
+    public float Lower, Upper, ConeAngle;
+    public float LinearHertz, LinearDamping, MaxForce, AngularHertz, AngularDamping, MaxTorque;
 }
+
+/// <summary>Native layout of <c>ymir_box3d_soa_ray_hit</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct Box3DSoaRayHitNative
+{
+    public int Hit;
+    public int Lane;
+    public ulong StableId;
+    public float PointX, PointY, PointZ;
+    public float NormalX, NormalY, NormalZ;
+    public float Fraction;
+    public uint Reserved;
+}
+
+/// <summary>The closest hit of a ray. <see cref="Hit"/> false is a miss and every other field is then default.</summary>
+public readonly record struct Box3DSoaRayHit(
+    bool Hit, int Lane, ulong StableId, (float X, float Y, float Z) Point, (float X, float Y, float Z) Normal, float Fraction);
 
 /// <summary>Native layout of <c>ymir_box3d_soa_view</c>: counts, then one pointer per lane.</summary>
 [StructLayout(LayoutKind.Sequential)]
@@ -211,6 +233,10 @@ internal static unsafe partial class Box3DSoaNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial uint ymir_box3d_soa_get_ray_hit_size();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial uint ymir_box3d_soa_get_hit_fact_size();
 
     [LibraryImport(Library)]
@@ -240,6 +266,18 @@ internal static unsafe partial class Box3DSoaNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ymir_box3d_soa_get_facts(nint world, out Box3DSoaFactsNative facts);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_set_anchor_target(nint world, int lane, float* position, float* rotation, float timeStep);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_apply_impulse(nint world, int lane, float* impulse, float* point);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_cast_ray_closest(nint world, float* origin, float* translation, out Box3DSoaRayHitNative hit);
 }
 
 /// <summary>
@@ -355,7 +393,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 4;
+    private const uint ExpectedAbi = 5;
     private nint _handle;
 
     /// <summary>
@@ -372,7 +410,8 @@ public sealed class Box3DSoaWorld : IDisposable
             Box3DSoaNative.ymir_box3d_soa_get_joint_desc_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaJointDesc>() ||
             Box3DSoaNative.ymir_box3d_soa_get_facts_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaFactsNative>() ||
             Box3DSoaNative.ymir_box3d_soa_get_touch_fact_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaTouch>() ||
-            Box3DSoaNative.ymir_box3d_soa_get_hit_fact_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaHit>())
+            Box3DSoaNative.ymir_box3d_soa_get_hit_fact_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaHit>() ||
+            Box3DSoaNative.ymir_box3d_soa_get_ray_hit_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaRayHitNative>())
         {
             throw new InvalidOperationException("The native Ymir Box3D SoA ABI does not match this build.");
         }
@@ -467,6 +506,73 @@ public sealed class Box3DSoaWorld : IDisposable
         };
         Check(Box3DSoaNative.ymir_box3d_soa_add_joint(_handle, desc, out var index));
         return index;
+    }
+
+    /// <summary>
+    /// A motor joint: position springs that pull body B's frame onto body A's. The frame sits at the world-space
+    /// <paramref name="anchor"/> at creation (axes aligned with the world), so the spring pulls B's anchor point onto A's.
+    /// <c>Hertz</c> 0 turns that spring off; <c>MaxForce</c> (N) and <c>MaxTorque</c> (N m) bound it. All are finite and
+    /// not negative. Pair an anchor (body A) with the body to grab (body B). Returns the joint's lane index.
+    /// </summary>
+    public int AddMotorJoint(
+        int bodyA, int bodyB, (float X, float Y, float Z) anchor,
+        (float Hertz, float Damping, float MaxForce) linear, (float Hertz, float Damping, float MaxTorque) angular)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        var desc = new Box3DSoaJointDesc
+        {
+            Kind = (uint)Box3DSoaJointKind.Motor, BodyA = bodyA, BodyB = bodyB,
+            AnchorX = anchor.X, AnchorY = anchor.Y, AnchorZ = anchor.Z, AxisZ = 1f,
+            LinearHertz = linear.Hertz, LinearDamping = linear.Damping, MaxForce = linear.MaxForce,
+            AngularHertz = angular.Hertz, AngularDamping = angular.Damping, MaxTorque = angular.MaxTorque,
+        };
+        Check(Box3DSoaNative.ymir_box3d_soa_add_joint(_handle, desc, out var index));
+        return index;
+    }
+
+    /// <summary>Adds a kinematic anchor with no shape (rotation as for <see cref="AddCapsule"/>); returns its lane index.</summary>
+    public int AddAnchor(ulong stableId, (float X, float Y, float Z) position, (float X, float Y, float Z, float W) rotation = default) =>
+        AddBody(Describe(Box3DSoaKind.Anchor, stableId, position, rotation, default, 0f, default, 0f, 0f, -1, 0));
+
+    /// <summary>
+    /// Sets an anchor's pose for the coming step. Box3D gives the anchor the velocity that reaches it after
+    /// <paramref name="timeStep"/>, so pass the same dt as the next <see cref="Step"/> and the anchor arrives at its end.
+    /// Throws for a lane that is not an anchor, a non-finite or non-unit input, or a non-positive time step.
+    /// </summary>
+    public unsafe void SetAnchorTarget(
+        int lane, (float X, float Y, float Z) position, (float X, float Y, float Z, float W) rotation, float timeStep)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        if (rotation == default) rotation = (0f, 0f, 0f, 1f);
+        var p = stackalloc float[] { position.X, position.Y, position.Z };
+        var q = stackalloc float[] { rotation.X, rotation.Y, rotation.Z, rotation.W };
+        Check(Box3DSoaNative.ymir_box3d_soa_set_anchor_target(_handle, lane, p, q, timeStep));
+    }
+
+    /// <summary>
+    /// A one-shot world impulse (N s) at a world <paramref name="point"/>: it adds <c>impulse / mass</c> to the linear
+    /// velocity and turns the body by <c>(point - centre of mass) x impulse</c>. Dynamic bodies only; throws otherwise
+    /// or for non-finite input.
+    /// </summary>
+    public unsafe void ApplyImpulse(int lane, (float X, float Y, float Z) impulse, (float X, float Y, float Z) point)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        var j = stackalloc float[] { impulse.X, impulse.Y, impulse.Z };
+        var p = stackalloc float[] { point.X, point.Y, point.Z };
+        Check(Box3DSoaNative.ymir_box3d_soa_apply_impulse(_handle, lane, j, p));
+    }
+
+    /// <summary>
+    /// The closest shape along <paramref name="origin"/> + t * <paramref name="translation"/>, t in [0, 1], with Box3D's
+    /// default filter; anchors have no shape and are never hit. Throws for non-finite input or a zero translation.
+    /// </summary>
+    public unsafe Box3DSoaRayHit CastRayClosest((float X, float Y, float Z) origin, (float X, float Y, float Z) translation)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        var o = stackalloc float[] { origin.X, origin.Y, origin.Z };
+        var t = stackalloc float[] { translation.X, translation.Y, translation.Z };
+        Check(Box3DSoaNative.ymir_box3d_soa_cast_ray_closest(_handle, o, t, out var h));
+        return new Box3DSoaRayHit(h.Hit != 0, h.Lane, h.StableId, (h.PointX, h.PointY, h.PointZ), (h.NormalX, h.NormalY, h.NormalZ), h.Fraction);
     }
 
     private static Box3DSoaBodyDesc Describe(
