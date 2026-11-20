@@ -31,6 +31,7 @@ internal struct Box3DSoaBodyDesc
     public float VelocityX, VelocityY, VelocityZ;
     public float Size0, Size1, Size2;
     public float Density, Friction, Restitution, RollingResistance;
+    public ulong MaterialId;
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_joint_desc</c>.</summary>
@@ -98,6 +99,85 @@ internal unsafe struct Box3DSoaViewNative
     public float* JointAngularVelocityX;
     public float* JointAngularVelocityY;
     public float* JointAngularVelocityZ;
+    public float* ContactForce;
+    public int* ContactCount;
+    public ulong* MaterialId;
+}
+
+/// <summary>Native layout of <c>ymir_box3d_soa_facts</c>: counts, dropped counters, then three pointers.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct Box3DSoaFactsNative
+{
+    public uint BeginCount;
+    public uint EndCount;
+    public uint HitCount;
+    public uint FactCapacity;
+    public uint BeginDropped;
+    public uint EndDropped;
+    public uint HitDropped;
+    public uint Reserved;
+    public Box3DSoaTouch* Begin;
+    public Box3DSoaTouch* End;
+    public Box3DSoaHit* Hit;
+}
+
+/// <summary>A begin or end of touch: the two bodies' lane indices and the two shapes' stable ids.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public readonly struct Box3DSoaTouch
+{
+    public readonly int LaneA;
+    public readonly int LaneB;
+    public readonly ulong StableIdA;
+    public readonly ulong StableIdB;
+}
+
+/// <summary>A touch that approached faster than the world's hit threshold. Normal points from A to B.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public readonly struct Box3DSoaHit
+{
+    public readonly int LaneA;
+    public readonly int LaneB;
+    public readonly ulong StableIdA;
+    public readonly ulong StableIdB;
+    public readonly float PointX, PointY, PointZ;
+    public readonly float NormalX, NormalY, NormalZ;
+    /// <summary>Metres per second, always positive.</summary>
+    public readonly float ApproachSpeed;
+    private readonly uint _reserved;
+    public readonly ulong MaterialA;
+    public readonly ulong MaterialB;
+}
+
+/// <summary>Facts past <see cref="Box3DSoaWorld"/>'s fact capacity that the last step could not keep.</summary>
+public readonly record struct Box3DSoaDropped(uint Begin, uint End, uint Hit);
+
+/// <summary>
+/// What Box3D reported for the step just taken, in Box3D's event order: spans over native buffers that
+/// are fixed for the world's life and rewritten by every step, so they are valid until the next
+/// <see cref="Box3DSoaWorld.Step"/> and invalid once the world is disposed.
+/// </summary>
+public readonly unsafe ref struct Box3DSoaFacts
+{
+    private readonly Box3DSoaFactsNative _f;
+    private readonly Box3DSoaWorld _world;
+
+    internal Box3DSoaFacts(Box3DSoaFactsNative f, Box3DSoaWorld world)
+    {
+        _f = f;
+        _world = world;
+    }
+
+    private ReadOnlySpan<T> Facts<T>(T* p, uint n) where T : unmanaged
+    {
+        _world.ThrowIfDisposed();
+        return new(p, (int)n);
+    }
+
+    public ReadOnlySpan<Box3DSoaTouch> Begin => Facts(_f.Begin, _f.BeginCount);
+    public ReadOnlySpan<Box3DSoaTouch> End => Facts(_f.End, _f.EndCount);
+    public ReadOnlySpan<Box3DSoaHit> Hit => Facts(_f.Hit, _f.HitCount);
+    public Box3DSoaDropped Dropped => new(_f.BeginDropped, _f.EndDropped, _f.HitDropped);
+    public int Capacity => (int)_f.FactCapacity;
 }
 
 internal static unsafe partial class Box3DSoaNative
@@ -122,7 +202,11 @@ internal static unsafe partial class Box3DSoaNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-    internal static partial int ymir_box3d_soa_create(int capacity, int jointCapacity, float gx, float gy, float gz, out nint world);
+    internal static partial uint ymir_box3d_soa_get_facts_size();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_create(int capacity, int jointCapacity, float gx, float gy, float gz, int factCapacity, float hitThreshold, out nint world);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -143,6 +227,10 @@ internal static unsafe partial class Box3DSoaNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ymir_box3d_soa_get_view(nint world, out Box3DSoaViewNative view);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_get_facts(nint world, out Box3DSoaFactsNative facts);
 }
 
 /// <summary>
@@ -215,6 +303,14 @@ public readonly unsafe struct Box3DSoaView
     public Span<float> TorqueY => Write(_v.TorqueY, Count);
     public Span<float> TorqueZ => Write(_v.TorqueZ, Count);
 
+    // Contact lanes, read-only, refreshed by every Step.
+    /// <summary>Newtons: the sum over the body's touching contact manifolds of totalNormalImpulse / dt. 0 for a body touching nothing.</summary>
+    public ReadOnlySpan<float> ContactForce => Lane(_v.ContactForce, Count);
+    /// <summary>Number of touching contacts.</summary>
+    public ReadOnlySpan<int> ContactCount => Lane(_v.ContactCount, Count);
+    /// <summary>The material id the body was added with (0 by default).</summary>
+    public ReadOnlySpan<ulong> MaterialId => Lane(_v.MaterialId, Count);
+
     /// <summary>Joints at the moment this view was taken: take it after the last AddJoint.</summary>
     public int JointCount => _v.JointCount;
     public ReadOnlySpan<uint> JointKind => Lane(_v.JointKind, JointCount);
@@ -250,20 +346,27 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 3;
+    private const uint ExpectedAbi = 4;
     private nint _handle;
 
-    public Box3DSoaWorld(int capacity, float gravityX = 0f, float gravityY = -10f, float gravityZ = 0f, int jointCapacity = 0)
+    /// <summary>
+    /// <paramref name="factCapacity"/> bounds each kind of per-step contact fact (default 4 x capacity; 0 or less is refused);
+    /// <paramref name="hitThreshold"/> is the approach speed in m/s above which a touch is a hit (Box3D's default, 1).
+    /// </summary>
+    public Box3DSoaWorld(
+        int capacity, float gravityX = 0f, float gravityY = -10f, float gravityZ = 0f, int jointCapacity = 0,
+        int? factCapacity = null, float hitThreshold = 1f)
     {
         if (Box3DSoaNative.ymir_box3d_soa_get_abi_version() != ExpectedAbi ||
             Box3DSoaNative.ymir_box3d_soa_get_view_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaViewNative>() ||
             Box3DSoaNative.ymir_box3d_soa_get_body_desc_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaBodyDesc>() ||
-            Box3DSoaNative.ymir_box3d_soa_get_joint_desc_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaJointDesc>())
+            Box3DSoaNative.ymir_box3d_soa_get_joint_desc_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaJointDesc>() ||
+            Box3DSoaNative.ymir_box3d_soa_get_facts_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaFactsNative>())
         {
             throw new InvalidOperationException("The native Ymir Box3D SoA ABI does not match this build.");
         }
 
-        Check(Box3DSoaNative.ymir_box3d_soa_create(capacity, jointCapacity, gravityX, gravityY, gravityZ, out _handle));
+        Check(Box3DSoaNative.ymir_box3d_soa_create(capacity, jointCapacity, gravityX, gravityY, gravityZ, factCapacity ?? checked(capacity * 4), hitThreshold, out _handle));
     }
 
     /// <summary>The live lanes. Count and step count are read from native memory each call.</summary>
@@ -274,6 +377,17 @@ public sealed class Box3DSoaWorld : IDisposable
             ObjectDisposedException.ThrowIf(_handle == 0, this);
             Check(Box3DSoaNative.ymir_box3d_soa_get_view(_handle, out var v));
             return new Box3DSoaView(v, this);
+        }
+    }
+
+    /// <summary>The contact facts of the last Step: empty before the first Step and rewritten by the next.</summary>
+    public Box3DSoaFacts Facts
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(_handle == 0, this);
+            Check(Box3DSoaNative.ymir_box3d_soa_get_facts(_handle, out var f));
+            return new Box3DSoaFacts(f, this);
         }
     }
 
@@ -292,16 +406,16 @@ public sealed class Box3DSoaWorld : IDisposable
     public int AddSphere(
         ulong stableId, (float X, float Y, float Z) position, float radius, float density,
         (float X, float Y, float Z) velocity = default, float friction = 0.6f, float restitution = 0f,
-        int parent = -1, int limb = 0, float rollingResistance = 0f) =>
+        int parent = -1, int limb = 0, float rollingResistance = 0f, ulong materialId = 0) =>
         AddBody(Describe(Box3DSoaKind.Sphere, stableId, position, default, (radius, 0f, 0f), density,
-            velocity, friction, restitution, parent, limb, rollingResistance));
+            velocity, friction, restitution, parent, limb, rollingResistance, materialId));
 
     /// <summary>Adds a static axis-aligned box centred at <paramref name="position"/>.</summary>
     public int AddStaticBox(
         ulong stableId, (float X, float Y, float Z) position, (float X, float Y, float Z) halfExtents,
-        float friction = 0.6f, float restitution = 0f) =>
+        float friction = 0.6f, float restitution = 0f, ulong materialId = 0) =>
         AddBody(Describe(Box3DSoaKind.StaticBox, stableId, position, default, halfExtents, 0f,
-            default, friction, restitution, -1, 0));
+            default, friction, restitution, -1, 0, 0f, materialId));
 
     /// <summary>
     /// Adds a dynamic capsule: a segment of <paramref name="halfLength"/> either side of the centre along
@@ -311,17 +425,17 @@ public sealed class Box3DSoaWorld : IDisposable
     public int AddCapsule(
         ulong stableId, (float X, float Y, float Z) position, float radius, float halfLength, float density,
         (float X, float Y, float Z, float W) rotation = default, float friction = 0.6f, float restitution = 0f,
-        int parent = -1, int limb = 0, float rollingResistance = 0f) =>
+        int parent = -1, int limb = 0, float rollingResistance = 0f, ulong materialId = 0) =>
         AddBody(Describe(Box3DSoaKind.Capsule, stableId, position, rotation, (radius, halfLength, 0f), density,
-            default, friction, restitution, parent, limb, rollingResistance));
+            default, friction, restitution, parent, limb, rollingResistance, materialId));
 
     /// <summary>Adds a dynamic box with the given half extents; rotation as for <see cref="AddCapsule"/>.</summary>
     public int AddBox(
         ulong stableId, (float X, float Y, float Z) position, (float X, float Y, float Z) halfExtents, float density,
         (float X, float Y, float Z, float W) rotation = default, float friction = 0.6f, float restitution = 0f,
-        int parent = -1, int limb = 0) =>
+        int parent = -1, int limb = 0, ulong materialId = 0) =>
         AddBody(Describe(Box3DSoaKind.Box, stableId, position, rotation, halfExtents, density,
-            default, friction, restitution, parent, limb));
+            default, friction, restitution, parent, limb, 0f, materialId));
 
     /// <summary>
     /// Joins two bodies at a world-space <paramref name="anchor"/>. The joint frame's z axis is
@@ -347,7 +461,7 @@ public sealed class Box3DSoaWorld : IDisposable
     private static Box3DSoaBodyDesc Describe(
         Box3DSoaKind kind, ulong stableId, (float X, float Y, float Z) position,
         (float X, float Y, float Z, float W) rotation, (float, float, float) size, float density,
-        (float X, float Y, float Z) velocity, float friction, float restitution, int parent, int limb, float rollingResistance = 0f)
+        (float X, float Y, float Z) velocity, float friction, float restitution, int parent, int limb, float rollingResistance = 0f, ulong materialId = 0)
     {
         if (rotation == default) rotation = (0f, 0f, 0f, 1f);
         return new Box3DSoaBodyDesc
@@ -357,7 +471,7 @@ public sealed class Box3DSoaWorld : IDisposable
             RotationX = rotation.X, RotationY = rotation.Y, RotationZ = rotation.Z, RotationW = rotation.W,
             VelocityX = velocity.X, VelocityY = velocity.Y, VelocityZ = velocity.Z,
             Size0 = size.Item1, Size1 = size.Item2, Size2 = size.Item3,
-            Density = density, Friction = friction, Restitution = restitution, RollingResistance = rollingResistance,
+            Density = density, Friction = friction, Restitution = restitution, RollingResistance = rollingResistance, MaterialId = materialId,
         };
     }
 
