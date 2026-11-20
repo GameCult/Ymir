@@ -1,3 +1,3 @@
 [submodule "extern/box3d"]
 	path = extern/box3d
-	url = https://github.com/erincatto/box3d.git
+	url = https://eureka.gamecult.org/forge/GameCult/box3d.git
