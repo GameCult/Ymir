@@ -132,7 +132,7 @@ internal unsafe struct Box3DSoaViewNative
     public float* JointAngularVelocityX;
     public float* JointAngularVelocityY;
     public float* JointAngularVelocityZ;
-    public float* LastSubstepForce;
+    public float* ContactImpulse;
     public int* ContactCount;
     public ulong* MaterialId;
     public uint* JointGeneration;
@@ -177,8 +177,8 @@ public readonly struct Box3DSoaHit
     public readonly float NormalX, NormalY, NormalZ;
     /// <summary>Metres per second, always positive.</summary>
     public readonly float ApproachSpeed;
-    /// <summary>Normal impulse (N s) the collision must deliver: v (1 + e) / (1/mA + 1/mB). Exact for a centre-to-centre hit between free bodies; it can over-count when one collision yields several hit facts (box corners, tilted capsules), which sum, and it undercounts heavily for jointed bodies (it takes the limb's own mass). It is not a bound. A mass-aware per-body impulse that holds for jointed bodies is being designed.</summary>
-    public readonly float ImpulseEstimate;
+    /// <summary>Normal impulse (N s) the pair's contact delivered over the whole step: the exact sum of Box3D's stepNormalImpulse over the manifold of the two shapes. Normal channel only.</summary>
+    public readonly float Impulse;
     public readonly ulong MaterialA;
     public readonly ulong MaterialB;
 }
@@ -371,8 +371,8 @@ public readonly unsafe struct Box3DSoaView
     public Span<float> TorqueZ => Write(_v.TorqueZ, Count);
 
     // Contact lanes, read-only, refreshed by every Step.
-    /// <summary>Newtons: the final sub-step's normal impulse over the body's touching contact points, as a force (impulse * sub-steps / dt). The load carried at rest; NOT an impact measure (it sees one sub-step). Use <see cref="Box3DSoaHit.ImpulseEstimate"/> for impacts. 0 for a body touching nothing.</summary>
-    public ReadOnlySpan<float> LastSubstepForce => Lane(_v.LastSubstepForce, Count);
+    /// <summary>N s: the normal impulse the body's touching contact points delivered over the whole step, exact (the sum of Box3D's stepNormalImpulse). Normal channel only. A resting load is this over dt. 0 for a body touching nothing.</summary>
+    public ReadOnlySpan<float> ContactImpulse => Lane(_v.ContactImpulse, Count);
     /// <summary>Number of touching contacts.</summary>
     public ReadOnlySpan<int> ContactCount => Lane(_v.ContactCount, Count);
     /// <summary>The material id the body was added with (0 by default).</summary>
@@ -417,7 +417,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 6;
+    private const uint ExpectedAbi = 7;
     private nint _handle;
 
     /// <summary>

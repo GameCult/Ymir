@@ -57,7 +57,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a destroyed joint's lane: never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 6u
+#define YMIR_SOA_ABI_VERSION 7u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -168,13 +168,12 @@ typedef struct ymir_box3d_soa_view
     const float* joint_angular_velocity_x;
     const float* joint_angular_velocity_y;
     const float* joint_angular_velocity_z;
-    // Contact lanes, read-only, refreshed every step. last_substep_force is N: the sum over the body's touching
-    // contact manifold points of the final sub-step's normalImpulse * sub_steps / dt (0 for a body touching
-    // nothing). It is the load a body carries at rest and NOT an impact measure: it sees one sub-step, so it
-    // reads 0.02x to 1.9x the true force on an impact step. For impact severity see the hit fact's impulse_estimate and
-    // the limits stated there.
+    // Contact lanes, read-only, refreshed every step. contact_impulse is N s: the sum over the body's touching
+    // contact manifold points of stepNormalImpulse, the normal impulse the contacts delivered to the body over
+    // the whole step (0 for a body touching nothing). Exact, normal channel only: Box3D exposes no tangent
+    // impulse. A resting load is contact_impulse / dt.
     // contact_count is the number of touching contacts. material_id is the body's desc material_id.
-    const float* last_substep_force;
+    const float* contact_impulse;
     const int32_t* contact_count;
     const uint64_t* material_id;
     // Per joint slot: counts the destroys of that slot. A grab's handle is (lane, generation); destroy_joint refuses
@@ -201,14 +200,9 @@ typedef struct ymir_box3d_soa_hit_fact
     float point[3];
     float normal[3];
     float approach_speed;
-    // The normal impulse (N s) this collision must deliver, from the approach speed, the two bodies' masses
-    // and the pair's restitution: v (1 + e) / (1/mA + 1/mB), with e applying only above Box3D's restitution
-    // threshold and a static body's 1/m taken as 0.
-    // Exact for a centre-to-centre hit between free bodies (a sphere on a plane, two spheres). It can over-count
-    // when one collision yields several hit facts (box corners, tilted capsules), which sum, and it undercounts
-    // heavily for jointed bodies (it takes the limb's own mass, not the joint-coupled effective mass). It is not
-    // a bound either way. A mass-aware per-body impulse that holds for jointed bodies is being designed.
-    float impulse_estimate;
+    // The normal impulse (N s) the pair's contact delivered over the whole step: the sum of stepNormalImpulse
+    // over the manifold of the two shapes, read after the step. Exact, normal channel only.
+    float impulse;
     uint64_t material_a;
     uint64_t material_b;
 } ymir_box3d_soa_hit_fact;
@@ -246,8 +240,8 @@ typedef struct ymir_box3d_soa_ray_hit
 
 #define YMIR_SOA_STATE_LANES 13
 #define YMIR_SOA_WRITE_LANES 6
-#define YMIR_SOA_LAST_SUBSTEP_FORCE_LANE (YMIR_SOA_STATE_LANES + YMIR_SOA_WRITE_LANES)
-#define YMIR_SOA_BODY_FLOAT_LANES (YMIR_SOA_LAST_SUBSTEP_FORCE_LANE + 1)
+#define YMIR_SOA_CONTACT_IMPULSE_LANE (YMIR_SOA_STATE_LANES + YMIR_SOA_WRITE_LANES)
+#define YMIR_SOA_BODY_FLOAT_LANES (YMIR_SOA_CONTACT_IMPULSE_LANE + 1)
 #define YMIR_SOA_JOINT_FLOAT_LANES 12
 
 typedef struct ymir_box3d_soa_world
@@ -902,24 +896,36 @@ static void ymir_soa_touch_fact(
         (uint64_t)(uintptr_t)b3Shape_GetUserData(b)};
 }
 
-static float ymir_soa_inverse_mass(b3BodyId body)
+// The normal impulse (N s) a contact's manifold points delivered over the step.
+static float ymir_soa_manifold_impulse(const b3ContactData* data)
 {
-    return b3Body_GetType(body) == b3_dynamicBody ? 1.0f / b3Body_GetMass(body) : 0.0f;
+    float impulse = 0.0f;
+    for (int m = 0; m < data->manifoldCount; ++m)
+    {
+        const b3Manifold* manifold = data->manifolds + m;
+        for (int p = 0; p < manifold->pointCount; ++p)
+        {
+            impulse += manifold->points[p].stepNormalImpulse;
+        }
+    }
+    return impulse;
 }
 
-static float ymir_soa_hit_impulse(const ymir_box3d_soa_world* world, const b3ContactHitEvent* e)
+// A hit's impulse: the contact between its two shapes. A body has one shape, so a shape has at most
+// capacity - 1 contacts and the scratch holds them all.
+static float ymir_soa_pair_impulse(ymir_box3d_soa_world* world, const b3ContactHitEvent* e)
 {
-    float inverse = ymir_soa_inverse_mass(b3Shape_GetBody(e->shapeIdA)) + ymir_soa_inverse_mass(b3Shape_GetBody(e->shapeIdB));
-    if (inverse <= 0.0f)
+    int n = b3Shape_GetContactData(e->shapeIdA, world->contact_scratch, world->capacity);
+    for (int c = 0; c < n; ++c)
     {
-        return 0.0f;
+        const b3ContactData* data = world->contact_scratch + c;
+        b3ShapeId other = B3_ID_EQUALS(data->shapeIdA, e->shapeIdA) ? data->shapeIdB : data->shapeIdA;
+        if (B3_ID_EQUALS(other, e->shapeIdB))
+        {
+            return ymir_soa_manifold_impulse(data);
+        }
     }
-    float restitution = fmaxf(b3Shape_GetRestitution(e->shapeIdA), b3Shape_GetRestitution(e->shapeIdB));
-    if (e->approachSpeed <= b3World_GetRestitutionThreshold(world->world_id))
-    {
-        restitution = 0.0f;
-    }
-    return e->approachSpeed * (1.0f + restitution) / inverse;
+    return 0.0f;
 }
 
 // Rewrites the fact arrays from Box3D's contact events for the step just taken, in Box3D's event order.
@@ -956,39 +962,27 @@ static void ymir_soa_collect_facts(ymir_box3d_soa_world* world)
             .point = {(float)e->point.x, (float)e->point.y, (float)e->point.z},
             .normal = {e->normal.x, e->normal.y, e->normal.z},
             .approach_speed = e->approachSpeed,
-            .impulse_estimate = ymir_soa_hit_impulse(world, e),
+            .impulse = ymir_soa_pair_impulse(world, e),
             .material_a = e->userMaterialIdA,
             .material_b = e->userMaterialIdB,
         };
     }
 }
 
-// Per body: the touching contacts' count and the force of the final sub-step. normalImpulse is that
-// sub-step's impulse, so it is a force of normalImpulse * sub_steps / time_step. Box3D exposes no
-// whole-step impulse: totalNormalImpulse adds the accumulated impulse once per solve pass and once per
-// relax pass (twice per sub-step, bias and no-bias, with restitution's delta on top), so it is neither the
-// step's impulse nor a fixed multiple of it. The lane is honest at rest only.
-static void ymir_soa_collect_contact_lanes(ymir_box3d_soa_world* world, float time_step, int32_t sub_step_count)
+// Per body: the touching contacts' count and the normal impulse they delivered over the whole step.
+static void ymir_soa_collect_contact_lanes(ymir_box3d_soa_world* world)
 {
-    float* force = ymir_soa_lane(world, YMIR_SOA_LAST_SUBSTEP_FORCE_LANE);
+    float* lane = ymir_soa_lane(world, YMIR_SOA_CONTACT_IMPULSE_LANE);
     for (int i = 0; i < world->count; ++i)
     {
         int n = b3Body_GetContactData(world->bodies[i], world->contact_scratch, world->capacity);
         float impulse = 0.0f;
         for (int c = 0; c < n; ++c)
         {
-            const b3ContactData* data = world->contact_scratch + c;
-            for (int m = 0; m < data->manifoldCount; ++m)
-            {
-                const b3Manifold* manifold = data->manifolds + m;
-                for (int p = 0; p < manifold->pointCount; ++p)
-                {
-                    impulse += manifold->points[p].normalImpulse;
-                }
-            }
+            impulse += ymir_soa_manifold_impulse(world->contact_scratch + c);
         }
         world->contact_count[i] = n;
-        force[i] = impulse * (float)sub_step_count / time_step;
+        lane[i] = impulse;
     }
 }
 
@@ -1015,7 +1009,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_step(ymir_box3d_soa_world* world, f
         }
     }
     ymir_soa_collect_facts(world);
-    ymir_soa_collect_contact_lanes(world, time_step, sub_step_count);
+    ymir_soa_collect_contact_lanes(world);
     for (int i = 0; i < world->count; ++i)
     {
         ymir_soa_refresh(world, i);
@@ -1169,7 +1163,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         .joint_angular_velocity_x = jb + 9 * m,
         .joint_angular_velocity_y = jb + 10 * m,
         .joint_angular_velocity_z = jb + 11 * m,
-        .last_substep_force = base + YMIR_SOA_LAST_SUBSTEP_FORCE_LANE * n,
+        .contact_impulse = base + YMIR_SOA_CONTACT_IMPULSE_LANE * n,
         .contact_count = world->contact_count,
         .material_id = world->material_id,
         .joint_generation = world->joint_generation,

@@ -165,10 +165,10 @@ public sealed class Box3DSoaGrabTests
     [Fact]
     public void The_managed_side_refuses_a_native_library_of_another_abi_in_either_direction()
     {
-        Assert.Equal(6u, Box3DSoaNative.ymir_box3d_soa_get_abi_version());
-        Box3DSoaWorld.RequireNativeAbi(6);
-        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(5)); // an older native under this managed build
-        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(7)); // a newer one
+        Assert.Equal(7u, Box3DSoaNative.ymir_box3d_soa_get_abi_version());
+        Box3DSoaWorld.RequireNativeAbi(7);
+        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(6)); // an older native under this managed build
+        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(8)); // a newer one
     }
 
     [Fact]

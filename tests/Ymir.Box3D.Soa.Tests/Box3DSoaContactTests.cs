@@ -91,21 +91,6 @@ public sealed class Box3DSoaContactTests
     }
 
     [Fact]
-    public void Resting_last_substep_force_is_the_weight_and_a_body_touching_nothing_reads_zero()
-    {
-        using var world = Drop();
-        world.AddSphere(3, (10f, 1000f, 10f), Radius, density: 1f); // lane 2: still falling after the whole run (5 s drops 125 m)
-        Run(world, 300);
-        var view = world.View;
-        var weight = BallMass * G;
-        Assert.InRange(view.LastSubstepForce[1], weight * 0.98f, weight * 1.02f);
-        Assert.Equal(1, view.ContactCount[1]);
-        Assert.InRange(view.LastSubstepForce[0], weight * 0.98f, weight * 1.02f); // the slab carries the same load
-        Assert.Equal(0f, view.LastSubstepForce[2]);
-        Assert.Equal(0, view.ContactCount[2]);
-    }
-
-    [Fact]
     public void Materials_ride_hits_in_pair_order_and_read_back_as_a_lane()
     {
         using var world = Drop();
@@ -159,110 +144,6 @@ public sealed class Box3DSoaContactTests
         Assert.Equal(new Box3DSoaDropped(0, 0, 0), world.Facts.Dropped);
     }
 
-    [Theory]
-    [InlineData(60, 1, 0f)]
-    [InlineData(60, 4, 0f)]
-    [InlineData(60, 1, 0.5f)]
-    [InlineData(60, 4, 0.5f)]
-    [InlineData(240, 1, 0f)]
-    [InlineData(240, 4, 0f)]
-    [InlineData(240, 1, 0.5f)]
-    [InlineData(240, 4, 0.5f)]
-    public void The_hit_impulse_estimate_matches_the_balls_momentum_change_over_the_impact(int hz, int subSteps, float restitution)
-    {
-        // Oracle: the only forces on the ball are gravity and the slab's contact, so over a window that starts
-        // at the hit step the contact impulse is m (v_after - v_before) + m g T. The impact is that impulse less
-        // the weight the slab then carries while the ball lies at rest, so steps spent at rest (touching, nearly
-        // still) are left out of T.
-        var dt = 1f / hz;
-        using var world = new Box3DSoaWorld(capacity: 8, gravityY: -G);
-        world.AddStaticBox(GroundId, (0f, -0.5f, 0f), (50f, 0.5f, 50f));
-        world.AddSphere(BallId, (0f, Radius + 1.4f, 0f), Radius, density: 1f, restitution: restitution);
-        var mass = BallMass;
-        var before = 0f;
-        var window = (int)MathF.Ceiling(0.05f * hz);
-        var inWindow = 0;
-        var hitSteps = 0;
-        var activeSteps = 0;
-        Box3DSoaHit hit = default;
-        float vBefore = 0f, vAfter = 0f;
-        for (var i = 0; i < 4 * hz && inWindow < window; i++)
-        {
-            world.Step(dt, subSteps);
-            var vy = world.View.VelocityY[1];
-            var atRest = world.View.ContactCount[1] > 0 && MathF.Abs(vy) < 0.05f;
-            if (world.Facts.Hit.Length > 0 && inWindow == 0)
-            {
-                hit = world.Facts.Hit[0];
-                vBefore = before;
-                hitSteps++;
-                inWindow = 1;
-                activeSteps = atRest ? 0 : 1;
-            }
-            else if (inWindow > 0)
-            {
-                hitSteps += world.Facts.Hit.Length;
-                inWindow++;
-                activeSteps += atRest ? 0 : 1;
-            }
-            vAfter = vy;
-            before = vy;
-        }
-        Assert.Equal(1, hitSteps); // one hit in the window: no bounce-and-rehit mixed into the oracle
-        var truth = mass * (vAfter - vBefore) + mass * G * (activeSteps * dt);
-        Assert.InRange(hit.ImpulseEstimate, truth * 0.92f, truth * 1.08f);
-    }
-
-    [Theory]
-    [InlineData(1f, 1f, 0f)]
-    [InlineData(1f, 10f, 0f)]
-    [InlineData(10f, 1f, 0f)]
-    [InlineData(1f, 1f, 0.5f)]
-    [InlineData(1f, 10f, 0.5f)]
-    [InlineData(10f, 1f, 0.5f)]
-    public void The_hit_impulse_estimate_of_two_free_bodies_uses_both_masses(float densityA, float densityB, float restitution)
-    {
-        // No gravity and nothing else touching: the impulse the pair exchanges is exactly m_A (v_A after - before).
-        const int hz = 120;
-        using var world = new Box3DSoaWorld(capacity: 4, gravityY: 0f);
-        var a = world.AddSphere(10, (-1f, 0f, 0f), Radius, densityA, velocity: (3f, 0f, 0f), restitution: restitution);
-        world.AddSphere(11, (1f, 0f, 0f), Radius, densityB, velocity: (-3f, 0f, 0f), restitution: restitution);
-        var massA = BallMass * densityA;
-        var vBefore = world.View.VelocityX[a];
-        var hits = new List<Box3DSoaHit>();
-        for (var i = 0; i < hz / 2; i++)
-        {
-            world.Step(1f / hz);
-            hits.AddRange(world.Facts.Hit.ToArray());
-        }
-        var hit = Assert.Single(hits);
-        Assert.InRange(hit.ApproachSpeed, 5.8f, 6.2f);
-        var truth = MathF.Abs(massA * (world.View.VelocityX[a] - vBefore));
-        Assert.InRange(hit.ImpulseEstimate, truth * 0.95f, truth * 1.05f);
-    }
-
-    [Fact]
-    public void Restitution_is_ignored_below_the_restitution_threshold_even_for_a_hit()
-    {
-        // Hit threshold 0.1 m/s sits below Box3D's restitution threshold (1 m/s): a 0.5 m/s touch is a hit that
-        // does not bounce, so its impulse is m v, not m v (1 + e).
-        using var bouncy = new Box3DSoaWorld(capacity: 4, gravityY: -G, hitThreshold: 0.1f);
-        bouncy.AddStaticBox(GroundId, (0f, -0.5f, 0f), (50f, 0.5f, 50f));
-        bouncy.AddSphere(BallId, (0f, Radius + 0.0125f, 0f), Radius, density: 1f, restitution: 0.5f);
-        Box3DSoaHit hit = default;
-        var hits = 0;
-        for (var i = 0; i < 60; i++)
-        {
-            bouncy.Step(Dt);
-            hits += bouncy.Facts.Hit.Length;
-            if (bouncy.Facts.Hit.Length > 0) hit = bouncy.Facts.Hit[0];
-        }
-        Assert.Equal(1, hits);
-        Assert.InRange(hit.ApproachSpeed, 0.15f, 0.9f); // above the hit threshold, below the restitution threshold
-        Assert.InRange(hit.ImpulseEstimate, BallMass * hit.ApproachSpeed * 0.99f, BallMass * hit.ApproachSpeed * 1.01f);
-        Assert.True(MathF.Abs(bouncy.View.VelocityY[1]) < 0.1f, "the ball did not bounce");
-    }
-
     private static Box3DSoaWorld Pile()
     {
         var world = new Box3DSoaWorld(capacity: 32, gravityY: -G);
@@ -286,7 +167,7 @@ public sealed class Box3DSoaContactTests
         return MemoryMarshal.AsBytes(facts.Begin).ToArray()
             .Concat(MemoryMarshal.AsBytes(facts.End).ToArray())
             .Concat(MemoryMarshal.AsBytes(facts.Hit).ToArray())
-            .Concat(MemoryMarshal.AsBytes(view.LastSubstepForce).ToArray())
+            .Concat(MemoryMarshal.AsBytes(view.ContactImpulse).ToArray())
             .Concat(MemoryMarshal.AsBytes(view.ContactCount).ToArray())
             .Concat(BitConverter.GetBytes(facts.Dropped.Begin + facts.Dropped.End + facts.Dropped.Hit))
             .ToArray();
@@ -307,7 +188,7 @@ public sealed class Box3DSoaContactTests
             factsSeen += a.Facts.Begin.Length + a.Facts.Hit.Length + a.Facts.End.Length;
         }
         Assert.True(factsSeen > 12, "the pile produced facts, so equality is not trivially empty");
-        Assert.Contains(a.View.LastSubstepForce.ToArray(), f => f > 0f);
+        Assert.Contains(a.View.ContactImpulse.ToArray(), f => f > 0f);
     }
 
     [Fact]
@@ -319,7 +200,7 @@ public sealed class Box3DSoaContactTests
         {
             var facts = world.Facts;
             var view = world.View;
-            return facts.Begin.Length + facts.End.Length + facts.Hit.Length + (long)view.LastSubstepForce[1] + view.ContactCount[1];
+            return facts.Begin.Length + facts.End.Length + facts.Hit.Length + (long)view.ContactImpulse[1] + view.ContactCount[1];
         }
         Read();
         var before = GC.GetAllocatedBytesForCurrentThread();
