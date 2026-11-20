@@ -49,6 +49,29 @@ public sealed class Box3DSoaGrabTests
     }
 
     [Fact]
+    public void The_angular_spring_turns_the_grabbed_body_to_the_anchors_rotation_and_off_leaves_it_free()
+    {
+        static float Turned(float angularHertz)
+        {
+            using var world = new Box3DSoaWorld(capacity: 3, gravityY: 0f, jointCapacity: 1);
+            var box = world.AddBox(1, (0f, 5f, 0f), (0.2f, 0.2f, 0.2f), Density);
+            var anchor = world.AddAnchor(2, (0f, 5f, 0f));
+            world.AddMotorJoint(anchor, box, (0f, 5f, 0f), (5f, 0.7f, 1e5f), (angularHertz, 0.7f, 1e5f));
+            var view = world.View;
+            var quarterTurnZ = (0f, 0f, MathF.Sin(MathF.PI / 4), MathF.Cos(MathF.PI / 4));
+            for (var i = 0; i < 90; i++)
+            {
+                world.SetAnchorTarget(anchor, (0f, 5f, 0f), quarterTurnZ, Dt);
+                world.Step(Dt);
+            }
+            return 2f * MathF.Atan2(view.RotationZ[box], view.RotationW[box]);
+        }
+
+        Assert.Equal(MathF.PI / 2, Turned(angularHertz: 5f), 0.05f);
+        Assert.Equal(0f, Turned(angularHertz: 0f), 1e-3f);
+    }
+
+    [Fact]
     public void A_weak_grab_is_bounded_by_its_max_force()
     {
         var maxForce = 0.5f * Mass * Gravity;
