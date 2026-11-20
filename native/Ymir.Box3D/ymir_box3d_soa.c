@@ -154,7 +154,8 @@ typedef struct ymir_box3d_soa_view
     // Contact lanes, read-only, refreshed every step. last_substep_force is N: the sum over the body's touching
     // contact manifold points of the final sub-step's normalImpulse * sub_steps / dt (0 for a body touching
     // nothing). It is the load a body carries at rest and NOT an impact measure: it sees one sub-step, so it
-    // reads 0.3x to 7x the true force on an impact step. Impact severity is the hit fact's impulse_estimate.
+    // reads 0.02x to 1.9x the true force on an impact step. For impact severity see the hit fact's impulse_estimate and
+    // the limits stated there.
     // contact_count is the number of touching contacts. material_id is the body's desc material_id.
     const float* last_substep_force;
     const int32_t* contact_count;
@@ -182,8 +183,11 @@ typedef struct ymir_box3d_soa_hit_fact
     float approach_speed;
     // The normal impulse (N s) this collision must deliver, from the approach speed, the two bodies' masses
     // and the pair's restitution: v (1 + e) / (1/mA + 1/mB), with e applying only above Box3D's restitution
-    // threshold and a static body's 1/m taken as 0. Exact for a hit through both centres of mass (a sphere on
-    // a plane); an upper bound otherwise, since rotation only lowers the effective mass's inverse.
+    // threshold and a static body's 1/m taken as 0.
+    // Exact for a centre-to-centre hit between free bodies (a sphere on a plane, two spheres). It can over-count
+    // when one collision yields several hit facts (box corners, tilted capsules), which sum, and it undercounts
+    // heavily for jointed bodies (it takes the limb's own mass, not the joint-coupled effective mass). It is not
+    // a bound either way. A mass-aware per-body impulse that holds for jointed bodies is being designed.
     float impulse_estimate;
     uint64_t material_a;
     uint64_t material_b;
@@ -336,6 +340,16 @@ YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_soa_get_body_desc_size(void)
 YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_soa_get_joint_desc_size(void)
 {
     return (uint32_t)sizeof(ymir_box3d_soa_joint_desc);
+}
+
+YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_soa_get_touch_fact_size(void)
+{
+    return (uint32_t)sizeof(ymir_box3d_soa_touch_fact);
+}
+
+YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_soa_get_hit_fact_size(void)
+{
+    return (uint32_t)sizeof(ymir_box3d_soa_hit_fact);
 }
 
 YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_soa_get_facts_size(void)

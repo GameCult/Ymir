@@ -213,6 +213,56 @@ public sealed class Box3DSoaContactTests
         Assert.InRange(hit.ImpulseEstimate, truth * 0.92f, truth * 1.08f);
     }
 
+    [Theory]
+    [InlineData(1f, 1f, 0f)]
+    [InlineData(1f, 10f, 0f)]
+    [InlineData(10f, 1f, 0f)]
+    [InlineData(1f, 1f, 0.5f)]
+    [InlineData(1f, 10f, 0.5f)]
+    [InlineData(10f, 1f, 0.5f)]
+    public void The_hit_impulse_estimate_of_two_free_bodies_uses_both_masses(float densityA, float densityB, float restitution)
+    {
+        // No gravity and nothing else touching: the impulse the pair exchanges is exactly m_A (v_A after - before).
+        const int hz = 120;
+        using var world = new Box3DSoaWorld(capacity: 4, gravityY: 0f);
+        var a = world.AddSphere(10, (-1f, 0f, 0f), Radius, densityA, velocity: (3f, 0f, 0f), restitution: restitution);
+        world.AddSphere(11, (1f, 0f, 0f), Radius, densityB, velocity: (-3f, 0f, 0f), restitution: restitution);
+        var massA = BallMass * densityA;
+        var vBefore = world.View.VelocityX[a];
+        var hits = new List<Box3DSoaHit>();
+        for (var i = 0; i < hz / 2; i++)
+        {
+            world.Step(1f / hz);
+            hits.AddRange(world.Facts.Hit.ToArray());
+        }
+        var hit = Assert.Single(hits);
+        Assert.InRange(hit.ApproachSpeed, 5.8f, 6.2f);
+        var truth = MathF.Abs(massA * (world.View.VelocityX[a] - vBefore));
+        Assert.InRange(hit.ImpulseEstimate, truth * 0.95f, truth * 1.05f);
+    }
+
+    [Fact]
+    public void Restitution_is_ignored_below_the_restitution_threshold_even_for_a_hit()
+    {
+        // Hit threshold 0.1 m/s sits below Box3D's restitution threshold (1 m/s): a 0.5 m/s touch is a hit that
+        // does not bounce, so its impulse is m v, not m v (1 + e).
+        using var bouncy = new Box3DSoaWorld(capacity: 4, gravityY: -G, hitThreshold: 0.1f);
+        bouncy.AddStaticBox(GroundId, (0f, -0.5f, 0f), (50f, 0.5f, 50f));
+        bouncy.AddSphere(BallId, (0f, Radius + 0.0125f, 0f), Radius, density: 1f, restitution: 0.5f);
+        Box3DSoaHit hit = default;
+        var hits = 0;
+        for (var i = 0; i < 60; i++)
+        {
+            bouncy.Step(Dt);
+            hits += bouncy.Facts.Hit.Length;
+            if (bouncy.Facts.Hit.Length > 0) hit = bouncy.Facts.Hit[0];
+        }
+        Assert.Equal(1, hits);
+        Assert.InRange(hit.ApproachSpeed, 0.15f, 0.9f); // above the hit threshold, below the restitution threshold
+        Assert.InRange(hit.ImpulseEstimate, BallMass * hit.ApproachSpeed * 0.99f, BallMass * hit.ApproachSpeed * 1.01f);
+        Assert.True(MathF.Abs(bouncy.View.VelocityY[1]) < 0.1f, "the ball did not bounce");
+    }
+
     private static Box3DSoaWorld Pile()
     {
         var world = new Box3DSoaWorld(capacity: 32, gravityY: -G);

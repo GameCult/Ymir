@@ -35,13 +35,16 @@ separate native object (`ymir_box3d_soa.c`, ABI 4) so the Aetheria session's con
 - Contact lanes (read-only, rewritten by every `step`): `last_substep_force` (N: the final sub-step's
   `normalImpulse` summed over the body's touching manifold points, times sub-steps over dt; 0 for a body
   touching nothing; the weight at rest; NOT an impact measure, it sees one sub-step and misses an impact
-  step by a large factor either way), `contact_count` (touching contacts) and `material_id` (the body's
+  step by 0.02x to 1.9x), `contact_count` (touching contacts) and `material_id` (the body's
   `material_id`, also set as the shape's Box3D user material). Box3D exposes no whole-step impulse:
   `totalNormalImpulse` adds the accumulated impulse once per solve and once per relax pass (so it reads twice
-  the weight at rest, and on impacts is no fixed multiple of the step's impulse). Impact severity is the hit
-  fact's `impulse_estimate` (N s): `approach_speed * (1 + e) / (1/mA + 1/mB)`, e the larger shape restitution
-  and only above Box3D's restitution threshold, a static body's 1/m taken as 0. Exact for a hit through both
-  centres of mass, an upper bound otherwise (rotation is ignored).
+  the weight at rest, and on impacts is no fixed multiple of the step's impulse). For impact severity see the
+  hit fact. `impulse_estimate` (N s) is `approach_speed * (1 + e) /
+  (1/mA + 1/mB)`, e the larger shape restitution and only above Box3D's restitution threshold, a static
+  body's 1/m taken as 0. It is exact for a centre-to-centre hit between free bodies, can over-count when one
+  collision yields several hit facts (box corners, tilted capsules: they sum), and undercounts heavily for
+  jointed bodies (it takes the limb's own mass, not the joint-coupled effective mass). It is not a bound.
+  A mass-aware per-body impulse that holds for jointed bodies is being designed.
 - Contact facts: every shape is created with contact and hit events on (Box3D's default is off). After each
   `step`, `ymir_box3d_soa_get_facts` returns pointers and counts into buffers fixed at create (`fact_capacity`
   per kind, no allocation in the step): Begin and End `{lane_a, lane_b, stable_id_a, stable_id_b}` and Hit
@@ -70,7 +73,7 @@ lanes agreeing, an off-axis hinge, a limit and a weld, a spherical joint leaving
 torque lanes (exact acceleration, cleared after the step, static bodies ignoring them, NaN refusing the
 step), capsule and box rest heights with parent and limb lanes, refusals, and bit-identical repeat runs of
 a torque-driven jointed body. `Box3DSoaContactTests`: a drop gives one begin and one hit (speed within 5%
-of sqrt(2gh), point and normal), lifting gives one end, resting `last_substep_force` is the weight, the hit `impulse_estimate` matches the ball's momentum change
+of sqrt(2gh), point and normal), lifting gives one end, resting `last_substep_force` is the weight, the hit `impulse_estimate` (a free sphere on a slab, and two free spheres at mass ratios 1:1, 1:10, 10:1) matches the ball's momentum change
 (plus gravity's share) at 60 and 240 Hz, 1 and 4 sub-steps, restitution 0 and 0.5, dropped counters resetting each step, materials on
 hits, facts lasting one step, overflow counted, per-step byte determinism of facts and contact lanes, and
 no allocation across 100 steps with fact reads.

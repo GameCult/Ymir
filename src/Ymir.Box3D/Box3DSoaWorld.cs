@@ -143,7 +143,7 @@ public readonly struct Box3DSoaHit
     public readonly float NormalX, NormalY, NormalZ;
     /// <summary>Metres per second, always positive.</summary>
     public readonly float ApproachSpeed;
-    /// <summary>Normal impulse (N s) the collision must deliver: v (1 + e) / (1/mA + 1/mB); exact for a hit through both centres of mass, an upper bound otherwise.</summary>
+    /// <summary>Normal impulse (N s) the collision must deliver: v (1 + e) / (1/mA + 1/mB). Exact for a centre-to-centre hit between free bodies; it can over-count when one collision yields several hit facts (box corners, tilted capsules), which sum, and it undercounts heavily for jointed bodies (it takes the limb's own mass). It is not a bound. A mass-aware per-body impulse that holds for jointed bodies is being designed.</summary>
     public readonly float ImpulseEstimate;
     public readonly ulong MaterialA;
     public readonly ulong MaterialB;
@@ -204,6 +204,14 @@ internal static unsafe partial class Box3DSoaNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial uint ymir_box3d_soa_get_facts_size();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial uint ymir_box3d_soa_get_touch_fact_size();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial uint ymir_box3d_soa_get_hit_fact_size();
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -362,7 +370,9 @@ public sealed class Box3DSoaWorld : IDisposable
             Box3DSoaNative.ymir_box3d_soa_get_view_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaViewNative>() ||
             Box3DSoaNative.ymir_box3d_soa_get_body_desc_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaBodyDesc>() ||
             Box3DSoaNative.ymir_box3d_soa_get_joint_desc_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaJointDesc>() ||
-            Box3DSoaNative.ymir_box3d_soa_get_facts_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaFactsNative>())
+            Box3DSoaNative.ymir_box3d_soa_get_facts_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaFactsNative>() ||
+            Box3DSoaNative.ymir_box3d_soa_get_touch_fact_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaTouch>() ||
+            Box3DSoaNative.ymir_box3d_soa_get_hit_fact_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaHit>())
         {
             throw new InvalidOperationException("The native Ymir Box3D SoA ABI does not match this build.");
         }
