@@ -8,13 +8,13 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 3) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 4) so the Aetheria session's contract is untouched.
 
 ## Contract
 
-- Native (ABI 3): `ymir_box3d_soa_create(capacity, joint_capacity, gravity) / add_body / add_joint / step /
-  get_view / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box; position,
-  rotation, velocity, size, density, friction, restitution, rolling resistance, parent, limb). Capacities are fixed at creation,
+- Native (ABI 4): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold) /
+  add_body / add_joint / step / get_view / get_facts / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box; position,
+  rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
   so lane pointers never move.
 - Body lanes (`ymir_box3d_soa_view`): `stable_id`, `kind`, `parent` and `limb` (set at creation, not read by
   Box3D: the limb tree for the consumer), `size_0`, `size_1`, `size_2` (read-only shape size set at creation,
@@ -32,10 +32,26 @@ separate native object (`ymir_box3d_soa.c`, ABI 3) so the Aetheria session's con
   (world orientation of frame A, quaternion), `joint_rotation` (frame B relative to frame A, quaternion,
   w >= 0) and `joint_angular_velocity` (B minus A, in frame A). A consumer can compute a joint torque from
   these and write it as equal and opposite torques on the two body lanes.
+- Contact lanes (read-only, rewritten by every `step`): `contact_force` (N: the final sub-step's
+  `normalImpulse` summed over the body's touching manifold points, times sub-steps over dt; 0 for a body
+  touching nothing; the weight at rest), `contact_count` (touching contacts) and `material_id` (the body's
+  `material_id`, also set as the shape's Box3D user material). `totalNormalImpulse` is not used: Box3D adds
+  the accumulated impulse once per solve and once per relax pass, so at rest it reads twice the weight.
+- Contact facts: every shape is created with contact and hit events on (Box3D's default is off). After each
+  `step`, `ymir_box3d_soa_get_facts` returns pointers and counts into buffers fixed at create (`fact_capacity`
+  per kind, no allocation in the step): Begin and End `{lane_a, lane_b, stable_id_a, stable_id_b}` and Hit
+  those plus `point` xyz, `normal` xyz (A to B), `approach_speed` (a touch faster than `hit_threshold` m/s)
+  and `material_a`, `material_b`. Facts are in Box3D's event order and last one step: the next `step`
+  rewrites them. `*_dropped` counts the facts a step could not keep past `fact_capacity`. The lane in a fact
+  is the body's user data (lane + 1) and the stable id is the shape's user data. The facts report; they
+  decide nothing.
 - State lanes change only inside `step`. Between steps a caller may read any state lane in place.
-- Managed (`src/Ymir.Box3D/Box3DSoaWorld.cs`, public: `Box3DSoaWorld`, `Box3DSoaView`, `Box3DSoaKind`, `Box3DSoaJointKind`; the native structs and the view constructor stay internal): `Box3DSoaView` exposes each lane as a span over
+- Managed (`src/Ymir.Box3D/Box3DSoaWorld.cs`, public: `Box3DSoaWorld`, `Box3DSoaView`, `Box3DSoaFacts`, `Box3DSoaKind`, `Box3DSoaJointKind`; the native structs and the view constructor stay internal): `Box3DSoaView` exposes each lane as a span over
   native memory (`ReadOnlySpan` for state, `Span` for write lanes). Spans are invalid after `Dispose`.
   `Count` and `JointCount` are as of when the view was taken, so take it after the last add.
+  `Box3DSoaWorld.Facts` is a `ref struct` of `ReadOnlySpan`s (`Begin`, `End`, `Hit`) with the same dispose
+  guard; the constructor takes `factCapacity` (default 4 x capacity, 0 refused) and `hitThreshold` (default 1);
+  the `Add*` methods take an optional `materialId`.
 - Determinism: one Box3D worker, bodies stepped in insertion order, same inputs give identical lane
   bytes on the same build. It is not claimed across platforms or CPUs.
 - Concurrency: see Threading below; world creation and destruction are serialized by Ymir's native lock.
@@ -48,11 +64,14 @@ difference diverging, argument refusal, dispose; and for joints: hinge angle and
 lanes agreeing, an off-axis hinge, a limit and a weld, a spherical joint leaving the swing plane, force and
 torque lanes (exact acceleration, cleared after the step, static bodies ignoring them, NaN refusing the
 step), capsule and box rest heights with parent and limb lanes, refusals, and bit-identical repeat runs of
-a torque-driven jointed body.
+a torque-driven jointed body. `Box3DSoaContactTests`: a drop gives one begin and one hit (speed within 5%
+of sqrt(2gh), point and normal), lifting gives one end, resting `contact_force` is the weight, materials on
+hits, facts lasting one step, overflow counted, per-step byte determinism of facts and contact lanes, and
+no allocation across 100 steps with fact reads.
 
 ## Not done
 
-Contact facts for the SoA world (Begin/Hit/End), body removal with a stable ordering rule, compound bodies
+Body removal with a stable ordering rule, compound bodies
 and per-shape material, and joint motors and springs (Lodur drives joints from torque lanes instead).
 `Ymir.Core` has no session-level surface over the SoA world yet; consumers use `Ymir.Box3D` directly.
 Unity consumption is unrun; cross-platform bit-identity is unclaimed.
