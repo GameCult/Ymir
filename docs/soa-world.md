@@ -13,7 +13,7 @@ separate native object (`ymir_box3d_soa.c`, ABI 5) so the Aetheria session's con
 ## Contract
 
 - Native (ABI 5): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold) /
-  add_body / add_joint / step / get_view / get_facts / set_anchor_target / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
+  add_body / add_joint / step / get_view / get_facts / set_anchor_target / destroy_joint / free_joint_slots / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
   so lane pointers never move.
 - Body lanes (`ymir_box3d_soa_view`): `stable_id`, `kind`, `parent` and `limb` (set at creation, not read by
@@ -58,20 +58,31 @@ separate native object (`ymir_box3d_soa.c`, ABI 5) so the Aetheria session's con
   - Anchor (body kind 4): a kinematic body with no shape. It never collides or is hit, its size lanes are 0 and
     size, density, friction and material are ignored. `set_anchor_target(lane, position, rotation, time_step)`
     gives it the velocity that reaches the pose after `time_step`, so passing the step's dt lands it on the pose
-    at the end of the next step; it is refused for a lane that is not an anchor, for non-finite or non-unit input
-    and for a time step <= 0. The force and torque lanes never move an anchor. Its pose reads from the state lanes.
+    at the end of the next step, where `step` stops it: after every step an anchor's velocity is zeroed, so with no
+    new target it holds still at the last pose (a skipped frame flings nothing) and its velocity lanes read 0. It is
+    refused for a lane that is not an anchor, for non-finite or non-unit input and for a time step <= 0. The force and torque lanes never move an anchor. Its pose reads from the state lanes.
   - Motor joint (kind 3): `add_joint` with the descriptor's `linear_hertz`, `linear_damping`, `max_force`,
     `angular_hertz`, `angular_damping`, `max_torque` (finite, >= 0, ignored by the other kinds; zero hertz turns that
     spring off; no velocity target). The frame is built from the world anchor and axis like every joint, so the
     linear spring pulls body B's anchor point onto A's (A an anchor, B the body to grab). `max_force` and
     `max_torque` bound the pull: with a max force below the weight the body hangs below the target. `joint_angle`
     reads 0.
+  - Release: the cursor's anchor is long-lived (a client creates one per cursor and keeps it; bodies are never
+    removed here). `destroy_joint(joint)` releases a grab by destroying the motor joint only; the anchor and the
+    grabbed body stay. Only motor joints can be destroyed (general joint and body removal belongs to
+    `ymir-break-and-remove`); anything else is refused. The joint's lane becomes a tombstone: `joint_kind` 4
+    (Removed), `joint_body_a/b` -1 and every joint lane 0. `joint_count` counts slots ever used, tombstones included.
+    `add_joint` reuses the lowest tombstone only after a step has completed since the destroy, so lanes read within a
+    step stay valid; until then the slot is not free. `free_joint_slots` (managed `FreeJointSlots`) is what
+    `add_joint` could create right now: check it, and `FreeBodySlots`, before adding an anchor for a grab, so a full
+    world leaves no orphan anchor. Repeated grab and release on one slot do not grow the world.
   - `apply_impulse(lane, impulse, point)`: a one-shot world impulse (N s) at a world point; off the centre of mass it
     also spins the body. Dynamic bodies only (a static body or anchor is refused), non-finite input refused.
   - `cast_ray_closest(origin, translation)` fills a `ymir_box3d_soa_ray_hit` {hit, lane, stable_id, point, normal,
     fraction}: Box3D's closest hit along origin + t * translation, t in [0, 1], default filter; a miss is success with
-    `hit` 0 and every field 0; a non-finite or zero translation is refused. Anchors are never hit.
-  - Managed: `AddAnchor`, `SetAnchorTarget`, `AddMotorJoint`, `ApplyImpulse`, `CastRayClosest` (returns
+    `hit` 0 and every field 0; a non-finite or zero translation is refused. Anchors are never hit. A ray that starts
+    inside a shape skips that shape (Box3D's behaviour, it ignores initial overlap) and reports what lies beyond.
+  - Managed: `AddAnchor`, `SetAnchorTarget`, `AddMotorJoint`, `DestroyJoint`, `FreeJointSlots`, `FreeBodySlots`, `ApplyImpulse`, `CastRayClosest` (returns
     `Box3DSoaRayHit`) on `Box3DSoaWorld`; refusals throw `InvalidOperationException`.
 - State lanes change only inside `step`. Between steps a caller may read any state lane in place.
 - Managed (`src/Ymir.Box3D/Box3DSoaWorld.cs`, public: `Box3DSoaWorld`, `Box3DSoaView`, `Box3DSoaFacts`, `Box3DSoaKind`, `Box3DSoaJointKind`; the native structs and the view constructor stay internal): `Box3DSoaView` exposes each lane as a span over
