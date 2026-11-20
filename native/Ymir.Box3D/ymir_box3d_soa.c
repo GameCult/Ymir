@@ -496,9 +496,11 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_body(
     world->kind[i] = d->kind;
     world->parent[i] = d->parent;
     world->limb[i] = d->limb;
+    /* Publish only the components the kind uses; unused ones read 0 whatever the caller passed. */
+    int used = d->kind == YMIR_SOA_KIND_SPHERE ? 1 : d->kind == YMIR_SOA_KIND_CAPSULE ? 2 : 3;
     for (int k = 0; k < 3; k++)
     {
-        world->size[(size_t)k * (size_t)world->capacity + (size_t)i] = d->size[k];
+        world->size[(size_t)k * (size_t)world->capacity + (size_t)i] = k < used ? d->size[k] : 0.0f;
     }
     ymir_soa_refresh(world, i);
     if (index != NULL)
