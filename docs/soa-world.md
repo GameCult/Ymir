@@ -8,12 +8,12 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 4) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 5) so the Aetheria session's contract is untouched.
 
 ## Contract
 
-- Native (ABI 4): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold) /
-  add_body / add_joint / step / get_view / get_facts / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box; position,
+- Native (ABI 5): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold) /
+  add_body / add_joint / step / get_view / get_facts / set_anchor_target / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
   so lane pointers never move.
 - Body lanes (`ymir_box3d_soa_view`): `stable_id`, `kind`, `parent` and `limb` (set at creation, not read by
@@ -53,6 +53,26 @@ separate native object (`ymir_box3d_soa.c`, ABI 4) so the Aetheria session's con
   rewrites them. `*_dropped` counts the facts a step could not keep past `fact_capacity`. The lane in a fact
   is the body's user data (lane + 1) and the stable id is the shape's user data. The facts report; they
   decide nothing.
+- Grab and poke input (immediate commands; Ymir decides nothing about grabbing, so a player grab, a scripted
+  hook and a cursor tool are all the same three calls):
+  - Anchor (body kind 4): a kinematic body with no shape. It never collides or is hit, its size lanes are 0 and
+    size, density, friction and material are ignored. `set_anchor_target(lane, position, rotation, time_step)`
+    gives it the velocity that reaches the pose after `time_step`, so passing the step's dt lands it on the pose
+    at the end of the next step; it is refused for a lane that is not an anchor, for non-finite or non-unit input
+    and for a time step <= 0. The force and torque lanes never move an anchor. Its pose reads from the state lanes.
+  - Motor joint (kind 3): `add_joint` with the descriptor's `linear_hertz`, `linear_damping`, `max_force`,
+    `angular_hertz`, `angular_damping`, `max_torque` (finite, >= 0, ignored by the other kinds; zero hertz turns that
+    spring off; no velocity target). The frame is built from the world anchor and axis like every joint, so the
+    linear spring pulls body B's anchor point onto A's (A an anchor, B the body to grab). `max_force` and
+    `max_torque` bound the pull: with a max force below the weight the body hangs below the target. `joint_angle`
+    reads 0.
+  - `apply_impulse(lane, impulse, point)`: a one-shot world impulse (N s) at a world point; off the centre of mass it
+    also spins the body. Dynamic bodies only (a static body or anchor is refused), non-finite input refused.
+  - `cast_ray_closest(origin, translation)` fills a `ymir_box3d_soa_ray_hit` {hit, lane, stable_id, point, normal,
+    fraction}: Box3D's closest hit along origin + t * translation, t in [0, 1], default filter; a miss is success with
+    `hit` 0 and every field 0; a non-finite or zero translation is refused. Anchors are never hit.
+  - Managed: `AddAnchor`, `SetAnchorTarget`, `AddMotorJoint`, `ApplyImpulse`, `CastRayClosest` (returns
+    `Box3DSoaRayHit`) on `Box3DSoaWorld`; refusals throw `InvalidOperationException`.
 - State lanes change only inside `step`. Between steps a caller may read any state lane in place.
 - Managed (`src/Ymir.Box3D/Box3DSoaWorld.cs`, public: `Box3DSoaWorld`, `Box3DSoaView`, `Box3DSoaFacts`, `Box3DSoaKind`, `Box3DSoaJointKind`; the native structs and the view constructor stay internal): `Box3DSoaView` exposes each lane as a span over
   native memory (`ReadOnlySpan` for state, `Span` for write lanes). Spans are invalid after `Dispose`.
@@ -72,7 +92,7 @@ difference diverging, argument refusal, dispose; and for joints: hinge angle and
 lanes agreeing, an off-axis hinge, a limit and a weld, a spherical joint leaving the swing plane, force and
 torque lanes (exact acceleration, cleared after the step, static bodies ignoring them, NaN refusing the
 step), capsule and box rest heights with parent and limb lanes, refusals, and bit-identical repeat runs of
-a torque-driven jointed body. `Box3DSoaContactTests`: a drop gives one begin and one hit (speed within 5%
+a torque-driven jointed body. `Box3DSoaGrabTests`: a strong grab reaching a target 1 m away within 1 s, a weak grab falling at least `g - F/m`, an anchor that does not collide and is not hit by a ray, force lanes not moving an anchor, an off-centre impulse (linear `J/m` and the spin's sign and size), the ray's nearest body with lane, stable id, point and fraction, refusals changing nothing, and bit-identical repeat runs with a moving anchor and an impulse. `Box3DSoaContactTests`: a drop gives one begin and one hit (speed within 5%
 of sqrt(2gh), point and normal), lifting gives one end, resting `last_substep_force` is the weight, the hit `impulse_estimate` (a free sphere on a slab, and two free spheres at mass ratios 1:1, 1:10, 10:1) matches the ball's momentum change
 (plus gravity's share) at 60 and 240 Hz, 1 and 4 sub-steps, restitution 0 and 0.5, dropped counters resetting each step, materials on
 hits, facts lasting one step, overflow counted, per-step byte determinism of facts and contact lanes, and
@@ -81,7 +101,7 @@ no allocation across 100 steps with fact reads.
 ## Not done
 
 Body removal with a stable ordering rule, compound bodies
-and per-shape material, and joint motors and springs (Lodur drives joints from torque lanes instead).
+and per-shape material, and motor joints with a velocity target or per-joint force readback (the motor joint here is a position spring only; Lodur drives limbs from torque lanes).
 `Ymir.Core` has no session-level surface over the SoA world yet; consumers use `Ymir.Box3D` directly.
 Unity consumption is unrun; cross-platform bit-identity is unclaimed.
 
