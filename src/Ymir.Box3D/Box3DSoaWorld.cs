@@ -99,7 +99,7 @@ internal unsafe struct Box3DSoaViewNative
     public float* JointAngularVelocityX;
     public float* JointAngularVelocityY;
     public float* JointAngularVelocityZ;
-    public float* ContactForce;
+    public float* LastSubstepForce;
     public int* ContactCount;
     public ulong* MaterialId;
 }
@@ -143,7 +143,8 @@ public readonly struct Box3DSoaHit
     public readonly float NormalX, NormalY, NormalZ;
     /// <summary>Metres per second, always positive.</summary>
     public readonly float ApproachSpeed;
-    private readonly uint _reserved;
+    /// <summary>Normal impulse (N s) the collision must deliver: v (1 + e) / (1/mA + 1/mB); exact for a hit through both centres of mass, an upper bound otherwise.</summary>
+    public readonly float ImpulseEstimate;
     public readonly ulong MaterialA;
     public readonly ulong MaterialB;
 }
@@ -304,8 +305,8 @@ public readonly unsafe struct Box3DSoaView
     public Span<float> TorqueZ => Write(_v.TorqueZ, Count);
 
     // Contact lanes, read-only, refreshed by every Step.
-    /// <summary>Newtons: the sum over the body's touching contact manifold points of normalImpulse * sub-steps / dt (the final sub-step's impulse as a force). 0 for a body touching nothing.</summary>
-    public ReadOnlySpan<float> ContactForce => Lane(_v.ContactForce, Count);
+    /// <summary>Newtons: the final sub-step's normal impulse over the body's touching contact points, as a force (impulse * sub-steps / dt). The load carried at rest; NOT an impact measure (it sees one sub-step). Use <see cref="Box3DSoaHit.ImpulseEstimate"/> for impacts. 0 for a body touching nothing.</summary>
+    public ReadOnlySpan<float> LastSubstepForce => Lane(_v.LastSubstepForce, Count);
     /// <summary>Number of touching contacts.</summary>
     public ReadOnlySpan<int> ContactCount => Lane(_v.ContactCount, Count);
     /// <summary>The material id the body was added with (0 by default).</summary>
