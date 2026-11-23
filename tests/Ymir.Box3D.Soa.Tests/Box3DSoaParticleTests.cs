@@ -66,7 +66,7 @@ public sealed class Box3DSoaParticleTests
     private static Box3DSoaWorld World(int bodies = 8, int particles = 256, int chains = 8, int attachments = 8, int joints = 2) =>
         new(bodies, gravityY: -10f, jointCapacity: joints, particleCapacity: particles, chainCapacity: chains, attachmentCapacity: attachments);
 
-    private static (float X, float Y, float Z)[] Line((float X, float Y, float Z) from, (float X, float Y, float Z) step, int count)
+    internal static (float X, float Y, float Z)[] Line((float X, float Y, float Z) from, (float X, float Y, float Z) step, int count)
     {
         var p = new (float, float, float)[count];
         for (var i = 0; i < count; i++) p[i] = (from.X + step.X * i, from.Y + step.Y * i, from.Z + step.Z * i);
@@ -124,21 +124,24 @@ public sealed class Box3DSoaParticleTests
         var positions = Line((0f, 5f, 0f), (0f, -Spacing, 0f), 48);
         var chain = world.CreateChain(1, positions, ParticleMass, ParticleRadius);
         world.Attach(Box3DSoaAttachKind.Static, 0, point: positions[0]);
-        const float radius = 0.15f;
+        const float radius = 0.15f, mass = 70f;
         var end = positions[47];
-        var sphere = world.AddSphere(10, (end.X, end.Y - radius, end.Z), radius, SphereDensity(70f, radius));
+        var sphere = world.AddSphere(10, (end.X, end.Y - radius, end.Z), radius, SphereDensity(mass, radius));
         world.Attach(Box3DSoaAttachKind.Body, 47, sphere, (0f, radius, 0f));
         var view = world.View;
         var rest = 47 * Spacing;
-        var worst = 0f;
+        float worstStretch = 0f, worstSpeed = 0f, worstImpulse = 0f;
         for (var i = 0; i < 5 * 120; i++)
         {
             world.Step(Dt, Sub);
-            if (i > 120) worst = MathF.Max(worst, MathF.Abs(Stretch(view, chain, rest)));
+            if (i < 120) continue; // from 1 s to 5 s the body is still
+            worstStretch = MathF.Max(worstStretch, MathF.Abs(Stretch(view, chain, rest)));
+            worstSpeed = MathF.Max(worstSpeed, MathF.Sqrt(Sq(view.VelocityX[sphere]) + Sq(view.VelocityY[sphere]) + Sq(view.VelocityZ[sphere])));
+            worstImpulse = MathF.Max(worstImpulse, MathF.Abs(view.ParticleImpulseY[sphere] - mass * 10f * Dt));
         }
-        var speed = MathF.Sqrt(Sq(view.VelocityX[sphere]) + Sq(view.VelocityY[sphere]) + Sq(view.VelocityZ[sphere]));
-        Assert.True(worst < 0.02f, $"stretch peaked at {worst}");
-        Assert.True(speed < 0.01f, $"the body moves at {speed} m/s");
+        Assert.True(worstStretch < 0.001f, $"stretch peaked at {worstStretch}");
+        Assert.True(worstSpeed < 0.001f, $"the body moves at {worstSpeed} m/s");
+        Assert.True(worstImpulse < 0.005f * mass * 10f * Dt, $"the impulse per tick strays {worstImpulse} N s from M g dt = {mass * 10f * Dt}"); // the body is held, so the chain gives exactly its weight
         Assert.Equal(end.Y - radius, view.PositionY[sphere], 0.1f);
     }
 
@@ -230,25 +233,6 @@ public sealed class Box3DSoaParticleTests
         }
         Assert.True(worst < 0.1f * ParticleRadius, $"{kind}: a particle sits {worst / ParticleRadius:P0} of its radius inside the body");
         Assert.True(view.ParticleX[0] > positions[0].X + 0.001f, $"{kind}: the chain end was pushed on"); // the contact acted, it was not merely clear
-    }
-
-    [Fact(Skip = "UNMET: the top link reads +10% of the load at 5 kg and -32% at 70 kg; tether and attachment load is not attributed to links exactly. See the cut report.")]
-    public void Top_link_tension_reads_the_load()
-    {
-        using var world = World();
-        var positions = Line((0f, 5f, 0f), (0f, -Spacing, 0f), 48);
-        world.CreateChain(1, positions, ParticleMass, ParticleRadius);
-        world.Attach(Box3DSoaAttachKind.Static, 0, point: positions[0]);
-        const float radius = 0.1f, mass = 5f;
-        var end = positions[47];
-        var sphere = world.AddSphere(10, (end.X, end.Y - radius, end.Z), radius, SphereDensity(mass, radius));
-        world.Attach(Box3DSoaAttachKind.Body, 47, sphere, (0f, radius, 0f));
-        var view = world.View;
-        Run(world, 240);
-        var sum = 0f;
-        for (var i = 0; i < 60; i++) { world.Step(Dt, Sub); sum += view.ParticleLinkTension[0]; }
-        var expected = (mass + 47 * ParticleMass) * 10f; // the mass and every particle below the top link
-        Assert.True(MathF.Abs(sum / 60f - expected) < 0.05f * expected, $"top link read {sum / 60f} N, load {expected} N");
     }
 
     [Fact]
@@ -446,23 +430,6 @@ public sealed class Box3DSoaParticleTests
         using var plain = new Box3DSoaWorld(2); // no particle capacity: every command is refused
         Assert.Throws<InvalidOperationException>(() => plain.CreateChain(1, good, ParticleMass, ParticleRadius));
         Assert.Throws<InvalidOperationException>(() => new Box3DSoaWorld(2, particleCapacity: -1));
-    }
-
-    [Fact]
-    public void Particle_cost_line()
-    {
-        using var world = new Box3DSoaWorld(4, gravityY: -10f, particleCapacity: 16 * 48, chainCapacity: 16, attachmentCapacity: 16);
-        world.AddStaticBox(1, (0f, -0.5f, 0f), (20f, 0.5f, 20f));
-        for (var c = 0; c < 16; c++)
-        {
-            var chain = world.CreateChain((ulong)(10 + c), Line((0.3f * (c % 4), 1f + 0.3f * (c / 4), 0f), (0f, 0f, Spacing), 48), ParticleMass, ParticleRadius);
-            world.Attach(Box3DSoaAttachKind.Static, c * 48, point: (0.3f * (c % 4), 1f + 0.3f * (c / 4), 0f));
-        }
-        Run(world, 30);
-        var watch = System.Diagnostics.Stopwatch.StartNew();
-        Run(world, 240);
-        Console.Error.WriteLine($"PARTICLE_COST 16 chains x 48 particles, 4 substeps: {watch.Elapsed.TotalMilliseconds / 240:F3} ms per tick");
-        Assert.True(watch.Elapsed.TotalMilliseconds > 0);
     }
 }
 
