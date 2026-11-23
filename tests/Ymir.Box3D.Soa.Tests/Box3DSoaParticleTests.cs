@@ -480,6 +480,8 @@ public sealed class Box3DSoaParticleSourceTests
     private static string Body(string source, string signature)
     {
         var start = source.IndexOf(signature, StringComparison.Ordinal);
+        while (start >= 0 && source[(start + signature.Length)..].TrimStart().StartsWith(';')) // a prototype, not the definition
+            start = source.IndexOf(signature, start + 1, StringComparison.Ordinal);
         Assert.True(start >= 0, signature);
         var open = source.IndexOf("\n{", start, StringComparison.Ordinal);
         var end = source.IndexOf("\n}", open, StringComparison.Ordinal);
@@ -499,18 +501,38 @@ public sealed class Box3DSoaParticleSourceTests
         Assert.Empty(System.Text.RegularExpressions.Regex.Matches(c, @"\bomp\b|#pragma|pthread|_Atomic|atomic_"));
     }
 
+    private static int Calls(string name) =>
+        Directory.GetFiles(Native(), "*.c").Where(f => !f.EndsWith("ymir_particles.c")).Concat(Directory.GetFiles(Native(), "*.h").Where(f => !f.EndsWith("ymir_particles.h")))
+            .Sum(f => System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(f), name + @"\(").Count);
+
+    private static int Count(string text, string pattern) => System.Text.RegularExpressions.Regex.Matches(text, pattern).Count;
+
     [Fact]
-    public void The_particle_phase_has_one_caller_and_the_step_never_splits_or_destroys()
+    public void The_particle_phase_runs_in_the_substep_callback_and_never_splits_or_destroys()
     {
         var soa = File.ReadAllText(Path.Combine(Native(), "ymir_box3d_soa.c"));
         var c = File.ReadAllText(Path.Combine(Native(), "ymir_particles.c"));
-        var calls = Directory.GetFiles(Native(), "*.c").Where(f => !f.EndsWith("ymir_particles.c")).Concat(Directory.GetFiles(Native(), "*.h").Where(f => !f.EndsWith("ymir_particles.h")))
-            .Sum(f => System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(f), @"ymir_particles_step\(").Count);
-        Assert.Equal(1, calls);
+        // begin and end once per tick, in the step; the substep once, in the callback Box3D runs inside its own substeps
+        Assert.Equal(1, Calls("ymir_particles_begin"));
+        Assert.Equal(1, Calls("ymir_particles_end"));
+        Assert.Equal(1, Calls("ymir_particles_substep"));
         var step = Body(soa, "YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_step(");
-        Assert.Contains("ymir_particles_step(", step);
-        var phase = Body(c, "void ymir_particles_step(");
-        foreach (var text in new[] { step, phase })
-            Assert.Empty(System.Text.RegularExpressions.Regex.Matches(text, @"split_chain|destroy_chain|detach"));
+        var callback = Body(soa, "static void ymir_soa_particle_substep(b3WorldId world_id, int sub_step, float h, void* context)");
+        Assert.Contains("ymir_particles_begin(", step);
+        Assert.Contains("ymir_particles_end(", step);
+        Assert.Contains("ymir_particles_substep(", callback);
+        Assert.Equal(1, Count(soa, @"b3World_SetSubStepCallback\("));
+        // a body is touched only through the callback's two fork accessors: never pushed after the step, never teleported
+        Assert.Equal(0, Count(step + callback, @"b3Body_ApplyLinearImpulse|b3Body_ApplyAngularImpulse|b3Body_SetTransform"));
+        Assert.Equal(1, Count(soa, @"b3Body_GetSubStepState\("));
+        Assert.Equal(1, Count(soa, @"b3Body_ApplySubStepImpulse\("));
+        Assert.Contains("b3Body_GetSubStepState(", callback);
+        Assert.Contains("b3Body_ApplySubStepImpulse(", callback);
+        var phases = new[] { Body(c, "int32_t ymir_particles_begin("), Body(c, "void ymir_particles_substep("), Body(c, "void ymir_particles_end(") };
+        foreach (var text in phases.Append(step).Append(callback))
+            Assert.Equal(0, Count(text, @"split_chain|destroy_chain|detach"));
+        // the retired owners stay gone
+        Assert.Equal(0, Count(c, @"carry|hard_impulse|cancel|k_body|end_force_scale|tension_diff|add_link_load|ymir_particles_step"));
+        Assert.Equal(0, Count(soa, @"carry|ymir_particles_step|ymir_soa_apply_particle_impulses"));
     }
 }

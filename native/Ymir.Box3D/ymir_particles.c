@@ -92,7 +92,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(pp_x, float, np); CARVE(pp_y, float, np); CARVE(pp_z, float, np);
     CARVE(dp_x, float, np); CARVE(dp_y, float, np); CARVE(dp_z, float, np);
     CARVE(rest_link, float, np); CARVE(rest_bend, float, np); CARVE(rest_pos, float, np);
-    CARVE(tension_acc, float, np); CARVE(tension_diff, float, np + 1);
+    CARVE(tension_acc, float, np); CARVE(struct_x, float, np); CARVE(struct_y, float, np); CARVE(struct_z, float, np);
     CARVE(skip_body, int32_t, np); CARVE(cell_x, int32_t, np); CARVE(cell_y, int32_t, np); CARVE(cell_z, int32_t, np);
     CARVE(cell_start, int32_t, table + 1); CARVE(cell_fill, int32_t, table); CARVE(sorted, int32_t, np);
     CARVE(mark, uint8_t, np);
@@ -517,9 +517,8 @@ int32_t ymir_particles_detach(ymir_particles* p, int32_t attachment, uint32_t ge
 typedef struct phase
 {
     ymir_particles* p;
-    float dt, h, inv_dt;
-    float k_particle; // force of a correction made once per substep: lambda / h^2
-    float k_body;     // force of a correction that moves a body once per tick: summed over the substeps / dt^2
+    float h, inv_h;
+    float k; // force of a correction: lambda / h^2
 } phase;
 
 // Generalised inverse mass of a proxy along unit `n` at world point `at`.
@@ -534,9 +533,9 @@ static float proxy_w(const ymir_particle_proxy* b, v3 at, v3 n)
     return b->inv_mass + vdot(rn, mat_mul(b->inv_inertia, rn));
 }
 
-// Applies a position-level impulse `imp` (kg m) at `at` to a proxy: moves its pose and books the velocity-level
-// impulse (imp / dt) the tick will hand back to Box3D.
-static void proxy_push(const phase* f, ymir_particle_proxy* b, v3 at, v3 imp, int hard)
+// Applies a position-level impulse `imp` (kg m) at `at` to a proxy: moves its predicted pose and books the
+// velocity-level impulse (imp / h) the caller applies to the body before Box3D integrates its position.
+static void proxy_push(const phase* f, ymir_particle_proxy* b, v3 at, v3 imp)
 {
     if (b->inv_mass == 0.0f)
     {
@@ -565,13 +564,12 @@ static void proxy_push(const phase* f, ymir_particle_proxy* b, v3 at, v3 imp, in
     {
         q[k] *= inv;
     }
-    float* acc = hard ? b->hard_impulse : b->impulse;
-    acc[0] += imp.x * f->inv_dt;
-    acc[1] += imp.y * f->inv_dt;
-    acc[2] += imp.z * f->inv_dt;
-    b->angular_impulse[0] += torque.x * f->inv_dt;
-    b->angular_impulse[1] += torque.y * f->inv_dt;
-    b->angular_impulse[2] += torque.z * f->inv_dt;
+    b->sub_impulse[0] += imp.x * f->inv_h;
+    b->sub_impulse[1] += imp.y * f->inv_h;
+    b->sub_impulse[2] += imp.z * f->inv_h;
+    b->sub_angular[0] += torque.x * f->inv_h;
+    b->sub_angular[1] += torque.y * f->inv_h;
+    b->sub_angular[2] += torque.z * f->inv_h;
 }
 
 // The world point an attachment holds, and the inverse mass of what it holds it to along `n`.
@@ -608,23 +606,13 @@ static void end_push(const phase* f, int32_t a, v3 at, v3 imp)
     ymir_particles* p = f->p;
     if (p->att_kind[a] == YMIR_ATTACH_PARTICLE_BODY)
     {
-        proxy_push(f, p->proxies + p->att_body[a], at, imp, 1);
+        proxy_push(f, p->proxies + p->att_body[a], at, imp);
     }
     else if (p->att_kind[a] == YMIR_ATTACH_PARTICLE_PARTICLE)
     {
         int32_t q = p->att_body[a];
         put(p->pp_x, p->pp_y, p->pp_z, q, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, q), vmul(imp, p->inv_mass[q])));
     }
-}
-
-// A correction that moves a dynamic body happens once per tick, not once per substep, so its force is the sum
-// of the substeps' lambdas over dt^2; every other correction is lambda / h^2 each substep. Both are written as
-// per-substep terms that the step averages.
-static float end_force_scale(const phase* f, int32_t a)
-{
-    const ymir_particles* p = f->p;
-    int dynamic_body = p->att_kind[a] == YMIR_ATTACH_PARTICLE_BODY && p->proxies[p->att_body[a]].inv_mass > 0.0f;
-    return dynamic_body ? f->k_body : f->k_particle;
 }
 
 // Adds a force (N) the attachment `a` exerts on the chain to its sensor lane.
@@ -635,13 +623,14 @@ static void add_force(ymir_particles* p, int32_t a, v3 force)
     p->att_force_z[a] += force.z;
 }
 
-// Books a load of `force` N carried along the chain between particles `from` and `to` (same chain): every link
-// between them transmits it, so a tether that carries the load past the links is still read by the links.
-static void add_link_load(ymir_particles* p, int32_t from, int32_t to, float force)
+// Books a structural position impulse (kg m) the chain delivers to its particle `i`: links, bends and tethers.
+// Every booking has an equal and opposite one, so the sum over the particles past a link is the load the link
+// carries (momentum balance), however the solver routed it.
+static void add_struct(ymir_particles* p, int32_t i, v3 imp)
 {
-    int32_t lo = from < to ? from : to, hi = from < to ? to : from;
-    p->tension_diff[lo] += force;
-    p->tension_diff[hi] -= force;
+    p->struct_x[i] += imp.x;
+    p->struct_y[i] += imp.y;
+    p->struct_z[i] += imp.z;
 }
 
 // ---- grid and particle-particle contact ----------------------------------------------------------------------
@@ -864,7 +853,7 @@ static void body_contacts(phase* f)
             float wb = proxy_w(b, s, n);
             float w = wi + wb;
             x = vadd(x, vmul(n, depth * wi / w));
-            proxy_push(f, b, s, vmul(n, -depth / w), 0);
+            proxy_push(f, b, s, vmul(n, -depth / w));
             if (mu > 0.0f)
             {
                 // Slip of the particle against the body point over this substep, tangential part.
@@ -880,7 +869,7 @@ static void body_contacts(phase* f)
                     float move = vmin(sl, mu * depth);
                     float wt = wi + proxy_w(b, s, t);
                     x = vsub(x, vmul(t, move * wi / wt));
-                    proxy_push(f, b, s, vmul(t, move / wt), 0);
+                    proxy_push(f, b, s, vmul(t, move / wt));
                 }
             }
             put(p->pp_x, p->pp_y, p->pp_z, i, x);
@@ -917,7 +906,7 @@ static void solve_attachments(phase* f)
         float dl = -len / den;
         put(p->pp_x, p->pp_y, p->pp_z, i, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, i), vmul(n, p->inv_mass[i] * dl)));
         end_push(f, a, at, vmul(n, -dl));
-        add_force(p, a, vmul(n, dl * end_force_scale(f, a)));
+        add_force(p, a, vmul(n, dl * f->k));
     }
 }
 
@@ -935,6 +924,8 @@ static float distance_constraint(ymir_particles* p, int32_t i, int32_t j, float 
     float dl = -(len - rest) / (wi + wj + alpha);
     put(p->pp_x, p->pp_y, p->pp_z, i, vsub(P(p, p->pp_x, p->pp_y, p->pp_z, i), vmul(n, wi * dl)));
     put(p->pp_x, p->pp_y, p->pp_z, j, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, j), vmul(n, wj * dl)));
+    add_struct(p, i, vmul(n, -dl));
+    add_struct(p, j, vmul(n, dl));
     return dl;
 }
 
@@ -953,8 +944,7 @@ static void solve_chains(phase* f)
         int32_t first = p->chain_first[c], last = first + p->chain_size[c];
         for (int32_t i = first; i + 1 < last; ++i)
         {
-            float dl = distance_constraint(p, i, i + 1, p->rest_link[i], p->chain_stretch[c] / hh);
-            p->tension_acc[i] += -dl * f->k_particle;
+            distance_constraint(p, i, i + 1, p->rest_link[i], p->chain_stretch[c] / hh);
         }
         for (int32_t i = first; i + 2 < last; ++i)
         {
@@ -969,8 +959,8 @@ static int tetherable(const ymir_particles* p, int32_t a)
 }
 
 // Long-range attachments: a unilateral distance bound at the chain's rest path length from each attachment point
-// to every particle of its chain, and between the attachment points of one chain. They carry load past the links,
-// so the load they carry is booked on the links and on the attachments (the sensors read the load, not the path).
+// to every particle of its chain, and between the attachment points of one chain. They bear load past the links,
+// so their structural impulses are booked on the particles they pull and the sensors read the load, not the path.
 static void solve_tethers(phase* f)
 {
     ymir_particles* p = f->p;
@@ -1005,9 +995,9 @@ static void solve_tethers(phase* f)
             float dl = -(len - bound) / den;
             put(p->pp_x, p->pp_y, p->pp_z, j, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, j), vmul(n, p->inv_mass[j] * dl)));
             end_push(f, a, at, vmul(n, -dl));
-            float k = end_force_scale(f, a);
-            add_force(p, a, vmul(n, dl * k)); // the force on particle j, toward the attachment
-            add_link_load(p, i, j, -dl * k);
+            add_force(p, a, vmul(n, dl * f->k)); // the force on the chain, toward the attachment
+            add_struct(p, j, vmul(n, dl));        // the chain between i and j pulls j toward i
+            add_struct(p, i, vmul(n, -dl));       // and i toward j
         }
     }
     for (int32_t a = 0; a < p->attachment_count; ++a)
@@ -1038,34 +1028,29 @@ static void solve_tethers(phase* f)
                 continue;
             }
             float dl = -(len - bound) / den;
-            float k = end_force_scale(f, a) == f->k_body || end_force_scale(f, b) == f->k_body ? f->k_body : f->k_particle;
             end_push(f, a, pa, vmul(n, dl));
             end_push(f, b, pb, vmul(n, -dl));
-            add_force(p, a, vmul(n, -dl * k)); // each point pulls the chain away from the other
-            add_force(p, b, vmul(n, dl * k));
-            add_link_load(p, p->att_particle[a], p->att_particle[b], -dl * k);
+            add_force(p, a, vmul(n, -dl * f->k)); // each point pulls the chain away from the other
+            add_force(p, b, vmul(n, dl * f->k));
+            add_struct(p, p->att_particle[a], vmul(n, dl)); // the chain between pulls each end toward the other
+            add_struct(p, p->att_particle[b], vmul(n, -dl));
         }
     }
 }
 
 // ---- the step ------------------------------------------------------------------------------------------------
 
-void ymir_particles_step(ymir_particles* p, float dt, int32_t substeps, float gx, float gy, float gz)
+int32_t ymir_particles_begin(ymir_particles* p)
 {
     if (p == NULL || p->live_chains == 0)
     {
-        return;
+        return 0;
     }
-    phase f = {p, dt, dt / (float)substeps, 1.0f / dt, 0.0f, 0.0f};
-    f.k_particle = 1.0f / (f.h * f.h);
-    f.k_body = 1.0f / ((float)substeps * f.h * f.h);
-    v3 g = {gx, gy, gz};
     for (int32_t k = 0; k < p->body_count; ++k)
     {
-        memset(p->proxies[k].impulse, 0, sizeof(p->proxies[k].impulse));
-        memset(p->proxies[k].hard_impulse, 0, sizeof(p->proxies[k].hard_impulse));
-        memset(p->proxies[k].carry, 0, sizeof(p->proxies[k].carry));
-        memset(p->proxies[k].angular_impulse, 0, sizeof(p->proxies[k].angular_impulse));
+        ymir_particle_proxy* b = p->proxies + k;
+        memset(b->impulse, 0, sizeof(b->impulse));
+        memset(b->angular_impulse, 0, sizeof(b->angular_impulse));
     }
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
@@ -1080,77 +1065,120 @@ void ymir_particles_step(ymir_particles* p, float dt, int32_t substeps, float gx
             p->skip_body[p->att_particle[a]] = p->att_body[a];
         }
     }
+    return 1;
+}
 
-    for (int32_t s = 0; s < substeps; ++s)
+// One substep of `h` against the proxies' poses at its start and velocities after the rigid solve: proxies are
+// predicted like particles, every constraint moves both sides by inverse mass, and each proxy's correction returns
+// as sub_impulse (its correction over h) for the caller to apply before the rigid positions integrate. Position,
+// velocity and momentum stay one state: XPBD's velocity update, done by the rigid integrator.
+void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, float gz)
+{
+    if (p == NULL || p->live_chains == 0)
     {
-        for (int32_t i = 0; i < p->particle_count; ++i)
-        {
-            if (p->chain[i] < 0)
-            {
-                continue;
-            }
-            v3 x = P(p, p->pos_x, p->pos_y, p->pos_z, i);
-            if (p->inv_mass[i] > 0.0f)
-            {
-                v3 v = vadd(P(p, p->vel_x, p->vel_y, p->vel_z, i), vmul(g, f.h));
-                put(p->vel_x, p->vel_y, p->vel_z, i, v);
-                x = vadd(x, vmul(v, f.h));
-            }
-            put(p->pp_x, p->pp_y, p->pp_z, i, x);
-        }
-        build_grid(p);
-        particle_contacts(p);
-        body_contacts(&f);
-        solve_attachments(&f);
-        solve_chains(&f);
-        solve_tethers(&f);
-        for (int32_t c = 0; c < p->chain_count; ++c) // the tethers' load, spread over the links it bypassed
-        {
-            if (p->chain_kind[c] != YMIR_CHAIN_LIVE)
-            {
-                continue;
-            }
-            float running = 0.0f;
-            for (int32_t i = p->chain_first[c]; i < p->chain_first[c] + p->chain_size[c]; ++i)
-            {
-                running += p->tension_diff[i];
-                p->tension_acc[i] += running;
-                p->tension_diff[i] = 0.0f;
-            }
-        }
-        for (int32_t i = 0; i < p->particle_count; ++i)
-        {
-            if (p->chain[i] < 0)
-            {
-                continue;
-            }
-            v3 x = P(p, p->pos_x, p->pos_y, p->pos_z, i), y = P(p, p->pp_x, p->pp_y, p->pp_z, i);
-            if (p->inv_mass[i] > 0.0f)
-            {
-                put(p->vel_x, p->vel_y, p->vel_z, i, vmul(vsub(y, x), 1.0f / f.h));
-            }
-            put(p->pos_x, p->pos_y, p->pos_z, i, y);
-        }
+        return;
     }
-    // A body tied to the chain (attachment, tether) cannot be corrected by a post-step impulse alone: a velocity
-    // from the whole position error rings at six ticks and never settles, and holding a resting body needs the
-    // support before Box3D integrates gravity, not after. So the hard impulse splits along its direction: the
-    // velocity the body carries into the constraint is cancelled now (it reads still after the step), and the
-    // rest, the position error to close, returns as `carry`, applied before the next Box3D step.
+    phase f = {p, h, 1.0f / h, 1.0f / (h * h)};
+    v3 g = {gx, gy, gz};
     for (int32_t k = 0; k < p->body_count; ++k)
     {
         ymir_particle_proxy* b = p->proxies + k;
-        v3 hard = {b->hard_impulse[0], b->hard_impulse[1], b->hard_impulse[2]};
-        float hl = vlen(hard);
-        if (b->inv_mass == 0.0f || !(hl > 0.0f))
+        memset(b->sub_impulse, 0, sizeof(b->sub_impulse));
+        memset(b->sub_angular, 0, sizeof(b->sub_angular));
+        // predict the pose the rigid integrator reaches with this velocity
+        b->position[0] += h * b->velocity[0];
+        b->position[1] += h * b->velocity[1];
+        b->position[2] += h * b->velocity[2];
+        v3 w = vmul((v3){b->angular_velocity[0], b->angular_velocity[1], b->angular_velocity[2]}, h);
+        float* q = b->rotation;
+        float dq[4] = {
+            0.5f * (w.x * q[3] + w.y * q[2] - w.z * q[1]),
+            0.5f * (w.y * q[3] + w.z * q[0] - w.x * q[2]),
+            0.5f * (w.z * q[3] + w.x * q[1] - w.y * q[0]),
+            0.5f * (-w.x * q[0] - w.y * q[1] - w.z * q[2])};
+        float n2 = 0.0f;
+        for (int c = 0; c < 4; ++c)
+        {
+            q[c] += dq[c];
+            n2 += q[c] * q[c];
+        }
+        float inv = 1.0f / sqrtf(n2);
+        for (int c = 0; c < 4; ++c)
+        {
+            q[c] *= inv;
+        }
+    }
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        if (p->chain[i] < 0)
         {
             continue;
         }
-        v3 j = vmul(hard, 1.0f / hl);
-        float cancel = vmax(-vdot((v3){b->velocity[0], b->velocity[1], b->velocity[2]}, j), 0.0f) / b->inv_mass;
-        float restore = hl;
-        b->impulse[0] += j.x * cancel; b->impulse[1] += j.y * cancel; b->impulse[2] += j.z * cancel;
-        b->carry[0] = j.x * restore; b->carry[1] = j.y * restore; b->carry[2] = j.z * restore;
+        v3 x = P(p, p->pos_x, p->pos_y, p->pos_z, i);
+        if (p->inv_mass[i] > 0.0f)
+        {
+            v3 v = vadd(P(p, p->vel_x, p->vel_y, p->vel_z, i), vmul(g, h));
+            put(p->vel_x, p->vel_y, p->vel_z, i, v);
+            x = vadd(x, vmul(v, h));
+        }
+        put(p->pp_x, p->pp_y, p->pp_z, i, x);
+        p->struct_x[i] = p->struct_y[i] = p->struct_z[i] = 0.0f;
+    }
+    build_grid(p);
+    particle_contacts(p);
+    solve_attachments(&f);
+    solve_chains(&f);
+    solve_tethers(&f);
+    body_contacts(&f);
+    // Link tension by momentum balance: what the structure delivered to the particles past the link, along it.
+    for (int32_t c = 0; c < p->chain_count; ++c)
+    {
+        if (p->chain_kind[c] != YMIR_CHAIN_LIVE)
+        {
+            continue;
+        }
+        int32_t first = p->chain_first[c], last = first + p->chain_size[c];
+        v3 past = {0.0f, 0.0f, 0.0f};
+        for (int32_t i = last - 2; i >= first; --i)
+        {
+            past = vadd(past, P(p, p->struct_x, p->struct_y, p->struct_z, i + 1));
+            v3 d = vsub(P(p, p->pp_x, p->pp_y, p->pp_z, i + 1), P(p, p->pp_x, p->pp_y, p->pp_z, i));
+            float len = vlen(d);
+            if (len > 1e-9f)
+            {
+                p->tension_acc[i] += -vdot(past, d) / len * f.k;
+            }
+        }
+    }
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        if (p->chain[i] < 0)
+        {
+            continue;
+        }
+        v3 x = P(p, p->pos_x, p->pos_y, p->pos_z, i), y = P(p, p->pp_x, p->pp_y, p->pp_z, i);
+        if (p->inv_mass[i] > 0.0f)
+        {
+            put(p->vel_x, p->vel_y, p->vel_z, i, vmul(vsub(y, x), f.inv_h));
+        }
+        put(p->pos_x, p->pos_y, p->pos_z, i, y);
+    }
+    for (int32_t k = 0; k < p->body_count; ++k)
+    {
+        ymir_particle_proxy* b = p->proxies + k;
+        for (int c = 0; c < 3; ++c)
+        {
+            b->impulse[c] += b->sub_impulse[c];
+            b->angular_impulse[c] += b->sub_angular[c];
+        }
+    }
+}
+
+void ymir_particles_end(ymir_particles* p, int32_t substeps)
+{
+    if (p == NULL || p->live_chains == 0)
+    {
+        return;
     }
     float mean = 1.0f / (float)substeps;
     for (int32_t i = 0; i < p->particle_count; ++i)

@@ -335,8 +335,9 @@ typedef struct ymir_box3d_soa_world
     b3ContactData* contact_scratch; // `capacity` entries: a body has one shape, so at most capacity - 1 contacts
     b3Vec3 gravity;
     ymir_particles* particles; // NULL when created without particle capacity: the step then runs exactly as ABI 8
-    float* carry;              // 3 per body: the particle phase's deferred impulse, applied before the next Box3D step
 } ymir_box3d_soa_world;
+
+static void ymir_soa_particle_substep(b3WorldId world_id, int sub_step, float h, void* context);
 
 static float* ymir_soa_lane(const ymir_box3d_soa_world* world, int lane)
 {
@@ -490,7 +491,6 @@ static void ymir_soa_free(ymir_box3d_soa_world* world)
     free(world->hit_facts);
     free(world->contact_scratch);
     ymir_particles_free(world->particles);
-    free(world->carry);
     free(world);
 }
 
@@ -548,8 +548,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     if (particle_capacity > 0 || chain_capacity > 0 || attachment_capacity > 0)
     {
         world->particles = ymir_particles_create(particle_capacity, chain_capacity, attachment_capacity, capacity);
-        world->carry = (float*)calloc(n * 3, sizeof(float));
-        if (world->particles == NULL || world->carry == NULL)
+        if (world->particles == NULL)
         {
             ymir_soa_free(world);
             return YMIR_SOA_OUT_OF_MEMORY;
@@ -577,6 +576,10 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     {
         ymir_soa_free(world);
         return YMIR_SOA_INTERNAL_ERROR;
+    }
+    if (world->particles != NULL)
+    {
+        b3World_SetSubStepCallback(world->world_id, ymir_soa_particle_substep, world);
     }
 
     *output = world;
@@ -1064,9 +1067,10 @@ static void ymir_soa_collect_contact_lanes(ymir_box3d_soa_world* world)
     }
 }
 
-// The particle phase's view of the bodies, after Box3D's step: pose, velocity, shape and the real inverse mass and
-// world inverse inertia of each dynamic body (0 for static, kinematic and anchor bodies). Every shape is centred on
-// the body origin, so the origin is the centre of mass.
+// The particle phase's view of the bodies, before Box3D's step: shape, size, and the real inverse mass and world
+// inverse inertia of each dynamic body (0 for static, kinematic and anchor bodies), with the step-start pose and
+// velocity (the substep callback refreshes pose and velocity every substep). Every shape is centred on the body
+// origin, so the origin is the centre of mass.
 static void ymir_soa_gather_proxies(ymir_box3d_soa_world* world)
 {
     ymir_particles* pt = world->particles;
@@ -1103,32 +1107,48 @@ static void ymir_soa_gather_proxies(ymir_box3d_soa_world* world)
     }
 }
 
-// What the particle phase delivered to each dynamic body, as the impulse Box3D applies now (a velocity change, never
-// a teleport) and the lane a consumer reads.
-static void ymir_soa_apply_particle_impulses(ymir_box3d_soa_world* world)
+// Box3D's substep callback: each proxy takes the body's pose at the substep's start and its velocity after the
+// biased solve; the particle substep corrects both sides; each dynamic body's correction goes back as an impulse
+// before Box3D integrates its position, so the body ends the substep where the constraint put it.
+static void ymir_soa_particle_substep(b3WorldId world_id, int sub_step, float h, void* context)
 {
-    const ymir_particles* pt = world->particles;
+    (void)world_id;
+    (void)sub_step;
+    ymir_box3d_soa_world* world = (ymir_box3d_soa_world*)context;
+    ymir_particles* pt = world->particles;
+    if (pt->live_chains == 0)
+    {
+        return;
+    }
+    for (int i = 0; i < world->count; ++i)
+    {
+        ymir_particle_proxy* b = pt->proxies + i;
+        b3Pos c;
+        b3Quat q;
+        b3Vec3 v, w;
+        if (!b3Body_GetSubStepState(world->bodies[i], &c, &q, &v, &w))
+        {
+            b->inv_mass = 0.0f;
+        }
+        b->position[0] = c.x; b->position[1] = c.y; b->position[2] = c.z;
+        b->rotation[0] = q.v.x; b->rotation[1] = q.v.y; b->rotation[2] = q.v.z; b->rotation[3] = q.s;
+        b->velocity[0] = v.x; b->velocity[1] = v.y; b->velocity[2] = v.z;
+        b->angular_velocity[0] = w.x; b->angular_velocity[1] = w.y; b->angular_velocity[2] = w.z;
+    }
+    ymir_particles_substep(pt, h, world->gravity.x, world->gravity.y, world->gravity.z);
     for (int i = 0; i < world->count; ++i)
     {
         const ymir_particle_proxy* b = pt->proxies + i;
-        for (int k = 0; k < 3; ++k)
-        {
-            ymir_soa_lane(world, YMIR_SOA_PARTICLE_IMPULSE_LANE + k)[i] = b->impulse[k] + b->carry[k];
-            world->carry[3 * i + k] = b->carry[k];
-        }
-        if (!ymir_soa_is_dynamic(world->kind[i]))
+        if (b->inv_mass == 0.0f)
         {
             continue;
         }
-        b3Vec3 linear = {b->impulse[0], b->impulse[1], b->impulse[2]};
-        b3Vec3 angular = {b->angular_impulse[0], b->angular_impulse[1], b->angular_impulse[2]};
-        if (linear.x != 0.0f || linear.y != 0.0f || linear.z != 0.0f)
+        b3Vec3 linear = {b->sub_impulse[0], b->sub_impulse[1], b->sub_impulse[2]};
+        b3Vec3 angular = {b->sub_angular[0], b->sub_angular[1], b->sub_angular[2]};
+        if (linear.x != 0.0f || linear.y != 0.0f || linear.z != 0.0f || angular.x != 0.0f || angular.y != 0.0f ||
+            angular.z != 0.0f)
         {
-            b3Body_ApplyLinearImpulseToCenter(world->bodies[i], linear, true);
-        }
-        if (angular.x != 0.0f || angular.y != 0.0f || angular.z != 0.0f)
-        {
-            b3Body_ApplyAngularImpulse(world->bodies[i], angular, true);
+            b3Body_ApplySubStepImpulse(world->bodies[i], linear, angular);
         }
     }
 }
@@ -1144,22 +1164,27 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_step(ymir_box3d_soa_world* world, f
     {
         return status;
     }
-    if (world->carry != NULL)
+    int particles_live = 0;
+    if (world->particles != NULL)
     {
-        // The impulse the last particle phase deferred: the support a tied body needs before gravity integrates.
+        ymir_soa_gather_proxies(world);
+        particles_live = ymir_particles_begin(world->particles);
+    }
+    b3World_Step(world->world_id, time_step, sub_step_count); // the particle substeps run inside it
+    if (world->particles != NULL)
+    {
+        ymir_particles_end(world->particles, sub_step_count);
         for (int i = 0; i < world->count; ++i)
         {
-            b3Vec3 c = {world->carry[3 * i], world->carry[3 * i + 1], world->carry[3 * i + 2]};
-            if (c.x != 0.0f || c.y != 0.0f || c.z != 0.0f)
+            const ymir_particle_proxy* b = world->particles->proxies + i;
+            for (int k = 0; k < 3; ++k)
             {
-                b3Body_ApplyLinearImpulseToCenter(world->bodies[i], c, true);
-                world->carry[3 * i] = world->carry[3 * i + 1] = world->carry[3 * i + 2] = 0.0f;
+                ymir_soa_lane(world, YMIR_SOA_PARTICLE_IMPULSE_LANE + k)[i] = particles_live ? b->impulse[k] : 0.0f;
             }
         }
     }
-    b3World_Step(world->world_id, time_step, sub_step_count);
     // An anchor moves only on a target: the one just applied has been reached, so it holds still until the
-    // next target. Otherwise its velocity would carry it on past the pose (and fling what it holds).
+    // next target. Otherwise its velocity would run it on past the pose (and fling what it holds).
     for (int i = 0; i < world->count; ++i)
     {
         if (ymir_soa_is_anchor(world->kind[i]))
@@ -1167,14 +1192,6 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_step(ymir_box3d_soa_world* world, f
             b3Body_SetLinearVelocity(world->bodies[i], b3Vec3_zero);
             b3Body_SetAngularVelocity(world->bodies[i], b3Vec3_zero);
         }
-    }
-    if (world->particles != NULL)
-    {
-        // Box3D has stepped: the particles now move against the bodies' new poses and hand back what they pushed.
-        ymir_soa_gather_proxies(world);
-        ymir_particles_step(
-            world->particles, time_step, sub_step_count, world->gravity.x, world->gravity.y, world->gravity.z);
-        ymir_soa_apply_particle_impulses(world);
     }
     ymir_soa_collect_facts(world);
     ymir_soa_collect_contact_lanes(world);

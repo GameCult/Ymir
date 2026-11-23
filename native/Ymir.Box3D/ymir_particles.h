@@ -85,10 +85,10 @@ typedef struct ymir_particle_proxy
     float angular_velocity[3];
     float inv_mass;       // 0 for static, kinematic and anchor bodies
     float inv_inertia[6]; // world inverse inertia, symmetric: xx xy xz yy yz zz
-    float impulse[3];
-    float hard_impulse[3]; // the part from attachments and tethers: finalised into `impulse` now and `carry` next step
-    float carry[3];       // N s, applied to the body before the next Box3D step
+    float impulse[3];         // N s, world: the tick's total, the sum of every substep's
     float angular_impulse[3];
+    float sub_impulse[3];     // N s: this substep's, applied by the caller before the body's positions integrate
+    float sub_angular[3];
 } ymir_particle_proxy;
 
 typedef struct ymir_particles
@@ -125,7 +125,7 @@ typedef struct ymir_particles
 
     // solver scratch, allocated once at create
     float *pp_x, *pp_y, *pp_z, *dp_x, *dp_y, *dp_z;
-    float *rest_link, *rest_bend, *rest_pos, *tension_acc, *tension_diff;
+    float *rest_link, *rest_bend, *rest_pos, *tension_acc, *struct_x, *struct_y, *struct_z;
     int32_t *skip_body, *cell_x, *cell_y, *cell_z, *cell_start, *cell_fill, *sorted;
     uint32_t table_mask;
     uint8_t* mark;
@@ -147,8 +147,11 @@ int32_t ymir_particles_free_particle_slots(const ymir_particles* p, uint64_t ste
 int32_t ymir_particles_free_chain_slots(const ymir_particles* p, uint64_t step_count);
 int32_t ymir_particles_free_attachment_slots(const ymir_particles* p, uint64_t step_count);
 
-// One particle phase for a tick of `dt` seconds in `substeps` substeps, after the caller filled
-// proxies[0 .. body_count). Returns nothing: it cannot fail once the commands were accepted.
-void ymir_particles_step(ymir_particles* p, float dt, int32_t substeps, float gx, float gy, float gz);
+// The particle phase runs inside the rigid solver's substeps: begin once per tick (after the caller filled the
+// proxies' shape, size, inverse mass and inertia), substep once per rigid substep (after the caller refreshed each
+// proxy's pose and velocity; it then applies each proxy's sub_impulse before positions integrate), end once.
+int32_t ymir_particles_begin(ymir_particles* p);
+void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, float gz);
+void ymir_particles_end(ymir_particles* p, int32_t substeps);
 
 #endif
