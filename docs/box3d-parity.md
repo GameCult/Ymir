@@ -6,13 +6,16 @@ Box3D v0.1.0 is Ymir's physics implementation and executable semantics oracle.
 The production native session ABI and snapshot lowering are live; explicit
 retained-world ownership is still being connected. The exact upstream source is pinned as the
 `extern/box3d` submodule at the GameCult fork's commit
-`6cfeeff232c0752d2d1f7b162d6f78bf105e8819`
-(`https://eureka.gamecult.org/forge/GameCult/box3d`, branch `gamecult/step-normal-impulse`).
-The fork is upstream `8441b4a06d6d09dcfb0b0f704df4d847d1437b92` plus two commits: an observed field,
-`b3ManifoldPoint.stepNormalImpulse`, the normal impulse each contact point applied over the whole step, and a
-static assert that `RELAX_ITERATIONS` is 1, the one setting under which that sum is exact. The patch changes no
-solver arithmetic, so dynamics are bit-identical to upstream. To rebase it onto a newer Box3D, re-apply those
-two commits, re-run the Soa impulse tests and compare a pile's state hash against the upstream build.
+`fb719c4` (substep callback; `https://eureka.gamecult.org/forge/GameCult/box3d`, branch `nibu/substep-callback` until
+the verdict, then `gamecult/step-normal-impulse`).
+The fork is upstream `8441b4a06d6d09dcfb0b0f704df4d847d1437b92` plus three commits: an observed field,
+`b3ManifoldPoint.stepNormalImpulse`, the normal impulse each contact point applied over the whole step; a
+static assert that `RELAX_ITERATIONS` is 1, the one setting under which that sum is exact; and a substep callback
+(`b3World_SetSubStepCallback`, with `b3Body_GetSubStepState` and `b3Body_ApplySubStepImpulse`, valid only inside it)
+that the particle phase runs in, after the biased solve and before positions integrate. The first two change no solver
+arithmetic and a world with no callback registered runs exactly as before, so dynamics are bit-identical to upstream
+(the six ABI 8 hashes pin it). To rebase it onto a newer Box3D, re-apply those commits, re-run the Soa impulse and
+particle tests and compare a pile's state hash against the upstream build.
 
 Box3D does not own GameCult entity ids, gameplay policy, persistence, or result
 ordering. Ymir projects Box3D facts into those contracts. Box3D owns
