@@ -8,11 +8,11 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 8) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 9) so the Aetheria session's contract is untouched.
 
 ## Contract
 
-- Native (ABI 8): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold) /
+- Native (ABI 9): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacity, chain_capacity, attachment_capacity) /
   add_body / add_joint / step / get_view / get_facts / set_anchor_target / destroy_joint / free_joint_slots / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
   so lane pointers never move.
@@ -99,6 +99,45 @@ separate native object (`ymir_box3d_soa.c`, ABI 8) so the Aetheria session's con
   the `Add*` methods take an optional `materialId`.
 - Determinism: one Box3D worker, bodies stepped in insertion order, same inputs give identical lane
   bytes on the same build. It is not claimed across platforms or CPUs.
+- Particles (`ymir_particles.c`, C17, calls no Box3D; `ymir_box3d_soa.c` stays the only Box3D caller and the only caller
+  of `ymir_particles_step`). A world created with `particle_capacity`, `chain_capacity`, `attachment_capacity` > 0 owns fixed
+  lanes that never move; with all three 0 it behaves byte-identically to ABI 8. Nothing writes a particle's position or
+  velocity: particles move only by gravity, contact and attachment.
+  - Chains: `create_chain(desc{stable_id, count >= 2, positions, masses (0 = immovable), radius, stretch and bend compliance,
+    friction, material_id})` returns lane and generation; link and bend rest lengths are the creation distances.
+    `split_chain(chain, gen, link, tail_stable_id)` cuts the link after particle `link`: the head keeps lane and id, the tail
+    takes a new lane; no particle changes lane or address. `destroy_chain(chain, gen)` also detaches every attachment that
+    reaches it. Ymir never splits, destroys or detaches on a threshold: link tension and attachment force are sensors.
+  - Attachments: `attach(desc{kind, particle, body, point, compliance})`: particle-body (`body` is the body lane, `point` in its
+    frame), particle-static (`point` in the world) or particle-particle (`body` is the other particle's lane); `detach(lane,
+    gen)`. A body or static attachment also gives the chain long-range tethers (a unilateral distance bound at the chain's rest
+    path length) from its point to every particle of the chain and to the chain's other attachment points; they carry a hung
+    load past the links. Attach where the particle already is. A particle does not collide with the one body it is attached
+    to (the last body attachment of that particle).
+  - Lanes: particle `x y z vx vy vz radius inv_mass link_tension chain` (a free slot reads chain -1, every lane 0), chain
+    `stable_id kind generation first size removed_at material_id stretch_compliance bend_compliance friction`, attachment
+    `kind generation particle body point compliance force`, body `particle_impulse xyz`. Counts are high-water marks.
+    `link_tension` (N, link from this particle to the next, mean over the substeps) and attachment `force` (N exerted on the
+    chain) are sensors, tether load included; see Not done for their accuracy. `particle_impulse` (N s, world) is what the
+    particle phase delivered to the body this step, notification only.
+  - Slots: chain and attachment lanes are tombstones (kind Removed, generation + 1) reused only once a step has passed, lowest
+    first; a destroyed chain's particle range is held for the same step and reused first fit, lowest index. Stale generations
+    and non-finite input are refused before anything changes. `free_particle_slots` is the largest free run.
+  - Step order inside `ymir_box3d_soa_step`: write lanes, the previous tick's deferred impulse, Box3D, anchor stop, then the
+    particle phase (gather body proxies: pose, velocity, shape, inverse mass and world inverse inertia; substeps of predict
+    with gravity, particle-particle contact in gather-form Jacobi skipping same-chain pairs within 2 links, particle-body
+    contact against the analytic sphere, capsule and box with Coulomb friction (chain friction) in ascending particle and body
+    order, attachments, chain stretch (XPBD) and bend (i, i+2) Gauss-Seidel in link order, tethers, velocities from positions),
+    the impulses applied to Box3D bodies, then facts, contact lanes and refresh. Body proxies enter every constraint with their
+    real generalised inverse mass; the displacement a contact gives a proxy returns as a linear and angular impulse now. What a
+    tied body (attachment, tether) receives is split: the velocity it carries into the constraint is cancelled now, and the
+    rest (the position error to close) is applied as an impulse before the next Box3D step (a post-step impulse alone rings
+    at six ticks and cannot read still). Bodies are never teleported.
+- Particle determinism: single thread; chains Gauss-Seidel in link order; the one Jacobi pass is gather-form (each particle
+  writes only its own correction, neighbours read in cell then index order from a stable counting-sort grid, a bucket shared
+  by two cells is told apart by the cells' coordinates); proxy impulses are summed per body in constraint order; only `+ - * /`
+  and `sqrtf`; the file builds with `-ffp-contract=off` (`/fp:precise` on MSVC). Same bytes on the same build, serial or with other
+  worlds stepping on other threads. No threads in this cut.
 - Concurrency: see Threading below; world creation and destruction are serialized by Ymir's native lock.
 
 ## Tests
@@ -114,12 +153,21 @@ of sqrt(2gh), point and normal), lifting gives one end, dropped counters resetti
 hits, facts lasting one step, overflow counted, per-step byte determinism of facts and contact lanes, and
 no allocation across 100 steps with fact reads. `Box3DSoaImpulseTests`: `contact_impulse` and the hit `impulse` equal the momentum change of the bodies the contact acted on, plus their weight, within 1e-4 of the peak at every step: a 5 kg ball and a 0.3 g BB at 100 m/s onto a jointed forearm (the BB reads 0.030 N s, the ball over 400 times more), the arm falling forearm-first onto a slab, a sphere dropped 1.4 m at 60 and 240 Hz, 1 and 4 sub-steps, restitution 0 and 0.5, two free bodies at restitution 0 and 0.5; a swung arm into a slab, a big sphere with 60 small ones converging (more contacts than graph colours, so the scalar overflow solver runs: the big lane is the sum of the small lanes, each equal to its own momentum change), and at rest `contact_impulse / dt` is the weight (0.1%, a lone sphere) while a body touching nothing reads 0.
 
+`Box3DSoaParticleTests` (particles): the ABI 8 scene's six checkpoint hashes with no particle capacity (pinned from 5104b17); a 48-particle chain hanging from a static point under 1% stretch for 4 s; a 70 kg sphere held by the same chain (stretch under 2%, speed under 0.01 m/s, the impulse per tick is exactly m g dt); an anchor dragging a 5 kg box along the floor by a chain (the box moves, `particle_impulse` reads it); a sphere, capsule, box and static box each pushed into a lying chain's end (no particle over 10% of its radius inside); overload (300 kg) never splits and `split_chain` is the only cut; split keeps lanes and addresses and the tail falls; destroy then create in one step refused, after a step reuses lane and range, stale generations refused for destroy, split and detach; four chains piled on two bodies byte-equal across two runs at six checkpoints, a one-ulp difference diverging, and eight concurrent worlds giving the serial bytes; no allocation across 100 steps; refusals changing nothing; a cost line (16 chains x 48, 4 substeps: about 1.2 ms per tick in Release on the build machine). `Box3DSoaParticleSourceTests` reads the C source: no Box3D call in `ymir_particles.*`, no allocation outside create and free, no threads or atomics, one call site of `ymir_particles_step`, and no split, destroy or detach in the step. `Top_link_tension_reads_the_load` is skipped: see Not done.
+
 ## Not done
 
 Body removal with a stable ordering rule, compound bodies
 and per-shape material, and motor joints with a velocity target or per-joint force readback (the motor joint here is a position spring only; Lodur drives limbs from torque lanes).
 `Ymir.Core` has no session-level surface over the SoA world yet; consumers use `Ymir.Box3D` directly.
 Unity consumption is unrun; cross-platform bit-identity is unclaimed.
+
+Particles: the tension sensors misread heavy loads (the top link reads +10% of the load for a 5 kg hang and -32% for 70 kg:
+tether and attachment load is not attributed to links exactly; the body's impulse is exact). A heavy body cannot be held up
+by a chain's contacts against a floor (the chain is squeezed between two solids it cannot satisfy: a position solver with a
+50:1 mass ratio; the pushing tests drive the body into a chain end instead). Angular impulses from a tied body are applied
+whole, not deferred. A body attached at two points uses one net direction for the cancel/restore split. No fluid, emitters,
+threads or particle write lanes (follow-up `ymir-particle-fluid`).
 
 ## Build and lifetime notes
 
