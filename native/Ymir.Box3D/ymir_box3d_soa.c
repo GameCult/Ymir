@@ -14,6 +14,7 @@
 #include <box3d/math_functions.h>
 #include <box3d/types.h>
 
+#include "ymir_particles.h"
 #include "ymir_world_lock.h"
 
 #include <math.h>
@@ -57,7 +58,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a destroyed joint's lane: never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 8u
+#define YMIR_SOA_ABI_VERSION 9u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -123,6 +124,14 @@ typedef struct ymir_box3d_soa_view
     int32_t joint_capacity;
     uint32_t reserved;
     uint64_t step_count;
+    // Particle high-water counts and capacities (all 0 for a world created without particle capacity).
+    int32_t particle_count;
+    int32_t particle_capacity;
+    int32_t chain_count;
+    int32_t chain_capacity;
+    int32_t attachment_count;
+    int32_t attachment_capacity;
+    uint32_t reserved_particles[2];
     // bodies
     const uint64_t* stable_id;
     const uint32_t* kind;
@@ -183,6 +192,48 @@ typedef struct ymir_box3d_soa_view
     // Per joint slot: counts the destroys of that slot. A grab's handle is (lane, generation); destroy_joint refuses
     // a handle whose generation is not the slot's, so a stale release cannot destroy a later grab in a reused slot.
     const uint32_t* joint_generation;
+    // The impulse (N s, world) the particle phase delivered to the body over the last step, 0 for a body it did not
+    // touch. Notification only: Box3D already applied it.
+    const float* particle_impulse_x;
+    const float* particle_impulse_y;
+    const float* particle_impulse_z;
+    // Particle lanes (read-only; only `step` and the chain and attachment commands change them), indexed by
+    // particle up to particle_count. A free slot reads chain -1 and every lane 0. link_tension (N) is the load the
+    // link from this particle to the next carries, mean over the substeps: a sensor, Ymir never splits on it.
+    const float* particle_x;
+    const float* particle_y;
+    const float* particle_z;
+    const float* particle_vx;
+    const float* particle_vy;
+    const float* particle_vz;
+    const float* particle_radius;
+    const float* particle_inv_mass;
+    const float* particle_link_tension;
+    const int32_t* particle_chain;
+    // Chain lanes, indexed by chain lane up to chain_count. kind: 0 live, 1 removed (a tombstone keeps its last range).
+    const uint64_t* chain_stable_id;
+    const uint32_t* chain_kind;
+    const uint32_t* chain_generation;
+    const int32_t* chain_first;
+    const int32_t* chain_size;
+    const uint64_t* chain_removed_at;
+    const uint64_t* chain_material_id;
+    const float* chain_stretch_compliance;
+    const float* chain_bend_compliance;
+    const float* chain_friction;
+    // Attachment lanes, indexed by attachment lane up to attachment_count. force (N) is what the attachment exerts on
+    // the chain, mean over the substeps, tether load included: a sensor.
+    const uint32_t* attachment_kind;
+    const uint32_t* attachment_generation;
+    const int32_t* attachment_particle;
+    const int32_t* attachment_body;
+    const float* attachment_point_x;
+    const float* attachment_point_y;
+    const float* attachment_point_z;
+    const float* attachment_compliance;
+    const float* attachment_force_x;
+    const float* attachment_force_y;
+    const float* attachment_force_z;
 } ymir_box3d_soa_view;
 
 // A begin or end of touch between two bodies: their lane indices and the shapes' stable ids.
@@ -245,7 +296,8 @@ typedef struct ymir_box3d_soa_ray_hit
 #define YMIR_SOA_STATE_LANES 13
 #define YMIR_SOA_WRITE_LANES 6
 #define YMIR_SOA_CONTACT_IMPULSE_LANE (YMIR_SOA_STATE_LANES + YMIR_SOA_WRITE_LANES)
-#define YMIR_SOA_BODY_FLOAT_LANES (YMIR_SOA_CONTACT_IMPULSE_LANE + 1)
+#define YMIR_SOA_PARTICLE_IMPULSE_LANE (YMIR_SOA_CONTACT_IMPULSE_LANE + 1) // 3 lanes: x y z
+#define YMIR_SOA_BODY_FLOAT_LANES (YMIR_SOA_PARTICLE_IMPULSE_LANE + 3)
 #define YMIR_SOA_JOINT_FLOAT_LANES 15
 
 typedef struct ymir_box3d_soa_world
@@ -281,6 +333,8 @@ typedef struct ymir_box3d_soa_world
     ymir_box3d_soa_touch_fact* end_facts;
     ymir_box3d_soa_hit_fact* hit_facts;
     b3ContactData* contact_scratch; // `capacity` entries: a body has one shape, so at most capacity - 1 contacts
+    b3Vec3 gravity;
+    ymir_particles* particles; // NULL when created without particle capacity: the step then runs exactly as ABI 8
 } ymir_box3d_soa_world;
 
 static float* ymir_soa_lane(const ymir_box3d_soa_world* world, int lane)
@@ -434,12 +488,14 @@ static void ymir_soa_free(ymir_box3d_soa_world* world)
     free(world->end_facts);
     free(world->hit_facts);
     free(world->contact_scratch);
+    ymir_particles_free(world->particles);
     free(world);
 }
 
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     int32_t capacity, int32_t joint_capacity, float gravity_x, float gravity_y, float gravity_z,
-    int32_t fact_capacity, float hit_threshold, ymir_box3d_soa_world** output)
+    int32_t fact_capacity, float hit_threshold, int32_t particle_capacity, int32_t chain_capacity,
+    int32_t attachment_capacity, ymir_box3d_soa_world** output)
 {
     if (output == NULL)
     {
@@ -448,7 +504,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     *output = NULL;
     if (capacity <= 0 || joint_capacity < 0 || fact_capacity <= 0 || !ymir_soa_finite(gravity_x) ||
         !ymir_soa_finite(gravity_y) || !ymir_soa_finite(gravity_z) || !ymir_soa_finite(hit_threshold) ||
-        hit_threshold < 0.0f)
+        hit_threshold < 0.0f || particle_capacity < 0 || chain_capacity < 0 || attachment_capacity < 0)
     {
         return YMIR_SOA_INVALID_ARGUMENT;
     }
@@ -486,6 +542,16 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     world->end_facts = (ymir_box3d_soa_touch_fact*)calloc((size_t)fact_capacity, sizeof(ymir_box3d_soa_touch_fact));
     world->hit_facts = (ymir_box3d_soa_hit_fact*)calloc((size_t)fact_capacity, sizeof(ymir_box3d_soa_hit_fact));
     world->contact_scratch = (b3ContactData*)calloc(n, sizeof(b3ContactData));
+    world->gravity = (b3Vec3){gravity_x, gravity_y, gravity_z};
+    if (particle_capacity > 0 || chain_capacity > 0 || attachment_capacity > 0)
+    {
+        world->particles = ymir_particles_create(particle_capacity, chain_capacity, attachment_capacity, capacity);
+        if (world->particles == NULL)
+        {
+            ymir_soa_free(world);
+            return YMIR_SOA_OUT_OF_MEMORY;
+        }
+    }
     if (world->contact_count == NULL || world->material_id == NULL || world->begin_facts == NULL ||
         world->end_facts == NULL || world->hit_facts == NULL || world->contact_scratch == NULL ||
         world->bodies == NULL || world->stable_id == NULL || world->kind == NULL || world->parent == NULL ||
@@ -995,6 +1061,74 @@ static void ymir_soa_collect_contact_lanes(ymir_box3d_soa_world* world)
     }
 }
 
+// The particle phase's view of the bodies, after Box3D's step: pose, velocity, shape and the real inverse mass and
+// world inverse inertia of each dynamic body (0 for static, kinematic and anchor bodies). Every shape is centred on
+// the body origin, so the origin is the centre of mass.
+static void ymir_soa_gather_proxies(ymir_box3d_soa_world* world)
+{
+    ymir_particles* pt = world->particles;
+    pt->body_count = world->count;
+    for (int i = 0; i < world->count; ++i)
+    {
+        ymir_particle_proxy* b = pt->proxies + i;
+        uint32_t kind = world->kind[i];
+        b3BodyId body = world->bodies[i];
+        b3Pos p = b3Body_GetPosition(body);
+        b3Quat q = b3Body_GetRotation(body);
+        b3Vec3 v = b3Body_GetLinearVelocity(body);
+        b3Vec3 w = b3Body_GetAngularVelocity(body);
+        memset(b, 0, sizeof(*b));
+        b->shape = kind == YMIR_SOA_KIND_SPHERE    ? YMIR_PROXY_SPHERE
+                   : kind == YMIR_SOA_KIND_CAPSULE ? YMIR_PROXY_CAPSULE
+                   : ymir_soa_is_anchor(kind)      ? YMIR_PROXY_NONE
+                                                   : YMIR_PROXY_BOX;
+        for (int k = 0; k < 3; ++k)
+        {
+            b->size[k] = world->size[(size_t)k * (size_t)world->capacity + (size_t)i];
+        }
+        b->position[0] = p.x; b->position[1] = p.y; b->position[2] = p.z;
+        b->rotation[0] = q.v.x; b->rotation[1] = q.v.y; b->rotation[2] = q.v.z; b->rotation[3] = q.s;
+        b->velocity[0] = v.x; b->velocity[1] = v.y; b->velocity[2] = v.z;
+        b->angular_velocity[0] = w.x; b->angular_velocity[1] = w.y; b->angular_velocity[2] = w.z;
+        if (ymir_soa_is_dynamic(kind))
+        {
+            b3Matrix3 m = b3Body_GetWorldInverseRotationalInertia(body);
+            b->inv_mass = 1.0f / b3Body_GetMass(body);
+            b->inv_inertia[0] = m.cx.x; b->inv_inertia[1] = m.cy.x; b->inv_inertia[2] = m.cz.x;
+            b->inv_inertia[3] = m.cy.y; b->inv_inertia[4] = m.cz.y; b->inv_inertia[5] = m.cz.z;
+        }
+    }
+}
+
+// What the particle phase delivered to each dynamic body, as the impulse Box3D applies now (a velocity change, never
+// a teleport) and the lane a consumer reads.
+static void ymir_soa_apply_particle_impulses(ymir_box3d_soa_world* world)
+{
+    const ymir_particles* pt = world->particles;
+    for (int i = 0; i < world->count; ++i)
+    {
+        const ymir_particle_proxy* b = pt->proxies + i;
+        for (int k = 0; k < 3; ++k)
+        {
+            ymir_soa_lane(world, YMIR_SOA_PARTICLE_IMPULSE_LANE + k)[i] = b->impulse[k];
+        }
+        if (!ymir_soa_is_dynamic(world->kind[i]))
+        {
+            continue;
+        }
+        b3Vec3 linear = {b->impulse[0], b->impulse[1], b->impulse[2]};
+        b3Vec3 angular = {b->angular_impulse[0], b->angular_impulse[1], b->angular_impulse[2]};
+        if (linear.x != 0.0f || linear.y != 0.0f || linear.z != 0.0f)
+        {
+            b3Body_ApplyLinearImpulseToCenter(world->bodies[i], linear, true);
+        }
+        if (angular.x != 0.0f || angular.y != 0.0f || angular.z != 0.0f)
+        {
+            b3Body_ApplyAngularImpulse(world->bodies[i], angular, true);
+        }
+    }
+}
+
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_step(ymir_box3d_soa_world* world, float time_step, int32_t sub_step_count)
 {
     if (world == NULL || !ymir_soa_finite(time_step) || time_step <= 0.0f || sub_step_count <= 0)
@@ -1016,6 +1150,14 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_step(ymir_box3d_soa_world* world, f
             b3Body_SetLinearVelocity(world->bodies[i], b3Vec3_zero);
             b3Body_SetAngularVelocity(world->bodies[i], b3Vec3_zero);
         }
+    }
+    if (world->particles != NULL)
+    {
+        // Box3D has stepped: the particles now move against the bodies' new poses and hand back what they pushed.
+        ymir_soa_gather_proxies(world);
+        ymir_particles_step(
+            world->particles, time_step, sub_step_count, world->gravity.x, world->gravity.y, world->gravity.z);
+        ymir_soa_apply_particle_impulses(world);
     }
     ymir_soa_collect_facts(world);
     ymir_soa_collect_contact_lanes(world);
@@ -1114,6 +1256,86 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_cast_ray_closest(
     return YMIR_SOA_OK;
 }
 
+// Particle chains and attachments. Each command is the whole of its effect: Ymir never splits, destroys or detaches
+// on a threshold, so tear, cut, gib and release are the caller's say-so. Every refusal changes nothing. A world made
+// without particle capacity refuses them all.
+
+YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_soa_get_chain_desc_size(void)
+{
+    return (uint32_t)sizeof(ymir_chain_desc);
+}
+
+YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_soa_get_attachment_desc_size(void)
+{
+    return (uint32_t)sizeof(ymir_attachment_desc);
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create_chain(
+    ymir_box3d_soa_world* world, const ymir_chain_desc* d, int32_t* chain, uint32_t* generation)
+{
+    if (world == NULL || world->particles == NULL)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    return ymir_particles_create_chain(world->particles, d, world->step_count, chain, generation);
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_split_chain(
+    ymir_box3d_soa_world* world, int32_t chain, uint32_t generation, int32_t link, uint64_t tail_stable_id, int32_t* tail,
+    uint32_t* tail_generation)
+{
+    if (world == NULL || world->particles == NULL)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    return ymir_particles_split_chain(
+        world->particles, chain, generation, link, tail_stable_id, world->step_count, tail, tail_generation);
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_destroy_chain(ymir_box3d_soa_world* world, int32_t chain, uint32_t generation)
+{
+    if (world == NULL || world->particles == NULL)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    return ymir_particles_destroy_chain(world->particles, chain, generation, world->step_count);
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_attach(
+    ymir_box3d_soa_world* world, const ymir_attachment_desc* d, int32_t* attachment, uint32_t* generation)
+{
+    if (world == NULL || world->particles == NULL)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    return ymir_particles_attach(world->particles, d, world->count, world->step_count, attachment, generation);
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_detach(ymir_box3d_soa_world* world, int32_t attachment, uint32_t generation)
+{
+    if (world == NULL || world->particles == NULL)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    return ymir_particles_detach(world->particles, attachment, generation, world->step_count);
+}
+
+// The largest run of particle slots a new chain could take right now.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_free_particle_slots(const ymir_box3d_soa_world* world)
+{
+    return world == NULL || world->particles == NULL ? 0 : ymir_particles_free_particle_slots(world->particles, world->step_count);
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_free_chain_slots(const ymir_box3d_soa_world* world)
+{
+    return world == NULL || world->particles == NULL ? 0 : ymir_particles_free_chain_slots(world->particles, world->step_count);
+}
+
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_free_attachment_slots(const ymir_box3d_soa_world* world)
+{
+    return world == NULL || world->particles == NULL ? 0 : ymir_particles_free_attachment_slots(world->particles, world->step_count);
+}
+
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world* world, ymir_box3d_soa_view* view)
 {
     if (world == NULL || view == NULL)
@@ -1124,13 +1346,20 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
     size_t n = (size_t)world->capacity;
     float* jb = world->joint_lanes;
     size_t m = (size_t)world->joint_capacity;
-    *view = (ymir_box3d_soa_view){
+    const ymir_particles* pt = world->particles;
+    *view =(ymir_box3d_soa_view){
         .abi_version = YMIR_SOA_ABI_VERSION,
         .count = world->count,
         .capacity = world->capacity,
         .joint_count = world->joint_count,
         .joint_capacity = world->joint_capacity,
         .step_count = world->step_count,
+        .particle_count = pt != NULL ? pt->particle_count : 0,
+        .particle_capacity = pt != NULL ? pt->particle_capacity : 0,
+        .chain_count = pt != NULL ? pt->chain_count : 0,
+        .chain_capacity = pt != NULL ? pt->chain_capacity : 0,
+        .attachment_count = pt != NULL ? pt->attachment_count : 0,
+        .attachment_capacity = pt != NULL ? pt->attachment_capacity : 0,
         .stable_id = world->stable_id,
         .kind = world->kind,
         .parent = world->parent,
@@ -1179,7 +1408,44 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         .contact_count = world->contact_count,
         .material_id = world->material_id,
         .joint_generation = world->joint_generation,
+        .particle_impulse_x = base + (YMIR_SOA_PARTICLE_IMPULSE_LANE + 0) * n,
+        .particle_impulse_y = base + (YMIR_SOA_PARTICLE_IMPULSE_LANE + 1) * n,
+        .particle_impulse_z = base + (YMIR_SOA_PARTICLE_IMPULSE_LANE + 2) * n,
     };
+    if (pt != NULL)
+    {
+        view->particle_x = pt->pos_x;
+        view->particle_y = pt->pos_y;
+        view->particle_z = pt->pos_z;
+        view->particle_vx = pt->vel_x;
+        view->particle_vy = pt->vel_y;
+        view->particle_vz = pt->vel_z;
+        view->particle_radius = pt->radius;
+        view->particle_inv_mass = pt->inv_mass;
+        view->particle_link_tension = pt->link_tension;
+        view->particle_chain = pt->chain;
+        view->chain_stable_id = pt->chain_stable_id;
+        view->chain_kind = pt->chain_kind;
+        view->chain_generation = pt->chain_generation;
+        view->chain_first = pt->chain_first;
+        view->chain_size = pt->chain_size;
+        view->chain_removed_at = pt->chain_removed_at;
+        view->chain_material_id = pt->chain_material_id;
+        view->chain_stretch_compliance = pt->chain_stretch;
+        view->chain_bend_compliance = pt->chain_bend;
+        view->chain_friction = pt->chain_friction;
+        view->attachment_kind = pt->att_kind;
+        view->attachment_generation = pt->att_generation;
+        view->attachment_particle = pt->att_particle;
+        view->attachment_body = pt->att_body;
+        view->attachment_point_x = pt->att_point_x;
+        view->attachment_point_y = pt->att_point_y;
+        view->attachment_point_z = pt->att_point_z;
+        view->attachment_compliance = pt->att_compliance;
+        view->attachment_force_x = pt->att_force_x;
+        view->attachment_force_y = pt->att_force_y;
+        view->attachment_force_z = pt->att_force_z;
+    }
     return YMIR_SOA_OK;
 }
 

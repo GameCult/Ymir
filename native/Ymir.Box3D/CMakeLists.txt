@@ -11,7 +11,7 @@ set(BOX3D_VALIDATE ON CACHE BOOL "" FORCE)
 
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../extern/box3d" "${CMAKE_CURRENT_BINARY_DIR}/box3d")
 
-add_library(ymir_box3d SHARED ymir_box3d.c ymir_box3d_soa.c)
+add_library(ymir_box3d SHARED ymir_box3d.c ymir_box3d_soa.c ymir_particles.c)
 target_link_libraries(ymir_box3d PRIVATE box3d::box3d)
 target_include_directories(ymir_box3d PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../extern/box3d/include")
 target_compile_features(ymir_box3d PRIVATE c_std_17)
@@ -28,3 +28,7 @@ if(MINGW)
     # MinGW would emit libymir_box3d.dll; the managed side loads ymir_box3d.dll.
     set_property(TARGET ymir_box3d PROPERTY PREFIX "")
 endif()
+
+# The particle solver's bytes must not depend on whether the compiler fuses a multiply and an add.
+set_source_files_properties(ymir_particles.c PROPERTIES COMPILE_OPTIONS
+    "$<IF:$<C_COMPILER_ID:MSVC>,/fp:precise,-ffp-contract=off>")

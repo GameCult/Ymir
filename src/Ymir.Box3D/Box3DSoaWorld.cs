@@ -67,6 +67,62 @@ internal struct Box3DSoaRayHitNative
     public uint Reserved;
 }
 
+/// <summary>Native layout of <c>ymir_chain_desc</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct Box3DSoaChainDesc
+{
+    public ulong StableId;
+    public int Count;
+    public uint Reserved;
+    public float* Positions;
+    public float* Masses;
+    public float Radius, StretchCompliance, BendCompliance, Friction;
+    public ulong MaterialId;
+}
+
+/// <summary>Native layout of <c>ymir_attachment_desc</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct Box3DSoaAttachmentDesc
+{
+    public uint Kind;
+    public int Particle;
+    public int Body;
+    public float PointX, PointY, PointZ;
+    public float Compliance;
+    public uint Reserved;
+}
+
+public enum Box3DSoaAttachKind : uint
+{
+    /// <summary>The particle to a point fixed in a body: <c>target</c> is the body lane, <c>point</c> is in the body's frame.</summary>
+    Body = 0,
+    /// <summary>The particle to a world point (<c>point</c>); <c>target</c> is ignored.</summary>
+    Static = 1,
+    /// <summary>The particle to another particle: <c>target</c> is the other particle's lane.</summary>
+    Particle = 2,
+    /// <summary>The kind lane of a detached attachment (a tombstone).</summary>
+    Removed = 3
+}
+
+public enum Box3DSoaChainKind : uint
+{
+    Live = 0,
+    /// <summary>A destroyed chain's lane: reusable once a step has passed; it keeps its last range until then.</summary>
+    Removed = 1
+}
+
+/// <summary>A chain's identity: its lane and the slot's generation when it was created or split off.</summary>
+public readonly record struct Box3DSoaChainHandle(int Lane, uint Generation)
+{
+    public static implicit operator int(Box3DSoaChainHandle handle) => handle.Lane;
+}
+
+/// <summary>An attachment's identity: its lane and the slot's generation when it was made.</summary>
+public readonly record struct Box3DSoaAttachmentHandle(int Lane, uint Generation)
+{
+    public static implicit operator int(Box3DSoaAttachmentHandle handle) => handle.Lane;
+}
+
 /// <summary>
 /// A joint's identity: its lane and the slot's generation when it was added. Converts to the lane for reading lanes;
 /// <see cref="Box3DSoaWorld.DestroyJoint"/> takes the whole handle and refuses one from an earlier occupant of the slot.
@@ -91,6 +147,14 @@ internal unsafe struct Box3DSoaViewNative
     public int JointCapacity;
     public uint Reserved;
     public ulong StepCount;
+    public int ParticleCount;
+    public int ParticleCapacity;
+    public int ChainCount;
+    public int ChainCapacity;
+    public int AttachmentCount;
+    public int AttachmentCapacity;
+    public uint ReservedParticles0;
+    public uint ReservedParticles1;
     public ulong* StableId;
     public uint* Kind;
     public int* Parent;
@@ -139,6 +203,40 @@ internal unsafe struct Box3DSoaViewNative
     public int* ContactCount;
     public ulong* MaterialId;
     public uint* JointGeneration;
+    public float* ParticleImpulseX;
+    public float* ParticleImpulseY;
+    public float* ParticleImpulseZ;
+    public float* ParticleX;
+    public float* ParticleY;
+    public float* ParticleZ;
+    public float* ParticleVx;
+    public float* ParticleVy;
+    public float* ParticleVz;
+    public float* ParticleRadius;
+    public float* ParticleInvMass;
+    public float* ParticleLinkTension;
+    public int* ParticleChain;
+    public ulong* ChainStableId;
+    public uint* ChainKind;
+    public uint* ChainGeneration;
+    public int* ChainFirst;
+    public int* ChainSize;
+    public ulong* ChainRemovedAt;
+    public ulong* ChainMaterialId;
+    public float* ChainStretchCompliance;
+    public float* ChainBendCompliance;
+    public float* ChainFriction;
+    public uint* AttachmentKind;
+    public uint* AttachmentGeneration;
+    public int* AttachmentParticle;
+    public int* AttachmentBody;
+    public float* AttachmentPointX;
+    public float* AttachmentPointY;
+    public float* AttachmentPointZ;
+    public float* AttachmentCompliance;
+    public float* AttachmentForceX;
+    public float* AttachmentForceY;
+    public float* AttachmentForceZ;
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_facts</c>: counts, dropped counters, then three pointers.</summary>
@@ -256,7 +354,7 @@ internal static unsafe partial class Box3DSoaNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-    internal static partial int ymir_box3d_soa_create(int capacity, int jointCapacity, float gx, float gy, float gz, int factCapacity, float hitThreshold, out nint world);
+    internal static partial int ymir_box3d_soa_create(int capacity, int jointCapacity, float gx, float gy, float gz, int factCapacity, float hitThreshold, int particleCapacity, int chainCapacity, int attachmentCapacity, out nint world);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -301,6 +399,46 @@ internal static unsafe partial class Box3DSoaNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ymir_box3d_soa_cast_ray_closest(nint world, float* origin, float* translation, out Box3DSoaRayHitNative hit);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial uint ymir_box3d_soa_get_chain_desc_size();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial uint ymir_box3d_soa_get_attachment_desc_size();
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_create_chain(nint world, in Box3DSoaChainDesc desc, out int chain, out uint generation);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_split_chain(nint world, int chain, uint generation, int link, ulong tailStableId, out int tail, out uint tailGeneration);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_destroy_chain(nint world, int chain, uint generation);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_attach(nint world, in Box3DSoaAttachmentDesc desc, out int attachment, out uint generation);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_detach(nint world, int attachment, uint generation);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_free_particle_slots(nint world);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_free_chain_slots(nint world);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_free_attachment_slots(nint world);
 }
 
 /// <summary>
@@ -412,6 +550,55 @@ public readonly unsafe struct Box3DSoaView
     public ReadOnlySpan<float> JointOriginY => Lane(_v.JointOriginY, JointCount);
     public ReadOnlySpan<float> JointOriginZ => Lane(_v.JointOriginZ, JointCount);
 
+    // Particle lanes: read-only, changed only by Step and by the chain and attachment commands. Particle lanes are indexed
+    // by particle up to ParticleCount (a high-water mark); a free slot reads chain -1 and every lane 0.
+    public int ParticleCount => _v.ParticleCount;
+    public int ParticleCapacity => _v.ParticleCapacity;
+    public int ChainCount => _v.ChainCount;
+    public int AttachmentCount => _v.AttachmentCount;
+    public ReadOnlySpan<float> ParticleX => Lane(_v.ParticleX, ParticleCount);
+    public ReadOnlySpan<float> ParticleY => Lane(_v.ParticleY, ParticleCount);
+    public ReadOnlySpan<float> ParticleZ => Lane(_v.ParticleZ, ParticleCount);
+    public ReadOnlySpan<float> ParticleVx => Lane(_v.ParticleVx, ParticleCount);
+    public ReadOnlySpan<float> ParticleVy => Lane(_v.ParticleVy, ParticleCount);
+    public ReadOnlySpan<float> ParticleVz => Lane(_v.ParticleVz, ParticleCount);
+    public ReadOnlySpan<float> ParticleRadius => Lane(_v.ParticleRadius, ParticleCount);
+    public ReadOnlySpan<float> ParticleInvMass => Lane(_v.ParticleInvMass, ParticleCount);
+    /// <summary>N: the load the link from this particle to the next carries, mean over the substeps, tether load included. A sensor: Ymir never splits on it.</summary>
+    public ReadOnlySpan<float> ParticleLinkTension => Lane(_v.ParticleLinkTension, ParticleCount);
+    /// <summary>The particle's chain lane, -1 for a free slot.</summary>
+    public ReadOnlySpan<int> ParticleChain => Lane(_v.ParticleChain, ParticleCount);
+
+    public ReadOnlySpan<ulong> ChainStableId => Lane(_v.ChainStableId, ChainCount);
+    public ReadOnlySpan<uint> ChainKind => Lane(_v.ChainKind, ChainCount);
+    public ReadOnlySpan<uint> ChainGeneration => Lane(_v.ChainGeneration, ChainCount);
+    public ReadOnlySpan<int> ChainFirst => Lane(_v.ChainFirst, ChainCount);
+    public ReadOnlySpan<int> ChainSize => Lane(_v.ChainSize, ChainCount);
+    public ReadOnlySpan<ulong> ChainRemovedAt => Lane(_v.ChainRemovedAt, ChainCount);
+    public ReadOnlySpan<ulong> ChainMaterialId => Lane(_v.ChainMaterialId, ChainCount);
+    public ReadOnlySpan<float> ChainStretchCompliance => Lane(_v.ChainStretchCompliance, ChainCount);
+    public ReadOnlySpan<float> ChainBendCompliance => Lane(_v.ChainBendCompliance, ChainCount);
+    public ReadOnlySpan<float> ChainFriction => Lane(_v.ChainFriction, ChainCount);
+
+    public ReadOnlySpan<uint> AttachmentKind => Lane(_v.AttachmentKind, AttachmentCount);
+    public ReadOnlySpan<uint> AttachmentGeneration => Lane(_v.AttachmentGeneration, AttachmentCount);
+    public ReadOnlySpan<int> AttachmentParticle => Lane(_v.AttachmentParticle, AttachmentCount);
+    /// <summary>The body lane (<see cref="Box3DSoaAttachKind.Body"/>), the other particle's lane (<see cref="Box3DSoaAttachKind.Particle"/>) or -1.</summary>
+    public ReadOnlySpan<int> AttachmentBody => Lane(_v.AttachmentBody, AttachmentCount);
+    public ReadOnlySpan<float> AttachmentPointX => Lane(_v.AttachmentPointX, AttachmentCount);
+    public ReadOnlySpan<float> AttachmentPointY => Lane(_v.AttachmentPointY, AttachmentCount);
+    public ReadOnlySpan<float> AttachmentPointZ => Lane(_v.AttachmentPointZ, AttachmentCount);
+    public ReadOnlySpan<float> AttachmentCompliance => Lane(_v.AttachmentCompliance, AttachmentCount);
+    /// <summary>N: what the attachment exerts on the chain, mean over the substeps, tether load included. A sensor.</summary>
+    public ReadOnlySpan<float> AttachmentForceX => Lane(_v.AttachmentForceX, AttachmentCount);
+    public ReadOnlySpan<float> AttachmentForceY => Lane(_v.AttachmentForceY, AttachmentCount);
+    public ReadOnlySpan<float> AttachmentForceZ => Lane(_v.AttachmentForceZ, AttachmentCount);
+
+    /// <summary>N s, world: the impulse the particle phase delivered to each body over the last step (0 for a body it did not touch). Box3D has already applied it; this is notification only.</summary>
+    public ReadOnlySpan<float> ParticleImpulseX => Lane(_v.ParticleImpulseX, Count);
+    public ReadOnlySpan<float> ParticleImpulseY => Lane(_v.ParticleImpulseY, Count);
+    public ReadOnlySpan<float> ParticleImpulseZ => Lane(_v.ParticleImpulseZ, Count);
+
     /// <summary>Address of a lane, for tests and interop that need to prove nothing was copied.</summary>
     public nint PositionYAddress => (nint)_v.PositionY;
 }
@@ -424,7 +611,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 8;
+    private const uint ExpectedAbi = 9;
     private nint _handle;
 
     /// <summary>
@@ -433,7 +620,8 @@ public sealed class Box3DSoaWorld : IDisposable
     /// </summary>
     public Box3DSoaWorld(
         int capacity, float gravityX = 0f, float gravityY = -10f, float gravityZ = 0f, int jointCapacity = 0,
-        int? factCapacity = null, float hitThreshold = 1f)
+        int? factCapacity = null, float hitThreshold = 1f,
+        int particleCapacity = 0, int chainCapacity = 0, int attachmentCapacity = 0)
     {
         RequireNativeAbi(Box3DSoaNative.ymir_box3d_soa_get_abi_version());
         if (Box3DSoaNative.ymir_box3d_soa_get_view_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaViewNative>() ||
@@ -442,12 +630,14 @@ public sealed class Box3DSoaWorld : IDisposable
             Box3DSoaNative.ymir_box3d_soa_get_facts_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaFactsNative>() ||
             Box3DSoaNative.ymir_box3d_soa_get_touch_fact_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaTouch>() ||
             Box3DSoaNative.ymir_box3d_soa_get_hit_fact_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaHit>() ||
-            Box3DSoaNative.ymir_box3d_soa_get_ray_hit_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaRayHitNative>())
+            Box3DSoaNative.ymir_box3d_soa_get_ray_hit_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaRayHitNative>() ||
+            Box3DSoaNative.ymir_box3d_soa_get_chain_desc_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaChainDesc>() ||
+            Box3DSoaNative.ymir_box3d_soa_get_attachment_desc_size() != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaAttachmentDesc>())
         {
             throw new InvalidOperationException("The native Ymir Box3D SoA ABI does not match this build.");
         }
 
-        Check(Box3DSoaNative.ymir_box3d_soa_create(capacity, jointCapacity, gravityX, gravityY, gravityZ, factCapacity ?? checked(capacity * 4), hitThreshold, out _handle));
+        Check(Box3DSoaNative.ymir_box3d_soa_create(capacity, jointCapacity, gravityX, gravityY, gravityZ, factCapacity ?? checked(capacity * 4), hitThreshold, particleCapacity, chainCapacity, attachmentCapacity, out _handle));
     }
 
     /// <summary>Fails closed when the native library is not the ABI this build expects, in either direction.</summary>
@@ -657,6 +847,97 @@ public sealed class Box3DSoaWorld : IDisposable
         Check(Box3DSoaNative.ymir_box3d_soa_cast_ray_closest(_handle, o, t, out var h));
         return new Box3DSoaRayHit(h.Hit != 0, h.Lane, h.StableId, (h.PointX, h.PointY, h.PointZ), (h.NormalX, h.NormalY, h.NormalZ), h.Fraction);
     }
+
+    /// <summary>
+    /// Creates a particle chain of <c>positions.Length</c> (at least 2) particles, in a free range of the particle lanes.
+    /// <paramref name="masses"/> are kg per particle (0 = immovable); link and bend rest lengths are the creation distances.
+    /// Compliances are m/N (0 = rigid). Returns the chain's handle. Throws for a full world, a duplicate stable id among live
+    /// chains, a link of no length or non-finite input; nothing changes when it throws.
+    /// </summary>
+    public unsafe Box3DSoaChainHandle CreateChain(
+        ulong stableId, ReadOnlySpan<(float X, float Y, float Z)> positions, ReadOnlySpan<float> masses, float radius,
+        float stretchCompliance = 0f, float bendCompliance = 1e-4f, float friction = 0.3f, ulong materialId = 0)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        if (masses.Length != positions.Length) throw new ArgumentException("One mass per particle.", nameof(masses));
+        var xyz = new float[positions.Length * 3];
+        for (var i = 0; i < positions.Length; i++)
+        {
+            xyz[3 * i] = positions[i].X; xyz[3 * i + 1] = positions[i].Y; xyz[3 * i + 2] = positions[i].Z;
+        }
+        fixed (float* p = xyz)
+        fixed (float* m = masses)
+        {
+            var desc = new Box3DSoaChainDesc
+            {
+                StableId = stableId, Count = positions.Length, Positions = p, Masses = m, Radius = radius,
+                StretchCompliance = stretchCompliance, BendCompliance = bendCompliance, Friction = friction, MaterialId = materialId,
+            };
+            Check(Box3DSoaNative.ymir_box3d_soa_create_chain(_handle, desc, out var lane, out var generation));
+            return new Box3DSoaChainHandle(lane, generation);
+        }
+    }
+
+    /// <summary>A chain whose particles all weigh <paramref name="massPerParticle"/> kg.</summary>
+    public Box3DSoaChainHandle CreateChain(
+        ulong stableId, ReadOnlySpan<(float X, float Y, float Z)> positions, float massPerParticle, float radius,
+        float stretchCompliance = 0f, float bendCompliance = 1e-4f, float friction = 0.3f, ulong materialId = 0)
+    {
+        var masses = new float[positions.Length];
+        Array.Fill(masses, massPerParticle);
+        return CreateChain(stableId, positions, masses, radius, stretchCompliance, bendCompliance, friction, materialId);
+    }
+
+    /// <summary>
+    /// Cuts the link after particle <paramref name="link"/> (0 to size - 2): the head keeps its lane and stable id, the tail
+    /// takes a new chain lane and <paramref name="tailStableId"/>. No particle changes lane or address, attachments stay put,
+    /// and the cut link's tension reads 0. A command: Ymir never splits a chain on its own.
+    /// </summary>
+    public Box3DSoaChainHandle SplitChain(Box3DSoaChainHandle chain, int link, ulong tailStableId)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        Check(Box3DSoaNative.ymir_box3d_soa_split_chain(_handle, chain.Lane, chain.Generation, link, tailStableId, out var lane, out var generation));
+        return new Box3DSoaChainHandle(lane, generation);
+    }
+
+    /// <summary>
+    /// Removes a chain and every attachment that reaches its particles. Its lane becomes a tombstone (kind Removed) and its
+    /// particle slots read 0; both are reused only once a <see cref="Step"/> has completed. A stale handle is refused.
+    /// </summary>
+    public void DestroyChain(Box3DSoaChainHandle chain)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        Check(Box3DSoaNative.ymir_box3d_soa_destroy_chain(_handle, chain.Lane, chain.Generation));
+    }
+
+    /// <summary>
+    /// Ties <paramref name="particle"/> to a body point (kind Body: <paramref name="target"/> is the body lane, <paramref name="point"/> in
+    /// its frame), a world point (Static) or another particle (Particle: <paramref name="target"/> is its lane). Also gives the chain
+    /// long-range tethers from this point. <paramref name="compliance"/> is m/N, 0 for rigid. Attach where the particle already is.
+    /// </summary>
+    public Box3DSoaAttachmentHandle Attach(
+        Box3DSoaAttachKind kind, int particle, int target = -1, (float X, float Y, float Z) point = default, float compliance = 0f)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        var desc = new Box3DSoaAttachmentDesc
+        {
+            Kind = (uint)kind, Particle = particle, Body = target, PointX = point.X, PointY = point.Y, PointZ = point.Z, Compliance = compliance,
+        };
+        Check(Box3DSoaNative.ymir_box3d_soa_attach(_handle, desc, out var lane, out var generation));
+        return new Box3DSoaAttachmentHandle(lane, generation);
+    }
+
+    /// <summary>Releases an attachment; its lane is a tombstone (kind Removed) until a step has completed. A stale handle is refused.</summary>
+    public void Detach(Box3DSoaAttachmentHandle attachment)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        Check(Box3DSoaNative.ymir_box3d_soa_detach(_handle, attachment.Lane, attachment.Generation));
+    }
+
+    /// <summary>The largest run of particle slots a new chain could take right now.</summary>
+    public int FreeParticleSlots { get { ObjectDisposedException.ThrowIf(_handle == 0, this); return Box3DSoaNative.ymir_box3d_soa_free_particle_slots(_handle); } }
+    public int FreeChainSlots { get { ObjectDisposedException.ThrowIf(_handle == 0, this); return Box3DSoaNative.ymir_box3d_soa_free_chain_slots(_handle); } }
+    public int FreeAttachmentSlots { get { ObjectDisposedException.ThrowIf(_handle == 0, this); return Box3DSoaNative.ymir_box3d_soa_free_attachment_slots(_handle); } }
 
     private static Box3DSoaBodyDesc Describe(
         Box3DSoaKind kind, ulong stableId, (float X, float Y, float Z) position,
