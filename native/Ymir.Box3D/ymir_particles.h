@@ -86,6 +86,8 @@ typedef struct ymir_particle_proxy
     float inv_mass;       // 0 for static, kinematic and anchor bodies
     float inv_inertia[6]; // world inverse inertia, symmetric: xx xy xz yy yz zz
     float impulse[3];
+    float hard_impulse[3]; // the part from attachments and tethers: finalised into `impulse` now and `carry` next step
+    float carry[3];       // N s, applied to the body before the next Box3D step
     float angular_impulse[3];
 } ymir_particle_proxy;
 

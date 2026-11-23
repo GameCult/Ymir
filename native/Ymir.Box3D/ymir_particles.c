@@ -536,7 +536,7 @@ static float proxy_w(const ymir_particle_proxy* b, v3 at, v3 n)
 
 // Applies a position-level impulse `imp` (kg m) at `at` to a proxy: moves its pose and books the velocity-level
 // impulse (imp / dt) the tick will hand back to Box3D.
-static void proxy_push(const phase* f, ymir_particle_proxy* b, v3 at, v3 imp)
+static void proxy_push(const phase* f, ymir_particle_proxy* b, v3 at, v3 imp, int hard)
 {
     if (b->inv_mass == 0.0f)
     {
@@ -565,9 +565,10 @@ static void proxy_push(const phase* f, ymir_particle_proxy* b, v3 at, v3 imp)
     {
         q[k] *= inv;
     }
-    b->impulse[0] += imp.x * f->inv_dt;
-    b->impulse[1] += imp.y * f->inv_dt;
-    b->impulse[2] += imp.z * f->inv_dt;
+    float* acc = hard ? b->hard_impulse : b->impulse;
+    acc[0] += imp.x * f->inv_dt;
+    acc[1] += imp.y * f->inv_dt;
+    acc[2] += imp.z * f->inv_dt;
     b->angular_impulse[0] += torque.x * f->inv_dt;
     b->angular_impulse[1] += torque.y * f->inv_dt;
     b->angular_impulse[2] += torque.z * f->inv_dt;
@@ -607,7 +608,7 @@ static void end_push(const phase* f, int32_t a, v3 at, v3 imp)
     ymir_particles* p = f->p;
     if (p->att_kind[a] == YMIR_ATTACH_PARTICLE_BODY)
     {
-        proxy_push(f, p->proxies + p->att_body[a], at, imp);
+        proxy_push(f, p->proxies + p->att_body[a], at, imp, 1);
     }
     else if (p->att_kind[a] == YMIR_ATTACH_PARTICLE_PARTICLE)
     {
@@ -863,7 +864,7 @@ static void body_contacts(phase* f)
             float wb = proxy_w(b, s, n);
             float w = wi + wb;
             x = vadd(x, vmul(n, depth * wi / w));
-            proxy_push(f, b, s, vmul(n, -depth / w));
+            proxy_push(f, b, s, vmul(n, -depth / w), 0);
             if (mu > 0.0f)
             {
                 // Slip of the particle against the body point over this substep, tangential part.
@@ -879,7 +880,7 @@ static void body_contacts(phase* f)
                     float move = vmin(sl, mu * depth);
                     float wt = wi + proxy_w(b, s, t);
                     x = vsub(x, vmul(t, move * wi / wt));
-                    proxy_push(f, b, s, vmul(t, move / wt));
+                    proxy_push(f, b, s, vmul(t, move / wt), 0);
                 }
             }
             put(p->pp_x, p->pp_y, p->pp_z, i, x);
@@ -1062,6 +1063,8 @@ void ymir_particles_step(ymir_particles* p, float dt, int32_t substeps, float gx
     for (int32_t k = 0; k < p->body_count; ++k)
     {
         memset(p->proxies[k].impulse, 0, sizeof(p->proxies[k].impulse));
+        memset(p->proxies[k].hard_impulse, 0, sizeof(p->proxies[k].hard_impulse));
+        memset(p->proxies[k].carry, 0, sizeof(p->proxies[k].carry));
         memset(p->proxies[k].angular_impulse, 0, sizeof(p->proxies[k].angular_impulse));
     }
     for (int32_t i = 0; i < p->particle_count; ++i)
@@ -1128,6 +1131,26 @@ void ymir_particles_step(ymir_particles* p, float dt, int32_t substeps, float gx
             }
             put(p->pos_x, p->pos_y, p->pos_z, i, y);
         }
+    }
+    // A body tied to the chain (attachment, tether) cannot be corrected by a post-step impulse alone: a velocity
+    // from the whole position error rings at six ticks and never settles, and holding a resting body needs the
+    // support before Box3D integrates gravity, not after. So the hard impulse splits along its direction: the
+    // velocity the body carries into the constraint is cancelled now (it reads still after the step), and the
+    // rest, the position error to close, returns as `carry`, applied before the next Box3D step.
+    for (int32_t k = 0; k < p->body_count; ++k)
+    {
+        ymir_particle_proxy* b = p->proxies + k;
+        v3 hard = {b->hard_impulse[0], b->hard_impulse[1], b->hard_impulse[2]};
+        float hl = vlen(hard);
+        if (b->inv_mass == 0.0f || !(hl > 0.0f))
+        {
+            continue;
+        }
+        v3 j = vmul(hard, 1.0f / hl);
+        float cancel = vmax(-vdot((v3){b->velocity[0], b->velocity[1], b->velocity[2]}, j), 0.0f) / b->inv_mass;
+        float restore = hl;
+        b->impulse[0] += j.x * cancel; b->impulse[1] += j.y * cancel; b->impulse[2] += j.z * cancel;
+        b->carry[0] = j.x * restore; b->carry[1] = j.y * restore; b->carry[2] = j.z * restore;
     }
     float mean = 1.0f / (float)substeps;
     for (int32_t i = 0; i < p->particle_count; ++i)

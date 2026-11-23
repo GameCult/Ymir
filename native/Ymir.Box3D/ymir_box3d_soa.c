@@ -335,6 +335,7 @@ typedef struct ymir_box3d_soa_world
     b3ContactData* contact_scratch; // `capacity` entries: a body has one shape, so at most capacity - 1 contacts
     b3Vec3 gravity;
     ymir_particles* particles; // NULL when created without particle capacity: the step then runs exactly as ABI 8
+    float* carry;              // 3 per body: the particle phase's deferred impulse, applied before the next Box3D step
 } ymir_box3d_soa_world;
 
 static float* ymir_soa_lane(const ymir_box3d_soa_world* world, int lane)
@@ -489,6 +490,7 @@ static void ymir_soa_free(ymir_box3d_soa_world* world)
     free(world->hit_facts);
     free(world->contact_scratch);
     ymir_particles_free(world->particles);
+    free(world->carry);
     free(world);
 }
 
@@ -546,7 +548,8 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     if (particle_capacity > 0 || chain_capacity > 0 || attachment_capacity > 0)
     {
         world->particles = ymir_particles_create(particle_capacity, chain_capacity, attachment_capacity, capacity);
-        if (world->particles == NULL)
+        world->carry = (float*)calloc(n * 3, sizeof(float));
+        if (world->particles == NULL || world->carry == NULL)
         {
             ymir_soa_free(world);
             return YMIR_SOA_OUT_OF_MEMORY;
@@ -1110,7 +1113,8 @@ static void ymir_soa_apply_particle_impulses(ymir_box3d_soa_world* world)
         const ymir_particle_proxy* b = pt->proxies + i;
         for (int k = 0; k < 3; ++k)
         {
-            ymir_soa_lane(world, YMIR_SOA_PARTICLE_IMPULSE_LANE + k)[i] = b->impulse[k];
+            ymir_soa_lane(world, YMIR_SOA_PARTICLE_IMPULSE_LANE + k)[i] = b->impulse[k] + b->carry[k];
+            world->carry[3 * i + k] = b->carry[k];
         }
         if (!ymir_soa_is_dynamic(world->kind[i]))
         {
@@ -1139,6 +1143,19 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_step(ymir_box3d_soa_world* world, f
     if (status != YMIR_SOA_OK)
     {
         return status;
+    }
+    if (world->carry != NULL)
+    {
+        // The impulse the last particle phase deferred: the support a tied body needs before gravity integrates.
+        for (int i = 0; i < world->count; ++i)
+        {
+            b3Vec3 c = {world->carry[3 * i], world->carry[3 * i + 1], world->carry[3 * i + 2]};
+            if (c.x != 0.0f || c.y != 0.0f || c.z != 0.0f)
+            {
+                b3Body_ApplyLinearImpulseToCenter(world->bodies[i], c, true);
+                world->carry[3 * i] = world->carry[3 * i + 1] = world->carry[3 * i + 2] = 0.0f;
+            }
+        }
     }
     b3World_Step(world->world_id, time_step, sub_step_count);
     // An anchor moves only on a target: the one just applied has been reached, so it holds still until the
