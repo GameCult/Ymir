@@ -6,8 +6,7 @@ Box3D v0.1.0 is Ymir's physics implementation and executable semantics oracle.
 The production native session ABI and snapshot lowering are live; explicit
 retained-world ownership is still being connected. The exact upstream source is pinned as the
 `extern/box3d` submodule at the GameCult fork's commit
-`fb719c4` (substep callback; `https://eureka.gamecult.org/forge/GameCult/box3d`, branch `nibu/substep-callback` until
-the verdict, then `gamecult/step-normal-impulse`).
+`fb719c4` (substep callback; `https://eureka.gamecult.org/forge/GameCult/box3d`, branch `gamecult/step-normal-impulse`).
 The fork is upstream `8441b4a06d6d09dcfb0b0f704df4d847d1437b92` plus three commits: an observed field,
 `b3ManifoldPoint.stepNormalImpulse`, the normal impulse each contact point applied over the whole step; a
 static assert that `RELAX_ITERATIONS` is 1, the one setting under which that sum is exact; and a substep callback
