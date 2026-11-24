@@ -10,8 +10,8 @@
 // topology command ends in and which is their only writer.
 //
 // Determinism: single thread; constraints are Gauss-Seidel in lane order; the one Jacobi pass (particle-particle
-// contact) is gather-form (each particle writes only its own correction, neighbours read in cell then index order
-// from a stable counting-sort grid, a pair weighted the same from both ends); proxy impulses are summed per body
+// contact) accumulates and applies after the walk (each pair once, from the lower of its two cells, neighbours read in cell then index order
+// from a stable counting-sort grid, a pair weighted the same at both ends); proxy impulses are summed per body
 // in lane order; heap and breadth-first orders break ties by lane. Compiled with -ffp-contract=off (/fp:precise
 // on MSVC) so no fused multiply-add changes a byte.
 //

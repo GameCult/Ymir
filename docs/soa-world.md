@@ -123,29 +123,39 @@ separate native object (`ymir_box3d_soa.c`, ABI 10) so the Aetheria session's co
     the bends over it with it. Ymir never removes a constraint or releases an attachment on a load: tear, cut, gib and release
     are the caller's say-so.
   - Derivation. Every topology command ends in the one `rederive_topology()`, which is the only writer of the tether lanes and
-    the component lane. It builds the adjacency of the live distances, labels components by their lowest lane, and from each
-    `TETHER` attachment runs Dijkstra (binary heap, ties by lane) over the distances' rest lengths: one tether per reachable
-    particle, bounded by the geodesic rest path, with the tether of the previous particle on the path and the edge used (parents
-    come before children). Two `TETHER` attachments on different particles of one component also get a pair tether: the rest
-    path between their particles bounds the distance between their points (what lets a heavy body be held at 0.1% stretch from
-    a static point: the full excess moves the body, not only the light end particle). The tether count is known from the
-    component sizes before anything is written; a command that would need more than the tether capacity is undone whole and
-    refused (`create_distances` and `attach` are the commands that can).
+    the component lane. It builds the adjacency of the live distances, labels components by their lowest lane, and runs one
+    multi-source Dijkstra (binary heap, ties by node then edge) over the distances' rest lengths from the particle of every
+    `TETHER` attachment (Kim 2012): each other particle gets one tether to the attachment it is nearest by the geodesic rest path,
+    bounded by that path, with the tether of the previous particle on the path and the edge used (parents come before children).
+    A tie goes to the path through the lower particle lane. So N particles carry about N tethers however many points are
+    pinned: a 32 x 32 sheet pinned at 20 points had 20650 tethers (3.5 ms per tick) and has about 1000 plus its pairs. Two
+    `TETHER` attachments on different particles of one component also get a pair tether: the rest path between their particles
+    bounds the distance between their points (what lets a heavy body be held at 0.1% stretch from a static point: the full excess
+    moves the body, not only the light end particle). A pair tether sits behind a route of booking lanes (attachment -1, an edge
+    and a parent, no bound of their own) along that path, so the tension sensors read its load on the edges it crossed; pairs
+    cost O(A^2) lanes and a derivation runs one more Dijkstra per tether point that has a later partner. Hold a heavy body with
+    `TETHER` at both ends: with the tether on one end only a 70 kg body hung from a 48-particle rope sinks 0.25 m below its
+    attachment (speed 1.1 m/s at rest), with both it holds to 0.002% stretch. The tether count is known before anything is
+    written (the Dijkstras run once to count and once to write); a command that would need more than the tether capacity is undone
+    whole and refused (`create_distances` and `attach` are the commands that can).
   - Lanes. Particle, distance, bend and attachment lanes are tombstones (live 0 or kind removed, generation + 1, every other lane 0
     except `removed_at`) reused only once a step has passed, lowest lane first. Stale generations are refused. Counts are high-water
     marks; a view's counts are read when the view is taken, so take it after the last command.
   - Solve (inside the fork's substep callback, `h = dt / substeps`, one iteration of each pass per substep: the small step does
-    the converging). Order: predict particles and proxies, hash grid, pair contacts (Jacobi gather), attachments, distances in
+    the converging). Order: predict particles and proxies, hash grid, pair contacts (Jacobi), attachments, distances in
     lane order, bends in lane order, tethers, body contacts last (with contacts first a box pushed into a rope reads 14% of a
     radius inside). A bend works on the offset of its shared particle b from the centroid of a, b, c (Kelager 2010): a soft XPBD
     pass toward the rest offset, then a hard unilateral pass at the offset `max_angle` allows (computed from the two rest
     lengths), free inside it and rigid at it. It bends on any topology a caller builds, and the limit is a hard constraint at the
     substep the solver runs: how stiff it reads at few substeps is the open question `bend-limit-stiffness`.
   - Contact. Particles of different groups collide; of one group only when both set `SELF_COLLIDE`, and not (when either sets
-    `SELF_FILTER`) if their rest-pose distance is under 1.5 (ri + rj). A first pass counts each particle's overlaps; the second is
-    a gather in which each pair is weighted `1 / max(n_i, n_j)` from both ends, so a pair's two corrections carry equal and
-    opposite momentum and contact conserves it. Body contact: a particle against each shaped body in lane order, the correction
-    split by inverse mass at the contact point, Coulomb friction from the particle's material; the body a particle is attached to
+    `SELF_FILTER`) if their rest-pose distance is under 1.5 (ri + rj). Each pair is found once, walking half the 27-cell
+    neighbourhood from each particle (its own cell for higher lanes, 13 cells forward), in two walks: the first counts each
+    particle's overlaps; the second moves both ends of a pair by one displacement, weighted `1 / max(n_i, n_j)`, so a pair's two
+    corrections carry equal and opposite momentum and contact conserves it (to float32 rounding of the positions: 0.01% in the
+    thrown scene, 0.6% at a 30:1 particle mass ratio and 6% at 100:1). No pair list is kept: its size is not bounded by the particle
+    count. Body contact: a particle against each shaped body in lane order, the correction
+    split by inverse mass at the contact point, Coulomb friction from the particle's material; every body a particle is attached to
     is skipped.
   - Coupling (unchanged): one proxy per body (pose, velocity, shape, real inverse mass and world inverse
     inertia). Before each rigid substep's positions integrate, `b3Body_GetSubStepState` fills the proxies and `b3Body_ApplySubStepImpulse`
@@ -157,9 +167,9 @@ separate native object (`ymir_box3d_soa.c`, ABI 10) so the Aetheria session's co
     70 kg whichever way the load is routed. Attachment `force` is the sum of the corrections at the point, tether load included. Loop
     caveat: a sensor reads the solver's corrections, and a load that circulates in a closed loop of the graph (a sheet pinned at
     four corners) is read as the corrections it needs, not as a statically determined split.
-- Particle determinism: single thread; constraints Gauss-Seidel in lane order; the one Jacobi pass is gather-form (each particle
-  writes only its own correction, neighbours read in cell then index order from a stable counting-sort grid, a bucket shared
-  by two cells is told apart by the cells' coordinates, a pair weighted the same from both ends); the heap and the breadth-first
+- Particle determinism: single thread; constraints Gauss-Seidel in lane order; the one Jacobi pass (pair contact) accumulates corrections and applies them after the walk (each pair once, from the
+  lower of its two cells, neighbours read in cell then index order from a stable counting-sort grid, a bucket shared
+  by two cells is told apart by the cells' coordinates, a pair weighted the same at both ends); the heap and the breadth-first
   labelling break ties by lane; proxy impulses are summed per body in lane order, per substep; only `+ - * /`, `sqrtf` and `cosf`
   (at command time); the file builds with `-ffp-contract=off` (`/fp:precise` on MSVC). Same bytes on the same build, serial or with
   other worlds stepping on other threads. No threads in this cut.
@@ -178,7 +188,7 @@ of sqrt(2gh), point and normal), lifting gives one end, dropped counters resetti
 hits, facts lasting one step, overflow counted, per-step byte determinism of facts and contact lanes, and
 no allocation across 100 steps with fact reads. `Box3DSoaImpulseTests`: `contact_impulse` and the hit `impulse` equal the momentum change of the bodies the contact acted on, plus their weight, within 1e-4 of the peak at every step: a 5 kg ball and a 0.3 g BB at 100 m/s onto a jointed forearm (the BB reads 0.030 N s, the ball over 400 times more), the arm falling forearm-first onto a slab, a sphere dropped 1.4 m at 60 and 240 Hz, 1 and 4 sub-steps, restitution 0 and 0.5, two free bodies at restitution 0 and 0.5; a swung arm into a slab, a big sphere with 60 small ones converging (more contacts than graph colours, so the scalar overflow solver runs: the big lane is the sum of the small lanes, each equal to its own momentum change), and at rest `contact_impulse / dt` is the weight (0.1%, a lone sphere) while a body touching nothing reads 0.
 
-`Box3DSoaParticleTests`: the ABI 8 scene's six checkpoint hashes with no particle capacity (pinned from 5104b17); a 48-particle rope (a builder in the tests: distances and soft bends) hanging from a tethered static point under 1% stretch for 4 s; a 70 kg sphere held by the same rope (from 1 s to 5 s speed under 0.001 m/s, stretch under 0.1%, the impulse per tick within 0.5% of m g dt); an anchor dragging a 5 kg box along the floor (`particle_impulse` reads it); a sphere, capsule, box and static box each pushed into a lying rope's end (no particle over 10% of its radius inside); a 16 x 16 sheet from the same two commands hung by two corners (the corners carry the weight within 1%); edge tension, the edge at 0, 10 and 46 and both attachment forces read the load at 1, 5, 20 and 70 kg; a cut (remove an edge of a hung 40-rope: the bends over it die, tethers 39 -> 19, the component splits, the head holds and the tail falls); overload (300 kg) removes nothing; destroying a mid-rope particle removes its constraints and releases a held body; a 24-particle cantilever at 32 substeps under a 30 and a 10 degree hard limit and a stiff and a floppy soft pass, and a limit-only bend bit-identical to no bend inside its cone; momentum of a rope, a sheet and a blob thrown into each other with no gravity within 2e-4 and energy never rising; phase rules (groups, `SELF_COLLIDE`, `SELF_FILTER`, a folded rope); an off-centre attachment spinning a free box by I^-1 (r x J) within 2%; lanes reused after a step lowest first, stale generations refused, a derivation that does not fit refused with no lane changed, bad input refused; a pile of four ropes and a sheet on two bodies byte-equal across two runs at six checkpoints (pinned), a one-ulp difference diverging, and eight concurrent worlds giving the serial bytes; no allocation across 100 steps and across a cut, a destroy and a create. `Box3DSoaParticleSourceTests` reads the C source: no Box3D call in `ymir_particles.*`, no allocation outside create and free, no threads or atomics, no rope, sheet, cloth or chain identifier in the solver or the binding, the tether and component lanes written only by the derivation, every topology command ending in it, `begin` and `end` called once (in the step), `substep` once (in the callback), the callback the only user of the fork's two accessors, no topology change in the phases, and the retired names absent.
+`Box3DSoaParticleTests`: the ABI 8 scene's six checkpoint hashes with no particle capacity (pinned from 5104b17); a 48-particle rope (a builder in the tests: distances and soft bends) hanging from a tethered static point under 1% stretch for 4 s; a 70 kg sphere held by the same rope (from 1 s to 5 s speed under 0.001 m/s, stretch under 0.1%, the impulse per tick within 0.5% of m g dt); an anchor dragging a 5 kg box along the floor (`particle_impulse` reads it); a sphere, capsule, box and static box each pushed into a lying rope's end (no particle over 10% of its radius inside); a 16 x 16 sheet from the same two commands hung by two corners (after 20 s the corners carry the weight within 1% and no edge is past 40%); edge tension, the edge at 0, 10 and 46 and both attachment forces read the load at 1, 5, 20 and 70 kg; a cut (remove an edge of a hung 40-rope: the bends over it die, tethers 39 -> 19, the component splits, the head holds and the tail falls); overload (300 kg) removes nothing; destroying a mid-rope particle removes its constraints and releases a held body; a 24-particle cantilever at 32 substeps under a 30 and a 10 degree hard limit and a stiff and a floppy soft pass, and a limit-only bend bit-identical to no bend inside its cone; momentum of a rope, a sheet and a blob thrown into each other with no gravity within 5e-4 and energy never rising; phase rules (groups, `SELF_COLLIDE`, `SELF_FILTER`, a folded rope); an off-centre attachment spinning a free box by I^-1 (r x J) within 2%; lanes reused after a step lowest first, stale generations refused, a derivation that does not fit refused with no lane changed, bad input refused; a pile of four ropes and a sheet on two bodies byte-equal across two runs at six checkpoints (pinned), a one-ulp difference diverging, and eight concurrent worlds giving the serial bytes; no allocation across 100 steps and across a cut, a destroy and a create, and none for a 300-distance batch created and removed; gravity along each axis; a spinning box carrying its attachment point and two ends on one light box settling (the proxy's rotation); one group's `SELF_COLLIDE` needing both particles and `SELF_FILTER` either; a slack pair tether leaving its body alone; a refused `attach` leaving no lane and no tether; each particle on its nearer tether point and a tie on the lower lane; a particle held by two bodies touching neither. `Box3DSoaParticleSourceTests` reads the C source: no Box3D call in `ymir_particles.*`, no allocation outside create and free, no threads or atomics, no rope, sheet, cloth or chain identifier in the solver or the binding, the tether and component lanes written only by the derivation, every topology command ending in it, `begin` and `end` called once (in the step), `substep` once (in the callback), the callback the only user of the fork's two accessors, no topology change in the phases, and the retired names absent.
 
 `Box3DSoaCouplingTests`: a sphere thrown at 5 m/s with a 48 x 20 g rope from rest keeps x momentum within 0.1% and gains no energy, at 5 and 70 kg; thrown up it reaches the apex momentum allows; 5 kg snapping a taut rope at 6 m/s keeps at most 5% of its energy and 70 kg is still within a tick; a 45 degree pendulum for 12 s gains no energy and loses at most 1.25 times a heavy-particle control, and a hung body keeps its spin about the vertical; removing the body attachment or destroying the rope's particles frees a held 70 kg body in the step after, with no upward impulse; `particle_impulse` equals M dv minus M g dt every tick, hung and thrown; material friction 0.6 holds a rope on a 20 degree slope and friction 0 does not; no particle is farther from a tethered point than its rest path; an attached end stays on its body point; a world whose only body is static still steps the particles (a dropped rope falls g t^2 / 2 within 2%) and rests; and a cost line with 16 ropes x 48 and one 16 x 16 sheet at 4 substeps, one body and forty (printed, not asserted).
 
@@ -193,8 +203,18 @@ Particles: no fluid (no phase flag, no density: follow-up `ymir-particle-graph-f
 sleep, no threads, no particle write lanes. A heavy body cannot be held up by contacts against a floor (the particles are squeezed
 between two solids a position solver cannot satisfy at a 50:1 mass ratio; the pushing tests drive the body into a rope end
 instead). A snap on a taut rope is inelastic by the solver's construction, and a swung weight loses a few percent more as a tied
-body than as a heavy particle; neither gains energy. A hard bend limit is one iteration per substep: long stiff levers (a limit
-under a heavy tip load) need more substeps than a soft pass does (open question `bend-limit-stiffness`). Determinism under MSVC's
+body than as a heavy particle; neither gains energy.
+A hard bend limit is one iteration per substep and is not rigid at the substep counts the tests run; whether to change the solver is
+the open question `bend-limit-stiffness`, and the solver is as it was. Measured on a 24-particle cantilever held at two particles, 600 ticks at 60 Hz, the
+largest deflection of one joint: a 10 degree limit allows 21.7 degrees at 4 substeps and 22.3 at 8, 13.6 at 32 under a 1 kg tip and
+32.0 at 32 under a 5 kg tip; a 30 degree limit allows 31.5 at 4, 33.8 at 8 and 29.9 at 32 under a 5 kg tip. A soft bend is no stiffer
+than a floppy one at 4 or 8 substeps (tip drop with no load, stiff 1e-7 against floppy 1e-4: 0.764 m against 0.779 at 4, 0.835
+against 0.822 at 8, 0.053 against 0.798 at 32 where it reads as pinned). Read a bend limit as a guide below about 32 substeps and
+not at all under a heavy tip. A tether holds each particle to its nearest tether point only, so the edge where two points' regions
+meet carries the slack: a 16 x 16 sheet hung by two corners stretches its worst edge 33% (3% when every particle was tethered to
+both) and rings for about 15 s before the corners carry its weight within 1%. Pair contact
+conserves momentum to float32 rounding of the positions, which grows with the particle mass ratio (0.6% at 30:1, 6% at 100:1).
+Determinism under MSVC's
 `/fp:precise` is unbuilt (no `cl` on the workstation).
 
 ## Build and lifetime notes
