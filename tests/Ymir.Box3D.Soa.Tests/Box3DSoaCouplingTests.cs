@@ -392,4 +392,39 @@ public sealed class Box3DSoaCouplingTests
         Reading(line);
         Assert.True(watch.Elapsed.TotalMilliseconds > 0);
     }
+
+    /// <summary>The 16 x 16 sheet cost scene with one body, plus <paramref name="fluid"/> fluid particles (r 1.25 cm) poured on the sheet; ms per tick at 4 substeps.</summary>
+    private static double PourCost(int fluid)
+    {
+        using var world = new Box3DSoaWorld(64, gravityY: -G, particles: new Box3DSoaParticleCapacities(16 * 48 + 256 + fluid, 16 * 47 + 480, 16 * 46 + 448, 16, 600, 2));
+        world.AddStaticBox(1, (0f, -0.5f, 0f), (20f, 0.5f, 20f));
+        for (var c = 0; c < 16; c++)
+            Graph.Rope(world, Line((0f, 0.5f + 0.03f * c, 0.02f * (c % 4)), (Spacing, 0f, 0f), 48), ParticleMass, ParticleRadius, Box3DSoaPhase.Of((uint)(c + 1), true, true));
+        Graph.Sheet(world, (0.2f, 1.2f, 0f), (0.03f, 0f, 0f), (0f, 0f, 0.03f), 16, 16, ParticleMass, ParticleRadius, Box3DSoaPhase.Of(99, true, true));
+        if (fluid > 0)
+        {
+            var nx = 10;
+            var ny = fluid / (nx * nx);
+            if (fluid == 512) { nx = 8; ny = 8; }
+            Graph.Block(world, (0.3f, 1.3f, 0.05f), nx, ny, fluid / (nx * ny), ParticleRadius, 0.015625f, Box3DSoaPhase.Of(200, fluid: true));
+        }
+        Run(world, 60);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Run(world, 240);
+        return watch.Elapsed.TotalMilliseconds / 240;
+    }
+
+    [Theory]
+    [InlineData(512)]
+    [InlineData(2000)]
+    public void Fluid_cost_line(int fluid)
+    {
+        // Printed, not asserted. Target at 512: an increment of at most 1.0 ms per tick over the same scene without fluid.
+        var without = PourCost(0);
+        var with = PourCost(fluid);
+        var line = $"PARTICLE_COST {fluid} fluid particles r 1.25 cm poured on the 16 x 16 sheet scene, 4 substeps, 1 body: {with:F3} ms per tick; the scene without fluid {without:F3} ms; fluid increment {with - without:F3} ms per tick";
+        Console.Error.WriteLine(line);
+        Reading(line);
+        Assert.True(with > 0);
+    }
 }

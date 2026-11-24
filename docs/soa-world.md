@@ -8,11 +8,11 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 10) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 11) so the Aetheria session's contract is untouched.
 
 ## Contract
 
-- Native (ABI 10): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
+- Native (ABI 11): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
   create_particles / destroy_particles / create_distances / create_bends / attach / remove / set_material / free_slots /
   add_body / add_joint / step / get_view / get_facts / set_anchor_target / destroy_joint / free_joint_slots / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
@@ -108,18 +108,18 @@ separate native object (`ymir_box3d_soa.c`, ABI 10) so the Aetheria session's co
   lanes that never move; created with none (`NULL` or all zero) it behaves byte-identically to ABI 8. Nothing writes a
   particle's position or velocity but the step.
   - Data model. Particle lanes: `x y z vx vy vz radius inv_mass rest_x rest_y rest_z phase material live generation removed_at
-    component`. The phase word: bits 0-19 are the group, bit 20 `SELF_COLLIDE`, bit 21 `SELF_FILTER`; any other bit is refused.
+    component`. The phase word: bits 0-19 are the group, bit 20 `SELF_COLLIDE`, bit 21 `SELF_FILTER`, bit 22 `FLUID`; any other bit is refused.
     Distance lanes: two particles, rest length, compliance (m/N), `tension` (sensor). Bend lanes: two distances that share one
     particle (and so the three particles a, b, c), rest and limit offsets, compliance. Attachment lanes: kind (body, static,
     removed), flags (`TETHER`), particle, body, point, compliance, `force` (sensor). Tether lanes (derived): attachment,
-    particle, bound, parent tether, edge, other attachment. Material table: friction and the caller's material id. Handles are
+    particle, bound, parent tether, edge, other attachment. Material table: friction, XSPH viscosity and the caller's material id. Handles are
     (lane, generation).
   - Commands, each refused whole before anything changes: `create_particles(n, desc{position, velocity, rest, mass, radius,
     phase, material})` takes the lowest free lanes; `destroy_particles(n, handles)` removes every constraint that touches them;
     `create_distances(n, desc{a, b, rest (< 0 = rest-pose length), compliance})`; `create_bends(n, desc{e1, e2, compliance
     (< 0 = soft pass off), max_angle (< 0 = no limit)})`, refused unless the two distances share exactly one particle and the
     bend does something; `attach(desc{kind body|static, flags, particle, body, point, compliance})`; `remove(type distance|bend|
-    attachment, n, handles)`; `set_material(index, desc{friction, material_id})`; `free_slots(lane set)`. A distance takes
+    attachment, n, handles)`; `set_material(index, desc{friction, viscosity (>= 0), material_id})`; `free_slots(lane set)`. A distance takes
     the bends over it with it. Ymir never removes a constraint or releases an attachment on a load: tear, cut, gib and release
     are the caller's say-so.
   - Derivation. Every topology command ends in the one `rederive_topology()`, which is the only writer of the tether lanes and
@@ -166,6 +166,33 @@ separate native object (`ymir_box3d_soa.c`, ABI 10) so the Aetheria session's co
     count. Body contact: a particle against each shaped body in lane order, the correction
     split by inverse mass at the contact point, Coulomb friction from the particle's material; every body a particle is attached to
     is skipped.
+  - Fluid. Fluid is a phase bit, not an object: a particle with `FLUID` takes part in a number-density constraint with every
+    other fluid particle and with the solids it would touch by contact, and keeps contact (at `ri + rj`) with those solids; two
+    fluid particles do not contact, whatever their groups and `SELF_*` flags (all fluid shares one density field, Macklin et al.
+    2014 sec. 7). Kernel per pair `h = 2 (ri + rj)` (4 r at equal radii), Poly6 `W = 315 / (64 pi h^9) (h^2 - r^2)^3` for the
+    density and Spiky `grad W = -45 / (pi h^6) (h - r)^2 r_hat` for the gradient (Macklin and Mueller 2013); no PhysX code is
+    adapted. The rest density `n0(h)` is the Poly6 sum over the simple-cubic lattice of spacing `h / 2` (a constant, computed at
+    create, times `h^-3`), so a particle has volume `(2 r)^3` and there is no rest-density field. The constraint is unilateral,
+    `C_i = max(n_i / n0 - 1, 0)`, so there is no artificial-pressure term and an under-dense fluid (a gas of far particles) is not
+    pulled together; `lambda_i = -C_i / (sum |grad C_i|^2 + eps)` with the gradients over `n0` in 1/m^2 and `eps = 1e-4` (a sweep of
+    1e-6 to 1e-2 on the column test moved the max density between 1.344 and 1.377 and nothing else: the gradient sum is about 500).
+    Per substep, after contact: pass A gathers `n_i` over the full 27 cells in cell then index order (self and the solids counted,
+    `s = 1` as Flex 7.1) and `lambda` of each fluid particle (a solid's is 0); pass B walks the contact pass's half of the
+    neighbourhood and moves a pair with a fluid end and a kernel overlap by `d = (lambda_i + lambda_j) grad W / n0(h)`, end `i`
+    by `2 w_i / (w_i + w_j) d` and end `j` by the negative of `2 w_j / (w_i + w_j) d`, applied after the walk. A pair therefore
+    carries equal and opposite momentum at any mass ratio (a solid end is the reaction: `m_i dx_i = -m_j dx_j`), a zero-mass end
+    takes nothing, and the one pair formula serves fluid with fluid and with solids. The XSPH viscosity of Schechter and Bridson
+    runs after the velocity update over fluid pairs on the same walk, `dv = c (v_j - v_i) W / n0` with `c` the mean of the two
+    materials' `viscosity`, split by inverse mass the same way. The grid cell is `2 r_max` as before when no fluid is live and
+    `2 (r_fmax + r_max)` when one is, so every kernel pair lies in the 27 cells; a world with no live fluid steps byte-identically to
+    one before this change (no pass runs: `live_fluid` counts the live fluid particles, written by create and destroy only). The
+    sensor lane `particle_density` reads `n_i / n0` (1 at rest, 0 for a solid) in the last substep the particle ran.
+    Fluid holds no constraint: `create_distances` and `attach` refuse a fluid particle, so `create_bends` (over distances) can
+    never name one; a thing that holds liquid is cloth around free fluid (a balloon), as in Flex sec. 8. Every `create_particles`
+    and every `destroy_particles` of particles that held no distance or attachment derives only the isolated lanes
+    (`rederive_topology` with the ISOLATED mode: `component[i] = i` for created lanes, 0 for destroyed, tethers untouched): emitting
+    and removing 64 fluid particles a tick on the 20-pin 32 x 32 sheet costs 0.3 ms a tick of commands where the full derivation
+    costs 4.2 ms.
   - Coupling (unchanged): one proxy per body (pose, velocity, shape, real inverse mass and world inverse
     inertia). Before each rigid substep's positions integrate, `b3Body_GetSubStepState` fills the proxies and `b3Body_ApplySubStepImpulse`
     delivers each dynamic body's correction as an impulse; the `particle_impulse` lane is the tick's total. Bodies are never
@@ -203,12 +230,16 @@ no allocation across 100 steps with fact reads. `Box3DSoaImpulseTests`: `contact
 
 ## Not done
 
+`Box3DSoaFluidTests`: the refusals (a distance or attachment naming fluid, a viscosity below 0 or not finite); 64 fluid particles created and destroyed a tick on the 20-pin sheet leaving every tether lane byte-equal; an 8 x 8 x 16 column in a box well (max density, mean density, nothing outside); fluid thrown into a free sheet and rope at fluid : solid mass 64 : 20, 1 : 30 and 30 : 1 (momentum drift, energy); probe scene 3, the 343-particle pour on a tilted sheet and a sloped rope (touches, none within half a contact distance); fluid pushing a free box with the impulse lane equal to its M dv; a 3 r lattice not clumping; XSPH damping a shear field; the kernel reaching a larger solid beyond two contact radii; the pour's six checkpoint hashes (two runs, a one-ulp nudge, eight concurrent worlds). Each bound states its readings and the mutant it separates from. `Fluid_cost_line` prints 512 and 2000 fluid particles on the sheet scene.
+
 Body removal with a stable ordering rule, compound bodies
 and per-shape material, and motor joints with a velocity target or per-joint force readback (the motor joint here is a position spring only; Lodur drives limbs from torque lanes).
 `Ymir.Core` has no session-level surface over the SoA world yet; consumers use `Ymir.Box3D` directly.
 Unity consumption is unrun; cross-platform bit-identity is unclaimed.
 
-Particles: no fluid (no phase flag, no density: follow-up `ymir-particle-graph-fluid`), no pinning command beyond zero mass and attachments, no
+Particles: no boundary density for rigid bodies (a Box3D body adds nothing to a fluid particle's density estimate, so fluid
+beside a wall or floor under-reads: a 8 x 8 x 16 column in a box well reads 0.88 mean at zero gravity), no cohesion, adhesion or
+vorticity, no settle of fluid to rest (the column keeps a velocity noise, 1.25 m/s at its worst at 3 s with the one pass a substep, 0.82 with viscosity 0.1), a column compresses under its own weight (max density 1.34 on 16 layers), no pinning command beyond zero mass and attachments, no
 sleep, no threads, no particle write lanes. A heavy body cannot be held up by contacts against a floor (the particles are squeezed
 between two solids a position solver cannot satisfy at a 50:1 mass ratio; the pushing tests drive the body into a rope end
 instead). A snap on a taut rope is inelastic by the solver's construction, and a swung weight loses a few percent more as a tied
