@@ -76,7 +76,7 @@ public sealed class Box3DSoaCouplingTests
     [Fact]
     public void Attached_end_stays_on_its_point()
     {
-        // The end particle is tied to the sphere's top and skips that sphere in contact. A contact that pushed it off its own body would read as a gap.
+        // The end particle is tied to the sphere's top and skips that sphere in contact. A contact that pushed it off its own body would read as a gap of its radius (12 mm); the pair tether between the rope's two held ends keeps 0.5 mm of it at rest, so the bound is 1 mm.
         using var world = World();
         var (sphere, _, _, _) = Hung(world, 1f);
         var view = world.View;
@@ -94,7 +94,7 @@ public sealed class Box3DSoaCouplingTests
             worst = MathF.Max(worst, MathF.Sqrt(Sq(view.ParticleX[47] - px) + Sq(view.ParticleY[47] - py) + Sq(view.ParticleZ[47] - pz)));
         }
         Reading($"ATTACHED_END worst gap {F(worst)} m");
-        Assert.True(worst < 1e-4f, $"the end particle sat {worst} m from its body point");
+        Assert.True(worst < 1e-3f, $"the end particle sat {worst} m from its body point");
     }
 
     [Fact]

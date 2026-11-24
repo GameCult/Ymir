@@ -69,7 +69,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     size_t off = 0;
     int64_t np = p->particle_capacity, nd = p->distance_capacity, nb = p->bend_capacity, na = p->attachment_capacity,
             nt = p->tether_capacity, nm = p->material_capacity, nx = p->body_capacity;
-    int64_t heap = 2 * nd + 1;
+    int64_t heap = 2 * nd + na + 1; // every directed edge relaxes once, and every attachment seeds one
     size_t table = (size_t)p->table_mask + 1;
 #define CARVE(field, type, count)                                                                                      \
     do                                                                                                                 \
@@ -105,12 +105,12 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(dp_x, float, np); CARVE(dp_y, float, np); CARVE(dp_z, float, np);
     CARVE(dist_acc, float, nd);
     CARVE(tacc_x, float, nt); CARVE(tacc_y, float, nt); CARVE(tacc_z, float, nt);
-    CARVE(lane_list, int32_t, nd); CARVE(skip_body, int32_t, np); CARVE(cell_x, int32_t, np); CARVE(cell_y, int32_t, np); CARVE(cell_z, int32_t, np);
+    CARVE(lane_list, int32_t, nd); CARVE(cell_x, int32_t, np); CARVE(cell_y, int32_t, np); CARVE(cell_z, int32_t, np);
     CARVE(cell_start, int32_t, table + 1); CARVE(cell_fill, int32_t, table); CARVE(sorted, int32_t, np);
     CARVE(contacts, int32_t, np);
     CARVE(adj_start, int32_t, np + 1); CARVE(adj_edge, int32_t, 2 * nd);
     CARVE(heap_key, float, heap); CARVE(heap_node, int32_t, heap); CARVE(heap_edge, int32_t, heap);
-    CARVE(path, float, np); CARVE(prev_edge, int32_t, np); CARVE(tether_of, int32_t, np);
+    CARVE(path, float, np); CARVE(via, int32_t, np); CARVE(owner, int32_t, np); CARVE(tether_of, int32_t, np);
     CARVE(queue, int32_t, np); CARVE(comp_size, int32_t, np); CARVE(done, uint8_t, np);
 #undef CARVE
     return off + 16;
@@ -336,53 +336,6 @@ static void heap_pop(ymir_particles* p, int32_t* size)
     }
 }
 
-// One tether per particle the attachment's particle reaches through live distances, bounded by the geodesic rest
-// path (Dijkstra, ties broken by lane), with the tether of the previous particle on the path and the edge used.
-// Parents come before children, so a reverse sweep visits leaves first.
-static void derive_from(ymir_particles* p, int32_t a, int32_t* nt)
-{
-    int32_t s = p->att_particle[a], size = 0;
-    for (int32_t i = 0; i < p->particle_count; ++i)
-    {
-        p->path[i] = 1.0e30f;
-        p->done[i] = 0;
-        p->tether_of[i] = -1;
-    }
-    p->path[s] = 0.0f;
-    heap_push(p, &size, 0.0f, s, -1);
-    while (size > 0)
-    {
-        heap_pop(p, &size);
-        float key = p->heap_key[size];
-        int32_t u = p->heap_node[size], e = p->heap_edge[size];
-        if (p->done[u])
-        {
-            continue;
-        }
-        p->done[u] = 1;
-        if (u != s)
-        {
-            int32_t t = (*nt)++, other = p->dist_a[e] == u ? p->dist_b[e] : p->dist_a[e];
-            p->tether_att[t] = a;
-            p->tether_particle[t] = u;
-            p->tether_bound[t] = key;
-            p->tether_edge[t] = e;
-            p->tether_other[t] = -1;
-            p->tether_parent[t] = p->tether_of[other];
-            p->tether_of[u] = t;
-        }
-        for (int32_t k = p->adj_start[u]; k < p->adj_start[u + 1]; ++k)
-        {
-            int32_t e2 = p->adj_edge[k], v = p->dist_a[e2] == u ? p->dist_b[e2] : p->dist_a[e2];
-            float nd = key + p->dist_rest[e2];
-            if (!p->done[v] && nd < p->path[v])
-            {
-                p->path[v] = nd;
-                heap_push(p, &size, nd, v, e2);
-            }
-        }
-    }
-}
 
 static int is_tether(const ymir_particles* p, int32_t a)
 {
@@ -395,6 +348,87 @@ static int pairs_with(const ymir_particles* p, int32_t a, int32_t b, const int32
 {
     int32_t pa = p->att_particle[a], pb = p->att_particle[b];
     return is_tether(p, b) && pa != pb && label[pa] == label[pb];
+}
+
+// Dijkstra (binary heap, ties by node then edge) over the live distances' rest lengths, from the particle of every
+// TETHER attachment (`only` < 0) or from one attachment's particle (`only` >= 0). Writes for each settled particle
+// its rest path `path`, the edge it was reached by `via` (-1 at a source), the attachment it is nearest `owner`
+// (the lowest attachment on a particle that holds several), and its place in settle order `queue`: a parent settles
+// before its children. Returns the settled count. Writes no lane.
+static int32_t settle(ymir_particles* p, int32_t only)
+{
+    int32_t size = 0, n = 0;
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        p->path[i] = 1.0e30f;
+        p->done[i] = 0;
+        p->via[i] = -1;
+        p->owner[i] = -1;
+    }
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        int32_t s = p->att_particle[a];
+        if (only >= 0 ? a != only : !is_tether(p, a))
+        {
+            continue;
+        }
+        if (p->path[s] != 0.0f)
+        {
+            p->path[s] = 0.0f;
+            p->owner[s] = a;
+            heap_push(p, &size, 0.0f, s, -1);
+        }
+    }
+    while (size > 0)
+    {
+        heap_pop(p, &size);
+        float key = p->heap_key[size];
+        int32_t u = p->heap_node[size];
+        if (p->done[u])
+        {
+            continue;
+        }
+        p->done[u] = 1;
+        p->queue[n++] = u;
+        for (int32_t k = p->adj_start[u]; k < p->adj_start[u + 1]; ++k)
+        {
+            int32_t e = p->adj_edge[k], v = p->dist_a[e] == u ? p->dist_b[e] : p->dist_a[e];
+            float nd = key + p->dist_rest[e];
+            if (!p->done[v] && nd < p->path[v])
+            {
+                p->path[v] = nd;
+                p->via[v] = e;
+                p->owner[v] = p->owner[u];
+                heap_push(p, &size, nd, v, e);
+            }
+        }
+    }
+    return n;
+}
+
+// The edge count of the settled path from a source to particle q, and the particle one edge nearer the source.
+static int32_t route_length(const ymir_particles* p, int32_t q)
+{
+    int32_t k = 0;
+    for (int32_t u = q; p->via[u] >= 0; ++k)
+    {
+        int32_t e = p->via[u];
+        u = p->dist_a[e] == u ? p->dist_b[e] : p->dist_a[e];
+    }
+    return k;
+}
+
+// 1 when attachment a (a tether) has a later tether on another particle of its component: a pair to derive.
+static int has_pair(const ymir_particles* p, int32_t a, const int32_t* label)
+{
+    for (int32_t b = a + 1; b < p->attachment_count; ++b)
+    {
+        if (pairs_with(p, a, b, label))
+        {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 // The only writer of the tether lanes and the component lane. Called at the end of every topology command. The
@@ -454,17 +488,27 @@ static int32_t rederive_topology(ymir_particles* p)
         }
         p->comp_size[i] = tail;
     }
+    // One tether per particle that is not a source, to the attachment it is nearest (Kim 2012), plus for each pair of
+    // tether attachments one pair tether behind a route of booking lanes along their rest path. Counted before written.
     int64_t need = 0;
+    int32_t n = settle(p, -1);
+    for (int32_t k = 0; k < n; ++k)
+    {
+        need += p->via[p->queue[k]] >= 0;
+    }
     for (int32_t a = 0; a < p->attachment_count; ++a)
     {
-        if (!is_tether(p, a))
+        if (!is_tether(p, a) || !has_pair(p, a, p->tether_of))
         {
             continue;
         }
-        need += p->comp_size[p->tether_of[p->att_particle[a]]] - 1;
+        settle(p, a);
         for (int32_t b = a + 1; b < p->attachment_count; ++b)
         {
-            need += pairs_with(p, a, b, p->tether_of);
+            if (pairs_with(p, a, b, p->tether_of))
+            {
+                need += 1 + route_length(p, p->att_particle[b]);
+            }
         }
     }
     if (need > p->tether_capacity)
@@ -476,25 +520,60 @@ static int32_t rederive_topology(ymir_particles* p)
         p->component[i] = p->tether_of[i] >= 0 ? p->tether_of[i] : 0;
     }
     int32_t nt = 0;
-    for (int32_t a = 0; a < p->attachment_count; ++a)
+    n = settle(p, -1);
+    for (int32_t i = 0; i < np; ++i)
     {
-        if (!is_tether(p, a))
+        p->tether_of[i] = -1;
+    }
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t u = p->queue[k], e = p->via[u];
+        if (e < 0)
         {
             continue;
         }
-        derive_from(p, a, &nt);
+        int32_t t = nt++, other = p->dist_a[e] == u ? p->dist_b[e] : p->dist_a[e];
+        p->tether_att[t] = p->owner[u];
+        p->tether_particle[t] = u;
+        p->tether_bound[t] = p->path[u];
+        p->tether_edge[t] = e;
+        p->tether_other[t] = -1;
+        p->tether_parent[t] = p->tether_of[other];
+        p->tether_of[u] = t;
+    }
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        if (!is_tether(p, a) || !has_pair(p, a, p->component))
+        {
+            continue;
+        }
+        settle(p, a);
         for (int32_t b = a + 1; b < p->attachment_count; ++b)
         {
-            if (pairs_with(p, a, b, p->component))
+            if (!pairs_with(p, a, b, p->component))
             {
-                int32_t t = nt++, q = p->att_particle[b];
-                p->tether_att[t] = a;
-                p->tether_particle[t] = q;
-                p->tether_bound[t] = p->path[q];
-                p->tether_edge[t] = -1;
-                p->tether_other[t] = b;
-                p->tether_parent[t] = p->tether_of[q];
+                continue;
             }
+            int32_t q = p->att_particle[b], len = route_length(p, q), first = nt, u = q;
+            for (int32_t m = len - 1; m >= 0; --m) // the route, written from the source end: parents first
+            {
+                int32_t e = p->via[u], t = first + m;
+                p->tether_att[t] = -1;
+                p->tether_particle[t] = u;
+                p->tether_bound[t] = p->path[u];
+                p->tether_edge[t] = e;
+                p->tether_other[t] = -1;
+                p->tether_parent[t] = m == 0 ? -1 : t - 1;
+                u = p->dist_a[e] == u ? p->dist_b[e] : p->dist_a[e];
+            }
+            int32_t t = first + len;
+            p->tether_att[t] = a;
+            p->tether_particle[t] = q;
+            p->tether_bound[t] = p->path[q];
+            p->tether_edge[t] = -1;
+            p->tether_other[t] = b;
+            p->tether_parent[t] = t - 1;
+            nt = t + 1;
         }
     }
     p->tether_count = nt;
@@ -978,74 +1057,67 @@ static int collides(const ymir_particles* p, int32_t i, int32_t j)
     return 1;
 }
 
-// Overlapping pairs push each other apart, split by inverse mass. Gather form in two passes: the first counts each
-// particle's overlaps, the second has particle i read its neighbours' predicted positions and write only its own
-// correction, each pair weighted 1 / max(n_i, n_j) from both ends. The pair's two corrections then hold equal and
-// opposite momentum, so contact conserves it; a per-particle average would not.
+// The overlapping pair (i, j) found by the walk from i: the displacement from j to i, the contact distance, and the
+// inverse-mass sum. 1 when the pair collides, overlaps and has a particle that moves, else 0.
+static int touching(const ymir_particles* p, int32_t i, int32_t j, v3 xi, v3* d, float* r2, float* md, float* wsum)
+{
+    *d = vsub(xi, P(p, p->pp_x, p->pp_y, p->pp_z, j));
+    *md = p->radius[i] + p->radius[j];
+    *r2 = vdot(*d, *d);
+    *wsum = p->inv_mass[i] + p->inv_mass[j];
+    return *r2 < *md * *md && *r2 >= 1e-12f && *wsum != 0.0f && collides(p, i, j);
+}
+
+// Overlapping pairs push each other apart, split by inverse mass (Macklin 2014). Each pair is found once, by walking
+// half the 27-cell neighbourhood: a particle's own cell (partners of higher index) and the 13 cells that follow it
+// in lexicographic offset order. Two walks: the first counts every particle's overlaps, the second moves both ends
+// of each pair by one displacement weighted 1 / max(n_i, n_j). The pair's two corrections then hold equal and
+// opposite momentum, so contact conserves it; a per-particle average would not. Pairs apply in walk order, so every
+// sum is the same on every run. No pair list is kept: its size is not bounded by the particle count.
 static void particle_contacts(ymir_particles* p)
 {
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        p->contacts[i] = 0;
+        p->dp_x[i] = p->dp_y[i] = p->dp_z[i] = 0.0f;
+    }
     for (int pass = 0; pass < 2; ++pass)
     {
         for (int32_t i = 0; i < p->particle_count; ++i)
         {
-            if (pass == 1)
-            {
-                p->dp_x[i] = p->dp_y[i] = p->dp_z[i] = 0.0f;
-            }
-            else
-            {
-                p->contacts[i] = 0;
-            }
-            if (!p->particle_live[i] || (pass == 1 && p->inv_mass[i] == 0.0f))
+            if (!p->particle_live[i])
             {
                 continue;
             }
             v3 xi = P(p, p->pp_x, p->pp_y, p->pp_z, i);
-            v3 sum = {0.0f, 0.0f, 0.0f};
-            int32_t overlaps = 0;
-            for (int32_t da = -1; da <= 1; ++da)
+            for (int32_t cell = 0; cell < 14; ++cell) // 0 is the own cell; 1..13 are offsets 14..26 of the 27
             {
-                for (int32_t db = -1; db <= 1; ++db)
+                int32_t o = cell == 0 ? 13 : 13 + cell, da = o / 9 - 1, db = o / 3 % 3 - 1, dc = o % 3 - 1;
+                int32_t ca = p->cell_x[i] + da, cb = p->cell_y[i] + db, cc = p->cell_z[i] + dc;
+                uint32_t bucket = cell_hash(ca, cb, cc, p->table_mask);
+                for (int32_t q = p->cell_start[bucket]; q < p->cell_start[bucket + 1]; ++q)
                 {
-                    for (int32_t dc = -1; dc <= 1; ++dc)
+                    int32_t j = p->sorted[q];
+                    v3 d;
+                    float r2, md, wsum;
+                    if ((cell == 0 && j <= i) || p->cell_x[j] != ca || p->cell_y[j] != cb || p->cell_z[j] != cc ||
+                        !touching(p, i, j, xi, &d, &r2, &md, &wsum))
                     {
-                        int32_t ca = p->cell_x[i] + da, cb = p->cell_y[i] + db, cc = p->cell_z[i] + dc;
-                        uint32_t bucket = cell_hash(ca, cb, cc, p->table_mask);
-                        for (int32_t q = p->cell_start[bucket]; q < p->cell_start[bucket + 1]; ++q)
-                        {
-                            int32_t j = p->sorted[q];
-                            if (j == i || p->cell_x[j] != ca || p->cell_y[j] != cb || p->cell_z[j] != cc || !collides(p, i, j))
-                            {
-                                continue; // itself, another cell sharing the bucket, or a pair that never collides
-                            }
-                            v3 d = vsub(xi, P(p, p->pp_x, p->pp_y, p->pp_z, j));
-                            float md = p->radius[i] + p->radius[j];
-                            float r2 = vdot(d, d);
-                            float wsum = p->inv_mass[i] + p->inv_mass[j];
-                            if (r2 >= md * md || r2 < 1e-12f || wsum == 0.0f)
-                            {
-                                continue;
-                            }
-                            if (pass == 0)
-                            {
-                                overlaps++;
-                                continue;
-                            }
-                            float rr = sqrtf(r2);
-                            int32_t most = p->contacts[i] > p->contacts[j] ? p->contacts[i] : p->contacts[j];
-                            float weight = 1.0f / (float)most;
-                            sum = vadd(sum, vmul(d, weight * (p->inv_mass[i] / wsum) * (md - rr) / rr));
-                        }
+                        continue; // the other end of a pair, another cell sharing the bucket, or no touch
                     }
+                    if (pass == 0)
+                    {
+                        p->contacts[i]++;
+                        p->contacts[j]++;
+                        continue;
+                    }
+                    float rr = sqrtf(r2), depth = (md - rr) / rr;
+                    float weight = 1.0f / (float)(p->contacts[i] > p->contacts[j] ? p->contacts[i] : p->contacts[j]);
+                    v3 di = vmul(d, weight * (p->inv_mass[i] / wsum) * depth);
+                    v3 dj = vmul(d, weight * (p->inv_mass[j] / wsum) * depth);
+                    p->dp_x[i] += di.x; p->dp_y[i] += di.y; p->dp_z[i] += di.z;
+                    p->dp_x[j] -= dj.x; p->dp_y[j] -= dj.y; p->dp_z[j] -= dj.z;
                 }
-            }
-            if (pass == 0)
-            {
-                p->contacts[i] = overlaps;
-            }
-            else
-            {
-                put(p->dp_x, p->dp_y, p->dp_z, i, sum);
             }
         }
     }
@@ -1121,9 +1193,22 @@ static float proxy_reach(const ymir_particle_proxy* b)
     return sqrtf(b->size[0] * b->size[0] + b->size[1] * b->size[1] + b->size[2] * b->size[2]);
 }
 
+// 1 when particle i is held to body k by an attachment: such a particle is the body's own point, so contact skips that body.
+static int held_by(const ymir_particles* p, int32_t i, int32_t k)
+{
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        if (p->att_kind[a] == YMIR_ATTACH_BODY && p->att_particle[a] == i && p->att_body[a] == k)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 // Each particle against each shaped body in ascending lane order. The correction is split by inverse mass between
 // the particle and the body at the contact point; Coulomb friction removes the tangential slip up to mu times the
-// push. The body the particle is attached to is skipped: the attachment already ties them.
+// push. Every body the particle is attached to is skipped: the attachment already ties them.
 static void body_contacts(phase* f)
 {
     ymir_particles* p = f->p;
@@ -1139,7 +1224,7 @@ static void body_contacts(phase* f)
         for (int32_t k = 0; k < p->body_count; ++k)
         {
             ymir_particle_proxy* b = p->proxies + k;
-            if (b->shape == YMIR_PROXY_NONE || k == p->skip_body[i])
+            if (b->shape == YMIR_PROXY_NONE)
             {
                 continue;
             }
@@ -1148,6 +1233,10 @@ static void body_contacts(phase* f)
             float reach = proxy_reach(b) + r;
             v3 dc = vsub(x, c);
             if (vdot(dc, dc) > reach * reach)
+            {
+                continue;
+            }
+            if (held_by(p, i, k))
             {
                 continue;
             }
@@ -1327,6 +1416,10 @@ static void solve_tethers(phase* f)
     {
         p->tacc_x[t] = p->tacc_y[t] = p->tacc_z[t] = 0.0f;
         int32_t a = p->tether_att[t], b = p->tether_other[t];
+        if (a < 0)
+        {
+            continue; // a booking lane: it carries load up its route and bounds nothing
+        }
         float bound = p->tether_bound[t];
         if (b >= 0)
         {
@@ -1402,10 +1495,6 @@ int32_t ymir_particles_begin(ymir_particles* p)
         memset(b->impulse, 0, sizeof(b->impulse));
         memset(b->angular_impulse, 0, sizeof(b->angular_impulse));
     }
-    for (int32_t i = 0; i < p->particle_count; ++i)
-    {
-        p->skip_body[i] = -1;
-    }
     for (int32_t e = 0; e < p->distance_count; ++e)
     {
         p->dist_acc[e] = 0.0f;
@@ -1413,10 +1502,6 @@ int32_t ymir_particles_begin(ymir_particles* p)
     for (int32_t a = 0; a < p->attachment_count; ++a)
     {
         p->att_force_x[a] = p->att_force_y[a] = p->att_force_z[a] = 0.0f;
-        if (p->att_kind[a] == YMIR_ATTACH_BODY)
-        {
-            p->skip_body[p->att_particle[a]] = p->att_body[a];
-        }
     }
     return 1;
 }

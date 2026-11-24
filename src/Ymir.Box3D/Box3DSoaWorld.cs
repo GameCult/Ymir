@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Runtime.InteropServices;
 
 namespace Ymir.Box3D;
@@ -1015,12 +1016,20 @@ public sealed class Box3DSoaWorld : IDisposable
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         if (!handles.IsEmpty && handles.Length < distances.Length) throw new ArgumentException("One handle per distance.", nameof(handles));
-        Span<Box3DSoaParticleHandle> native = distances.Length <= 256 ? stackalloc Box3DSoaParticleHandle[distances.Length] : new Box3DSoaParticleHandle[distances.Length];
-        fixed (Box3DSoaDistanceDesc* d = distances)
-        fixed (Box3DSoaParticleHandle* h = native)
-            Check(Box3DSoaNative.ymir_box3d_soa_create_distances(_handle, distances.Length, d, h));
-        for (var i = 0; i < handles.Length && i < native.Length; i++)
-            handles[i] = new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Distance, native[i].Lane, native[i].Generation);
+        Box3DSoaParticleHandle[]? rented = null;
+        Span<Box3DSoaParticleHandle> native = distances.Length <= 256 ? stackalloc Box3DSoaParticleHandle[distances.Length] : (rented = ArrayPool<Box3DSoaParticleHandle>.Shared.Rent(distances.Length)).AsSpan(0, distances.Length);
+        try
+        {
+            fixed (Box3DSoaDistanceDesc* d = distances)
+            fixed (Box3DSoaParticleHandle* h = native)
+                Check(Box3DSoaNative.ymir_box3d_soa_create_distances(_handle, distances.Length, d, h));
+            for (var i = 0; i < handles.Length && i < native.Length; i++)
+                handles[i] = new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Distance, native[i].Lane, native[i].Generation);
+        }
+        finally
+        {
+            if (rented is not null) ArrayPool<Box3DSoaParticleHandle>.Shared.Return(rented);
+        }
     }
 
     /// <summary>Creates bends over pairs of distances that share one particle; a bend dies with either of its distances.</summary>
@@ -1028,12 +1037,20 @@ public sealed class Box3DSoaWorld : IDisposable
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         if (!handles.IsEmpty && handles.Length < bends.Length) throw new ArgumentException("One handle per bend.", nameof(handles));
-        Span<Box3DSoaParticleHandle> native = bends.Length <= 256 ? stackalloc Box3DSoaParticleHandle[bends.Length] : new Box3DSoaParticleHandle[bends.Length];
-        fixed (Box3DSoaBendDesc* d = bends)
-        fixed (Box3DSoaParticleHandle* h = native)
-            Check(Box3DSoaNative.ymir_box3d_soa_create_bends(_handle, bends.Length, d, h));
-        for (var i = 0; i < handles.Length && i < native.Length; i++)
-            handles[i] = new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Bend, native[i].Lane, native[i].Generation);
+        Box3DSoaParticleHandle[]? rented = null;
+        Span<Box3DSoaParticleHandle> native = bends.Length <= 256 ? stackalloc Box3DSoaParticleHandle[bends.Length] : (rented = ArrayPool<Box3DSoaParticleHandle>.Shared.Rent(bends.Length)).AsSpan(0, bends.Length);
+        try
+        {
+            fixed (Box3DSoaBendDesc* d = bends)
+            fixed (Box3DSoaParticleHandle* h = native)
+                Check(Box3DSoaNative.ymir_box3d_soa_create_bends(_handle, bends.Length, d, h));
+            for (var i = 0; i < handles.Length && i < native.Length; i++)
+                handles[i] = new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Bend, native[i].Lane, native[i].Generation);
+        }
+        finally
+        {
+            if (rented is not null) ArrayPool<Box3DSoaParticleHandle>.Shared.Return(rented);
+        }
     }
 
     /// <summary>
@@ -1061,14 +1078,22 @@ public sealed class Box3DSoaWorld : IDisposable
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         if (constraints.IsEmpty) return;
         var type = constraints[0].Type;
-        Span<Box3DSoaParticleHandle> native = constraints.Length <= 256 ? stackalloc Box3DSoaParticleHandle[constraints.Length] : new Box3DSoaParticleHandle[constraints.Length];
-        for (var i = 0; i < constraints.Length; i++)
+        Box3DSoaParticleHandle[]? rented = null;
+        Span<Box3DSoaParticleHandle> native = constraints.Length <= 256 ? stackalloc Box3DSoaParticleHandle[constraints.Length] : (rented = ArrayPool<Box3DSoaParticleHandle>.Shared.Rent(constraints.Length)).AsSpan(0, constraints.Length);
+        try
         {
-            if (constraints[i].Type != type) throw new ArgumentException("One type per call.", nameof(constraints));
-            native[i] = new Box3DSoaParticleHandle(constraints[i].Lane, constraints[i].Generation);
+            for (var i = 0; i < constraints.Length; i++)
+            {
+                if (constraints[i].Type != type) throw new ArgumentException("One type per call.", nameof(constraints));
+                native[i] = new Box3DSoaParticleHandle(constraints[i].Lane, constraints[i].Generation);
+            }
+            fixed (Box3DSoaParticleHandle* h = native)
+                Check(Box3DSoaNative.ymir_box3d_soa_remove(_handle, (uint)type, constraints.Length, h));
         }
-        fixed (Box3DSoaParticleHandle* h = native)
-            Check(Box3DSoaNative.ymir_box3d_soa_remove(_handle, (uint)type, constraints.Length, h));
+        finally
+        {
+            if (rented is not null) ArrayPool<Box3DSoaParticleHandle>.Shared.Return(rented);
+        }
     }
 
     /// <summary>Removes one constraint.</summary>

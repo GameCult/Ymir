@@ -187,7 +187,8 @@ typedef struct ymir_particles
     float *att_force_x, *att_force_y, *att_force_z; // N, the force the attachment exerts on its particles (mean): a sensor
     uint64_t* att_removed_at;
 
-    // tether lanes: derived, per attachment its settled particles in order and then its pairs, parents before children;
+    // tether lanes: derived: one per particle that is not a source, to the attachment it is nearest, in settle order, then per
+    // attachment pair a route of booking lanes (attachment -1, edge only) along their rest path and the pair tether; parents come first;
     // other >= 0 makes the tether a bound between two attachment points (edge -1) instead of a particle and a point
     int32_t *tether_att, *tether_particle, *tether_parent, *tether_edge, *tether_other;
     float* tether_bound;
@@ -198,8 +199,8 @@ typedef struct ymir_particles
 
     // solver scratch, allocated once at create
     float *pp_x, *pp_y, *pp_z, *dp_x, *dp_y, *dp_z, *dist_acc, *tacc_x, *tacc_y, *tacc_z;
-    int32_t *lane_list, *skip_body, *cell_x, *cell_y, *cell_z, *cell_start, *cell_fill, *sorted, *contacts;
-    int32_t *adj_start, *adj_edge, *heap_node, *heap_edge, *prev_edge, *tether_of, *queue, *comp_size;
+    int32_t *lane_list, *cell_x, *cell_y, *cell_z, *cell_start, *cell_fill, *sorted, *contacts;
+    int32_t *adj_start, *adj_edge, *heap_node, *heap_edge, *via, *owner, *tether_of, *queue, *comp_size;
     float *heap_key, *path;
     uint8_t* done;
     uint32_t table_mask;
