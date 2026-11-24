@@ -1,6 +1,8 @@
-// Particle chains: XPBD with small steps (Macklin 2019), long-range tethers (Kim 2012) and two-way coupling
-// to rigid bodies through proxies with real mass (Mueller 2007, Detailed Rigid XPBD 2020). The file calls no
-// Box3D and spawns nothing: one thread, every sum in a fixed order. See ymir_particles.h.
+// Particles and the constraint graph between them: XPBD with small steps (Macklin 2016, 2019), bending by the
+// triangle-centroid form (Kelager 2010), long-range tethers derived from the graph (Kim 2012), contact by
+// pair-symmetric position projection (Macklin 2014), and two-way coupling to rigid bodies through proxies with
+// real mass (Mueller 2007, Detailed Rigid XPBD 2020). The file calls no Box3D and spawns nothing: one thread,
+// every sum in a fixed order. See ymir_particles.h.
 
 #include "ymir_particles.h"
 
@@ -59,12 +61,15 @@ static void put(float* x, float* y, float* z, int i, v3 v)
     z[i] = v.z;
 }
 
+
 // ---- memory: one block, laid out once at create -------------------------------------------------------------
 
 static size_t layout(ymir_particles* p, unsigned char* base)
 {
     size_t off = 0;
-    int64_t np = p->particle_capacity, nc = p->chain_capacity, na = p->attachment_capacity, nb = p->body_capacity;
+    int64_t np = p->particle_capacity, nd = p->distance_capacity, nb = p->bend_capacity, na = p->attachment_capacity,
+            nt = p->tether_capacity, nm = p->material_capacity, nx = p->body_capacity;
+    int64_t heap = 2 * nd + 1;
     size_t table = (size_t)p->table_mask + 1;
 #define CARVE(field, type, count)                                                                                      \
     do                                                                                                                 \
@@ -74,35 +79,47 @@ static size_t layout(ymir_particles* p, unsigned char* base)
             p->field = (type*)(base + off);                                                                            \
         off += sizeof(type) * (size_t)(count);                                                                         \
     } while (0)
-    CARVE(proxies, ymir_particle_proxy, nb);
+    CARVE(proxies, ymir_particle_proxy, nx);
     CARVE(pos_x, float, np); CARVE(pos_y, float, np); CARVE(pos_z, float, np);
     CARVE(vel_x, float, np); CARVE(vel_y, float, np); CARVE(vel_z, float, np);
-    CARVE(radius, float, np); CARVE(inv_mass, float, np); CARVE(link_tension, float, np);
-    CARVE(chain, int32_t, np);
-    CARVE(chain_stable_id, uint64_t, nc); CARVE(chain_kind, uint32_t, nc); CARVE(chain_generation, uint32_t, nc);
-    CARVE(chain_first, int32_t, nc); CARVE(chain_size, int32_t, nc); CARVE(chain_removed_at, uint64_t, nc);
-    CARVE(chain_material_id, uint64_t, nc);
-    CARVE(chain_stretch, float, nc); CARVE(chain_bend, float, nc); CARVE(chain_friction, float, nc);
-    CARVE(att_kind, uint32_t, na); CARVE(att_generation, uint32_t, na); CARVE(att_particle, int32_t, na);
-    CARVE(att_body, int32_t, na);
+    CARVE(radius, float, np); CARVE(inv_mass, float, np);
+    CARVE(rest_x, float, np); CARVE(rest_y, float, np); CARVE(rest_z, float, np);
+    CARVE(phase, uint32_t, np); CARVE(material, uint32_t, np); CARVE(particle_live, uint32_t, np);
+    CARVE(particle_generation, uint32_t, np); CARVE(particle_removed_at, uint64_t, np); CARVE(component, int32_t, np);
+    CARVE(dist_a, int32_t, nd); CARVE(dist_b, int32_t, nd); CARVE(dist_rest, float, nd); CARVE(dist_compliance, float, nd);
+    CARVE(dist_tension, float, nd); CARVE(dist_live, uint32_t, nd); CARVE(dist_generation, uint32_t, nd);
+    CARVE(dist_removed_at, uint64_t, nd);
+    CARVE(bend_e1, int32_t, nb); CARVE(bend_e2, int32_t, nb); CARVE(bend_a, int32_t, nb); CARVE(bend_b, int32_t, nb);
+    CARVE(bend_c, int32_t, nb); CARVE(bend_rest, float, nb); CARVE(bend_limit, float, nb); CARVE(bend_compliance, float, nb);
+    CARVE(bend_live, uint32_t, nb); CARVE(bend_generation, uint32_t, nb); CARVE(bend_removed_at, uint64_t, nb);
+    CARVE(att_kind, uint32_t, na); CARVE(att_flags, uint32_t, na); CARVE(att_generation, uint32_t, na);
+    CARVE(att_particle, int32_t, na); CARVE(att_body, int32_t, na);
     CARVE(att_point_x, float, na); CARVE(att_point_y, float, na); CARVE(att_point_z, float, na);
     CARVE(att_compliance, float, na);
     CARVE(att_force_x, float, na); CARVE(att_force_y, float, na); CARVE(att_force_z, float, na);
     CARVE(att_removed_at, uint64_t, na);
+    CARVE(tether_att, int32_t, nt); CARVE(tether_particle, int32_t, nt); CARVE(tether_parent, int32_t, nt);
+    CARVE(tether_edge, int32_t, nt); CARVE(tether_other, int32_t, nt); CARVE(tether_bound, float, nt);
+    CARVE(mat_friction, float, nm); CARVE(mat_id, uint64_t, nm);
     CARVE(pp_x, float, np); CARVE(pp_y, float, np); CARVE(pp_z, float, np);
     CARVE(dp_x, float, np); CARVE(dp_y, float, np); CARVE(dp_z, float, np);
-    CARVE(rest_link, float, np); CARVE(rest_bend, float, np); CARVE(rest_pos, float, np);
-    CARVE(tension_acc, float, np); CARVE(struct_x, float, np); CARVE(struct_y, float, np); CARVE(struct_z, float, np);
-    CARVE(skip_body, int32_t, np); CARVE(cell_x, int32_t, np); CARVE(cell_y, int32_t, np); CARVE(cell_z, int32_t, np);
+    CARVE(dist_acc, float, nd);
+    CARVE(tacc_x, float, nt); CARVE(tacc_y, float, nt); CARVE(tacc_z, float, nt);
+    CARVE(lane_list, int32_t, nd); CARVE(skip_body, int32_t, np); CARVE(cell_x, int32_t, np); CARVE(cell_y, int32_t, np); CARVE(cell_z, int32_t, np);
     CARVE(cell_start, int32_t, table + 1); CARVE(cell_fill, int32_t, table); CARVE(sorted, int32_t, np);
-    CARVE(mark, uint8_t, np);
+    CARVE(contacts, int32_t, np);
+    CARVE(adj_start, int32_t, np + 1); CARVE(adj_edge, int32_t, 2 * nd);
+    CARVE(heap_key, float, heap); CARVE(heap_node, int32_t, heap); CARVE(heap_edge, int32_t, heap);
+    CARVE(path, float, np); CARVE(prev_edge, int32_t, np); CARVE(tether_of, int32_t, np);
+    CARVE(queue, int32_t, np); CARVE(comp_size, int32_t, np); CARVE(done, uint8_t, np);
 #undef CARVE
     return off + 16;
 }
 
-ymir_particles* ymir_particles_create(int32_t particle_capacity, int32_t chain_capacity, int32_t attachment_capacity, int32_t body_capacity)
+ymir_particles* ymir_particles_create(const ymir_particle_capacities* c, int32_t body_capacity)
 {
-    if (particle_capacity < 0 || chain_capacity < 0 || attachment_capacity < 0 || body_capacity < 0)
+    if (c == NULL || c->particles < 0 || c->distances < 0 || c->bends < 0 || c->attachments < 0 || c->tethers < 0 ||
+        c->materials < 0 || body_capacity < 0)
     {
         return NULL;
     }
@@ -111,12 +128,15 @@ ymir_particles* ymir_particles_create(int32_t particle_capacity, int32_t chain_c
     {
         return NULL;
     }
-    p->particle_capacity = particle_capacity;
-    p->chain_capacity = chain_capacity;
-    p->attachment_capacity = attachment_capacity;
+    p->particle_capacity = c->particles;
+    p->distance_capacity = c->distances;
+    p->bend_capacity = c->bends;
+    p->attachment_capacity = c->attachments;
+    p->tether_capacity = c->tethers;
+    p->material_capacity = c->materials;
     p->body_capacity = body_capacity;
     uint32_t table = 16;
-    while (table < 2u * (uint32_t)particle_capacity)
+    while (table < 2u * (uint32_t)c->particles)
     {
         table <<= 1;
     }
@@ -129,10 +149,6 @@ ymir_particles* ymir_particles_create(int32_t particle_capacity, int32_t chain_c
         return NULL;
     }
     layout(p, (unsigned char*)p->arena);
-    for (int32_t i = 0; i < particle_capacity; ++i)
-    {
-        p->chain[i] = -1;
-    }
     return p;
 }
 
@@ -145,269 +161,111 @@ void ymir_particles_free(ymir_particles* p)
     }
 }
 
-// ---- slots ---------------------------------------------------------------------------------------------------
+// ---- lanes ---------------------------------------------------------------------------------------------------
 
 static int lane_reusable(uint64_t step_count, uint64_t removed_at)
 {
     return step_count > removed_at;
 }
 
-// Marks the particle slots a new chain may not take: occupied ones, and the range of a chain destroyed in this
-// very step (its lanes were read this step and stay meaningful until a step has passed).
-static void mark_slots(const ymir_particles* p, uint64_t step_count)
+// The lowest free lane at or after `from`: a lane never used, or a dead one a step has passed since its removal.
+// -1 when there is none. `state` is the lane set's live (or kind) lane and `dead` the value a dead lane holds.
+static int32_t next_lane(const uint32_t* state, uint32_t dead, const uint64_t* removed_at, int32_t count, int32_t capacity,
+                         int32_t from, uint64_t step_count)
 {
-    for (int32_t i = 0; i < p->particle_capacity; ++i)
+    for (int32_t i = from; i < capacity; ++i)
     {
-        p->mark[i] = (uint8_t)(i < p->particle_count && p->chain[i] >= 0);
-    }
-    for (int32_t c = 0; c < p->chain_count; ++c)
-    {
-        if (p->chain_kind[c] == YMIR_CHAIN_REMOVED && !lane_reusable(step_count, p->chain_removed_at[c]))
+        if (i >= count || (state[i] == dead && lane_reusable(step_count, removed_at[i])))
         {
-            for (int32_t i = p->chain_first[c]; i < p->chain_first[c] + p->chain_size[c]; ++i)
-            {
-                p->mark[i] = 1;
-            }
-        }
-    }
-}
-
-// First fit, lowest index. Returns -1 when no run of `n` slots is free.
-static int32_t find_range(const ymir_particles* p, int32_t n, uint64_t step_count)
-{
-    mark_slots(p, step_count);
-    int32_t run = 0;
-    for (int32_t i = 0; i < p->particle_capacity; ++i)
-    {
-        run = p->mark[i] ? 0 : run + 1;
-        if (run == n)
-        {
-            return i - n + 1;
+            return i;
         }
     }
     return -1;
 }
 
-int32_t ymir_particles_free_particle_slots(const ymir_particles* p, uint64_t step_count)
+static int32_t free_count(const uint32_t* state, uint32_t dead, const uint64_t* removed_at, int32_t count, int32_t capacity,
+                          uint64_t step_count)
 {
-    mark_slots(p, step_count);
-    int32_t best = 0, run = 0;
-    for (int32_t i = 0; i < p->particle_capacity; ++i)
+    int32_t n = capacity - count;
+    for (int32_t i = 0; i < count; ++i)
     {
-        run = p->mark[i] ? 0 : run + 1;
-        best = run > best ? run : best;
+        n += state[i] == dead && lane_reusable(step_count, removed_at[i]);
     }
-    return best;
+    return n;
 }
 
-static int32_t chain_slot(const ymir_particles* p, uint64_t step_count)
+int32_t ymir_particles_free_slots(const ymir_particles* p, uint32_t lane_set, uint64_t step_count)
 {
-    for (int32_t c = 0; c < p->chain_count; ++c)
+    if (p == NULL)
     {
-        if (p->chain_kind[c] == YMIR_CHAIN_REMOVED && lane_reusable(step_count, p->chain_removed_at[c]))
+        return 0;
+    }
+    switch (lane_set)
+    {
+        case YMIR_LANES_PARTICLE:
+            return free_count(p->particle_live, 0, p->particle_removed_at, p->particle_count, p->particle_capacity, step_count);
+        case YMIR_LANES_DISTANCE:
+            return free_count(p->dist_live, 0, p->dist_removed_at, p->distance_count, p->distance_capacity, step_count);
+        case YMIR_LANES_BEND:
+            return free_count(p->bend_live, 0, p->bend_removed_at, p->bend_count, p->bend_capacity, step_count);
+        case YMIR_LANES_ATTACHMENT:
+            return free_count(p->att_kind, YMIR_ATTACH_REMOVED, p->att_removed_at, p->attachment_count, p->attachment_capacity, step_count);
+        default:
+            return 0;
+    }
+}
+
+static int particle_ok(const ymir_particles* p, int32_t lane, uint32_t generation)
+{
+    return lane >= 0 && lane < p->particle_count && p->particle_live[lane] && p->particle_generation[lane] == generation;
+}
+
+static int distance_ok(const ymir_particles* p, int32_t lane, uint32_t generation)
+{
+    return lane >= 0 && lane < p->distance_count && p->dist_live[lane] && p->dist_generation[lane] == generation;
+}
+
+static int bend_ok(const ymir_particles* p, int32_t lane, uint32_t generation)
+{
+    return lane >= 0 && lane < p->bend_count && p->bend_live[lane] && p->bend_generation[lane] == generation;
+}
+
+static int attachment_ok(const ymir_particles* p, int32_t lane, uint32_t generation)
+{
+    return lane >= 0 && lane < p->attachment_count && p->att_kind[lane] != YMIR_ATTACH_REMOVED && p->att_generation[lane] == generation;
+}
+
+// Tombstones: the lane keeps its generation (advanced) and removed_at; every other lane reads 0.
+static void kill_bend(ymir_particles* p, int32_t k, uint64_t step_count)
+{
+    p->bend_e1[k] = p->bend_e2[k] = p->bend_a[k] = p->bend_b[k] = p->bend_c[k] = 0;
+    p->bend_rest[k] = p->bend_limit[k] = p->bend_compliance[k] = 0.0f;
+    p->bend_live[k] = 0;
+    p->bend_generation[k] += 1;
+    p->bend_removed_at[k] = step_count;
+}
+
+// A distance takes the bends over it with it.
+static void kill_distance(ymir_particles* p, int32_t e, uint64_t step_count)
+{
+    for (int32_t k = 0; k < p->bend_count; ++k)
+    {
+        if (p->bend_live[k] && (p->bend_e1[k] == e || p->bend_e2[k] == e))
         {
-            return c;
+            kill_bend(p, k, step_count);
         }
     }
-    return p->chain_count < p->chain_capacity ? p->chain_count : -1;
+    p->dist_a[e] = p->dist_b[e] = 0;
+    p->dist_rest[e] = p->dist_compliance[e] = p->dist_tension[e] = 0.0f;
+    p->dist_live[e] = 0;
+    p->dist_generation[e] += 1;
+    p->dist_removed_at[e] = step_count;
 }
 
-int32_t ymir_particles_free_chain_slots(const ymir_particles* p, uint64_t step_count)
-{
-    int32_t free_slots = p->chain_capacity - p->chain_count;
-    for (int32_t c = 0; c < p->chain_count; ++c)
-    {
-        free_slots += p->chain_kind[c] == YMIR_CHAIN_REMOVED && lane_reusable(step_count, p->chain_removed_at[c]);
-    }
-    return free_slots;
-}
-
-static int32_t attachment_slot(const ymir_particles* p, uint64_t step_count)
-{
-    for (int32_t a = 0; a < p->attachment_count; ++a)
-    {
-        if (p->att_kind[a] == YMIR_ATTACH_REMOVED && lane_reusable(step_count, p->att_removed_at[a]))
-        {
-            return a;
-        }
-    }
-    return p->attachment_count < p->attachment_capacity ? p->attachment_count : -1;
-}
-
-int32_t ymir_particles_free_attachment_slots(const ymir_particles* p, uint64_t step_count)
-{
-    int32_t free_slots = p->attachment_capacity - p->attachment_count;
-    for (int32_t a = 0; a < p->attachment_count; ++a)
-    {
-        free_slots += p->att_kind[a] == YMIR_ATTACH_REMOVED && lane_reusable(step_count, p->att_removed_at[a]);
-    }
-    return free_slots;
-}
-
-static int chain_live(const ymir_particles* p, int32_t chain, uint32_t generation)
-{
-    return chain >= 0 && chain < p->chain_count && p->chain_kind[chain] == YMIR_CHAIN_LIVE && p->chain_generation[chain] == generation;
-}
-
-static int stable_id_taken(const ymir_particles* p, uint64_t id)
-{
-    for (int32_t c = 0; c < p->chain_count; ++c)
-    {
-        if (p->chain_kind[c] == YMIR_CHAIN_LIVE && p->chain_stable_id[c] == id)
-        {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-// ---- commands ------------------------------------------------------------------------------------------------
-
-int32_t ymir_particles_create_chain(ymir_particles* p, const ymir_chain_desc* d, uint64_t step_count, int32_t* chain, uint32_t* generation)
-{
-    if (p == NULL || d == NULL || d->positions == NULL || d->masses == NULL || d->count < 2 || !isfinite(d->radius) ||
-        d->radius <= 0.0f || !isfinite(d->stretch_compliance) || d->stretch_compliance < 0.0f ||
-        !isfinite(d->bend_compliance) || d->bend_compliance < 0.0f || !isfinite(d->friction) || d->friction < 0.0f)
-    {
-        return YMIR_PARTICLES_INVALID_ARGUMENT;
-    }
-    for (int32_t i = 0; i < d->count; ++i)
-    {
-        if (!finite3(d->positions + 3 * i) || !isfinite(d->masses[i]) || d->masses[i] < 0.0f)
-        {
-            return YMIR_PARTICLES_INVALID_ARGUMENT;
-        }
-        if (i + 1 < d->count)
-        {
-            v3 a = {d->positions[3 * i], d->positions[3 * i + 1], d->positions[3 * i + 2]};
-            v3 b = {d->positions[3 * i + 3], d->positions[3 * i + 4], d->positions[3 * i + 5]};
-            if (!(vlen(vsub(b, a)) > 1e-6f))
-            {
-                return YMIR_PARTICLES_INVALID_ARGUMENT; // a link of no length has no direction
-            }
-        }
-    }
-    if (stable_id_taken(p, d->stable_id))
-    {
-        return YMIR_PARTICLES_DUPLICATE_ID;
-    }
-    int32_t lane = chain_slot(p, step_count);
-    int32_t first = find_range(p, d->count, step_count);
-    if (lane < 0 || first < 0)
-    {
-        return YMIR_PARTICLES_FULL;
-    }
-
-    if (lane == p->chain_count)
-    {
-        p->chain_count++;
-    }
-    p->live_chains++;
-    p->chain_kind[lane] = YMIR_CHAIN_LIVE;
-    p->chain_stable_id[lane] = d->stable_id;
-    p->chain_first[lane] = first;
-    p->chain_size[lane] = d->count;
-    p->chain_removed_at[lane] = 0;
-    p->chain_material_id[lane] = d->material_id;
-    p->chain_stretch[lane] = d->stretch_compliance;
-    p->chain_bend[lane] = d->bend_compliance;
-    p->chain_friction[lane] = d->friction;
-    if (first + d->count > p->particle_count)
-    {
-        p->particle_count = first + d->count;
-    }
-    float path = 0.0f;
-    for (int32_t k = 0; k < d->count; ++k)
-    {
-        int32_t i = first + k;
-        v3 x = {d->positions[3 * k], d->positions[3 * k + 1], d->positions[3 * k + 2]};
-        put(p->pos_x, p->pos_y, p->pos_z, i, x);
-        p->vel_x[i] = p->vel_y[i] = p->vel_z[i] = 0.0f;
-        p->radius[i] = d->radius;
-        p->inv_mass[i] = d->masses[k] > 0.0f ? 1.0f / d->masses[k] : 0.0f;
-        p->link_tension[i] = 0.0f;
-        p->chain[i] = lane;
-        p->rest_pos[i] = path;
-        p->rest_link[i] = 0.0f;
-        p->rest_bend[i] = 0.0f;
-        if (k + 1 < d->count)
-        {
-            v3 y = {d->positions[3 * k + 3], d->positions[3 * k + 4], d->positions[3 * k + 5]};
-            p->rest_link[i] = vlen(vsub(y, x));
-            path += p->rest_link[i];
-        }
-        if (k + 2 < d->count)
-        {
-            v3 z = {d->positions[3 * k + 6], d->positions[3 * k + 7], d->positions[3 * k + 8]};
-            p->rest_bend[i] = vlen(vsub(z, x));
-        }
-    }
-    if (chain != NULL)
-    {
-        *chain = lane;
-    }
-    if (generation != NULL)
-    {
-        *generation = p->chain_generation[lane];
-    }
-    return YMIR_PARTICLES_OK;
-}
-
-// Cuts the link between particles `link` and `link + 1`. The head keeps its lane and stable id; the tail takes a
-// new chain lane and `tail_stable_id`. No particle moves lane or address, and attachments stay where they are.
-int32_t ymir_particles_split_chain(
-    ymir_particles* p, int32_t chain, uint32_t generation, int32_t link, uint64_t tail_stable_id, uint64_t step_count,
-    int32_t* tail, uint32_t* tail_generation)
-{
-    if (p == NULL || !chain_live(p, chain, generation) || link < 0 || link + 2 > p->chain_size[chain])
-    {
-        return YMIR_PARTICLES_INVALID_ARGUMENT;
-    }
-    if (stable_id_taken(p, tail_stable_id))
-    {
-        return YMIR_PARTICLES_DUPLICATE_ID;
-    }
-    int32_t lane = chain_slot(p, step_count);
-    if (lane < 0)
-    {
-        return YMIR_PARTICLES_FULL;
-    }
-    if (lane == p->chain_count)
-    {
-        p->chain_count++;
-    }
-    p->live_chains++;
-    int32_t first = p->chain_first[chain], size = p->chain_size[chain];
-    int32_t tail_first = first + link + 1;
-    p->chain_kind[lane] = YMIR_CHAIN_LIVE;
-    p->chain_stable_id[lane] = tail_stable_id;
-    p->chain_first[lane] = tail_first;
-    p->chain_size[lane] = size - link - 1;
-    p->chain_removed_at[lane] = 0;
-    p->chain_material_id[lane] = p->chain_material_id[chain];
-    p->chain_stretch[lane] = p->chain_stretch[chain];
-    p->chain_bend[lane] = p->chain_bend[chain];
-    p->chain_friction[lane] = p->chain_friction[chain];
-    p->chain_size[chain] = link + 1;
-    for (int32_t i = tail_first; i < first + size; ++i)
-    {
-        p->chain[i] = lane;
-    }
-    p->link_tension[tail_first - 1] = 0.0f; // the cut link carries nothing
-    if (tail != NULL)
-    {
-        *tail = lane;
-    }
-    if (tail_generation != NULL)
-    {
-        *tail_generation = p->chain_generation[lane];
-    }
-    return YMIR_PARTICLES_OK;
-}
-
-static void tombstone_attachment(ymir_particles* p, int32_t a, uint64_t step_count)
+static void kill_attachment(ymir_particles* p, int32_t a, uint64_t step_count)
 {
     p->att_kind[a] = YMIR_ATTACH_REMOVED;
+    p->att_flags[a] = 0;
     p->att_removed_at[a] = step_count;
     p->att_generation[a] += 1;
     p->att_particle[a] = -1;
@@ -417,98 +275,531 @@ static void tombstone_attachment(ymir_particles* p, int32_t a, uint64_t step_cou
     p->att_force_x[a] = p->att_force_y[a] = p->att_force_z[a] = 0.0f;
 }
 
-// Removes the chain and, with it, every attachment that reaches one of its particles: they would dangle. A
-// consequence of the command, not a decision of the solver. Particle lanes read 0 until the range is reused.
-int32_t ymir_particles_destroy_chain(ymir_particles* p, int32_t chain, uint32_t generation, uint64_t step_count)
+// ---- derivation: components and tethers ----------------------------------------------------------------------
+
+static int heap_less(const ymir_particles* p, int32_t i, int32_t j)
 {
-    if (p == NULL || !chain_live(p, chain, generation))
+    if (p->heap_key[i] != p->heap_key[j])
     {
-        return YMIR_PARTICLES_INVALID_ARGUMENT;
+        return p->heap_key[i] < p->heap_key[j];
     }
-    int32_t lo = p->chain_first[chain], hi = lo + p->chain_size[chain];
-    for (int32_t a = 0; a < p->attachment_count; ++a)
+    if (p->heap_node[i] != p->heap_node[j])
     {
-        if (p->att_kind[a] == YMIR_ATTACH_REMOVED)
+        return p->heap_node[i] < p->heap_node[j];
+    }
+    return p->heap_edge[i] < p->heap_edge[j];
+}
+
+static void heap_swap(ymir_particles* p, int32_t i, int32_t j)
+{
+    float k = p->heap_key[i]; p->heap_key[i] = p->heap_key[j]; p->heap_key[j] = k;
+    int32_t n = p->heap_node[i]; p->heap_node[i] = p->heap_node[j]; p->heap_node[j] = n;
+    int32_t e = p->heap_edge[i]; p->heap_edge[i] = p->heap_edge[j]; p->heap_edge[j] = e;
+}
+
+static void heap_push(ymir_particles* p, int32_t* size, float key, int32_t node, int32_t edge)
+{
+    int32_t i = (*size)++;
+    p->heap_key[i] = key;
+    p->heap_node[i] = node;
+    p->heap_edge[i] = edge;
+    while (i > 0 && heap_less(p, i, (i - 1) / 2))
+    {
+        heap_swap(p, i, (i - 1) / 2);
+        i = (i - 1) / 2;
+    }
+}
+
+// Moves the smallest entry to slot `size` (just past the shrunk heap), where the caller reads it.
+static void heap_pop(ymir_particles* p, int32_t* size)
+{
+    int32_t n = --(*size);
+    heap_swap(p, 0, n);
+    int32_t i = 0;
+    for (;;)
+    {
+        int32_t l = 2 * i + 1, r = l + 1, m = i;
+        if (l < n && heap_less(p, l, m))
+        {
+            m = l;
+        }
+        if (r < n && heap_less(p, r, m))
+        {
+            m = r;
+        }
+        if (m == i)
+        {
+            break;
+        }
+        heap_swap(p, i, m);
+        i = m;
+    }
+}
+
+// One tether per particle the attachment's particle reaches through live distances, bounded by the geodesic rest
+// path (Dijkstra, ties broken by lane), with the tether of the previous particle on the path and the edge used.
+// Parents come before children, so a reverse sweep visits leaves first.
+static void derive_from(ymir_particles* p, int32_t a, int32_t* nt)
+{
+    int32_t s = p->att_particle[a], size = 0;
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        p->path[i] = 1.0e30f;
+        p->done[i] = 0;
+        p->tether_of[i] = -1;
+    }
+    p->path[s] = 0.0f;
+    heap_push(p, &size, 0.0f, s, -1);
+    while (size > 0)
+    {
+        heap_pop(p, &size);
+        float key = p->heap_key[size];
+        int32_t u = p->heap_node[size], e = p->heap_edge[size];
+        if (p->done[u])
         {
             continue;
         }
-        int32_t q = p->att_particle[a];
-        int32_t other = p->att_kind[a] == YMIR_ATTACH_PARTICLE_PARTICLE ? p->att_body[a] : -1;
-        if ((q >= lo && q < hi) || (other >= lo && other < hi))
+        p->done[u] = 1;
+        if (u != s)
         {
-            tombstone_attachment(p, a, step_count);
+            int32_t t = (*nt)++, other = p->dist_a[e] == u ? p->dist_b[e] : p->dist_a[e];
+            p->tether_att[t] = a;
+            p->tether_particle[t] = u;
+            p->tether_bound[t] = key;
+            p->tether_edge[t] = e;
+            p->tether_other[t] = -1;
+            p->tether_parent[t] = p->tether_of[other];
+            p->tether_of[u] = t;
+        }
+        for (int32_t k = p->adj_start[u]; k < p->adj_start[u + 1]; ++k)
+        {
+            int32_t e2 = p->adj_edge[k], v = p->dist_a[e2] == u ? p->dist_b[e2] : p->dist_a[e2];
+            float nd = key + p->dist_rest[e2];
+            if (!p->done[v] && nd < p->path[v])
+            {
+                p->path[v] = nd;
+                heap_push(p, &size, nd, v, e2);
+            }
         }
     }
-    for (int32_t i = lo; i < hi; ++i)
+}
+
+static int is_tether(const ymir_particles* p, int32_t a)
+{
+    return p->att_kind[a] != YMIR_ATTACH_REMOVED && (p->att_flags[a] & YMIR_ATTACH_FLAG_TETHER);
+}
+
+// 1 when attachments a < b are both tethers on different particles of one component (`label` names components),
+// so the rest path between their particles bounds the distance between their points.
+static int pairs_with(const ymir_particles* p, int32_t a, int32_t b, const int32_t* label)
+{
+    int32_t pa = p->att_particle[a], pb = p->att_particle[b];
+    return is_tether(p, b) && pa != pb && label[pa] == label[pb];
+}
+
+// The only writer of the tether lanes and the component lane. Called at the end of every topology command. The
+// tether count is known from the component sizes before anything is written: a derivation that would not fit is
+// refused with every lane as it was.
+static int32_t rederive_topology(ymir_particles* p)
+{
+    int32_t np = p->particle_count;
+    memset(p->adj_start, 0, sizeof(int32_t) * ((size_t)np + 1));
+    for (int32_t e = 0; e < p->distance_count; ++e)
     {
-        p->pos_x[i] = p->pos_y[i] = p->pos_z[i] = 0.0f;
-        p->vel_x[i] = p->vel_y[i] = p->vel_z[i] = 0.0f;
-        p->radius[i] = p->inv_mass[i] = p->link_tension[i] = 0.0f;
-        p->rest_link[i] = p->rest_bend[i] = p->rest_pos[i] = 0.0f;
-        p->chain[i] = -1;
+        if (p->dist_live[e])
+        {
+            p->adj_start[p->dist_a[e] + 1]++;
+            p->adj_start[p->dist_b[e] + 1]++;
+        }
     }
-    p->chain_kind[chain] = YMIR_CHAIN_REMOVED; // first and size stay: the range is held until a step has passed
-    p->chain_stable_id[chain] = 0;
-    p->chain_removed_at[chain] = step_count;
-    p->chain_generation[chain] += 1;
-    p->chain_material_id[chain] = 0;
-    p->chain_stretch[chain] = p->chain_bend[chain] = p->chain_friction[chain] = 0.0f;
-    p->live_chains--;
+    for (int32_t i = 0; i < np; ++i)
+    {
+        p->adj_start[i + 1] += p->adj_start[i];
+        p->comp_size[i] = p->adj_start[i]; // fill cursors
+    }
+    for (int32_t e = 0; e < p->distance_count; ++e)
+    {
+        if (p->dist_live[e])
+        {
+            p->adj_edge[p->comp_size[p->dist_a[e]]++] = e;
+            p->adj_edge[p->comp_size[p->dist_b[e]]++] = e;
+        }
+    }
+    // components by breadth-first labelling from the lowest lane, labels held in tether_of until the count is settled
+    for (int32_t i = 0; i < np; ++i)
+    {
+        p->tether_of[i] = -1;
+    }
+    for (int32_t i = 0; i < np; ++i)
+    {
+        if (!p->particle_live[i] || p->tether_of[i] >= 0)
+        {
+            continue;
+        }
+        int32_t head = 0, tail = 0;
+        p->tether_of[i] = i;
+        p->queue[tail++] = i;
+        while (head < tail)
+        {
+            int32_t u = p->queue[head++];
+            for (int32_t k = p->adj_start[u]; k < p->adj_start[u + 1]; ++k)
+            {
+                int32_t e = p->adj_edge[k], v = p->dist_a[e] == u ? p->dist_b[e] : p->dist_a[e];
+                if (p->tether_of[v] < 0)
+                {
+                    p->tether_of[v] = i;
+                    p->queue[tail++] = v;
+                }
+            }
+        }
+        p->comp_size[i] = tail;
+    }
+    int64_t need = 0;
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        if (!is_tether(p, a))
+        {
+            continue;
+        }
+        need += p->comp_size[p->tether_of[p->att_particle[a]]] - 1;
+        for (int32_t b = a + 1; b < p->attachment_count; ++b)
+        {
+            need += pairs_with(p, a, b, p->tether_of);
+        }
+    }
+    if (need > p->tether_capacity)
+    {
+        return YMIR_PARTICLES_FULL;
+    }
+    for (int32_t i = 0; i < np; ++i)
+    {
+        p->component[i] = p->tether_of[i] >= 0 ? p->tether_of[i] : 0;
+    }
+    int32_t nt = 0;
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        if (!is_tether(p, a))
+        {
+            continue;
+        }
+        derive_from(p, a, &nt);
+        for (int32_t b = a + 1; b < p->attachment_count; ++b)
+        {
+            if (pairs_with(p, a, b, p->component))
+            {
+                int32_t t = nt++, q = p->att_particle[b];
+                p->tether_att[t] = a;
+                p->tether_particle[t] = q;
+                p->tether_bound[t] = p->path[q];
+                p->tether_edge[t] = -1;
+                p->tether_other[t] = b;
+                p->tether_parent[t] = p->tether_of[q];
+            }
+        }
+    }
+    p->tether_count = nt;
     return YMIR_PARTICLES_OK;
 }
 
-int32_t ymir_particles_attach(ymir_particles* p, const ymir_attachment_desc* d, int32_t body_count, uint64_t step_count, int32_t* attachment, uint32_t* generation)
+// ---- commands ------------------------------------------------------------------------------------------------
+
+int32_t ymir_particles_create_particles(ymir_particles* p, int32_t n, const ymir_particle_desc* d, uint64_t step_count, ymir_handle* out)
 {
-    if (p == NULL || d == NULL || d->kind > YMIR_ATTACH_PARTICLE_PARTICLE || d->particle < 0 || d->particle >= p->particle_count ||
-        p->chain[d->particle] < 0 || !finite3(d->point) || !isfinite(d->compliance) || d->compliance < 0.0f)
+    if (p == NULL || n < 0 || (n > 0 && d == NULL))
     {
         return YMIR_PARTICLES_INVALID_ARGUMENT;
     }
-    if (d->kind == YMIR_ATTACH_PARTICLE_BODY && (d->body < 0 || d->body >= body_count))
+    for (int32_t k = 0; k < n; ++k)
+    {
+        if (!finite3(d[k].position) || !finite3(d[k].rest) || !finite3(d[k].velocity) || !isfinite(d[k].mass) || d[k].mass < 0.0f ||
+            (d[k].mass > 0.0f && !isfinite(1.0f / d[k].mass)) || !isfinite(d[k].radius) || d[k].radius <= 0.0f ||
+            (d[k].phase & ~(uint32_t)YMIR_PHASE_VALID) != 0 || d[k].material >= (uint32_t)p->material_capacity)
+        {
+            return YMIR_PARTICLES_INVALID_ARGUMENT;
+        }
+    }
+    if (free_count(p->particle_live, 0, p->particle_removed_at, p->particle_count, p->particle_capacity, step_count) < n)
+    {
+        return YMIR_PARTICLES_FULL;
+    }
+    int32_t cursor = 0;
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t i = next_lane(p->particle_live, 0, p->particle_removed_at, p->particle_count, p->particle_capacity, cursor, step_count);
+        cursor = i + 1;
+        p->particle_count = i + 1 > p->particle_count ? i + 1 : p->particle_count;
+        p->pos_x[i] = d[k].position[0]; p->pos_y[i] = d[k].position[1]; p->pos_z[i] = d[k].position[2];
+        p->vel_x[i] = d[k].velocity[0]; p->vel_y[i] = d[k].velocity[1]; p->vel_z[i] = d[k].velocity[2];
+        p->rest_x[i] = d[k].rest[0]; p->rest_y[i] = d[k].rest[1]; p->rest_z[i] = d[k].rest[2];
+        p->radius[i] = d[k].radius;
+        p->inv_mass[i] = d[k].mass > 0.0f ? 1.0f / d[k].mass : 0.0f;
+        p->phase[i] = d[k].phase;
+        p->material[i] = d[k].material;
+        p->particle_live[i] = 1;
+        p->live_particles++;
+        if (out != NULL)
+        {
+            out[k] = (ymir_handle){i, p->particle_generation[i]};
+        }
+    }
+    return rederive_topology(p);
+}
+
+int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymir_handle* h, uint64_t step_count)
+{
+    if (p == NULL || n < 0 || (n > 0 && h == NULL))
     {
         return YMIR_PARTICLES_INVALID_ARGUMENT;
     }
-    if (d->kind == YMIR_ATTACH_PARTICLE_PARTICLE &&
-        (d->body < 0 || d->body >= p->particle_count || d->body == d->particle || p->chain[d->body] < 0))
+    for (int32_t k = 0; k < n; ++k)
+    {
+        if (!particle_ok(p, h[k].lane, h[k].generation))
+        {
+            return YMIR_PARTICLES_INVALID_ARGUMENT;
+        }
+    }
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t i = h[k].lane;
+        if (!p->particle_live[i])
+        {
+            continue; // named twice
+        }
+        for (int32_t e = 0; e < p->distance_count; ++e)
+        {
+            if (p->dist_live[e] && (p->dist_a[e] == i || p->dist_b[e] == i))
+            {
+                kill_distance(p, e, step_count);
+            }
+        }
+        for (int32_t a = 0; a < p->attachment_count; ++a)
+        {
+            if (p->att_kind[a] != YMIR_ATTACH_REMOVED && p->att_particle[a] == i)
+            {
+                kill_attachment(p, a, step_count);
+            }
+        }
+        p->pos_x[i] = p->pos_y[i] = p->pos_z[i] = 0.0f;
+        p->vel_x[i] = p->vel_y[i] = p->vel_z[i] = 0.0f;
+        p->rest_x[i] = p->rest_y[i] = p->rest_z[i] = 0.0f;
+        p->radius[i] = p->inv_mass[i] = 0.0f;
+        p->phase[i] = p->material[i] = 0;
+        p->particle_live[i] = 0;
+        p->particle_generation[i] += 1;
+        p->particle_removed_at[i] = step_count;
+        p->live_particles--;
+    }
+    return rederive_topology(p);
+}
+
+int32_t ymir_particles_create_distances(ymir_particles* p, int32_t n, const ymir_distance_desc* d, uint64_t step_count, ymir_handle* out)
+{
+    if (p == NULL || n < 0 || (n > 0 && d == NULL))
     {
         return YMIR_PARTICLES_INVALID_ARGUMENT;
     }
-    int32_t a = attachment_slot(p, step_count);
+    for (int32_t k = 0; k < n; ++k)
+    {
+        if (!particle_ok(p, d[k].a.lane, d[k].a.generation) || !particle_ok(p, d[k].b.lane, d[k].b.generation) ||
+            d[k].a.lane == d[k].b.lane || !isfinite(d[k].rest) || !isfinite(d[k].compliance) || d[k].compliance < 0.0f)
+        {
+            return YMIR_PARTICLES_INVALID_ARGUMENT;
+        }
+    }
+    if (free_count(p->dist_live, 0, p->dist_removed_at, p->distance_count, p->distance_capacity, step_count) < n)
+    {
+        return YMIR_PARTICLES_FULL;
+    }
+    int32_t old_count = p->distance_count, cursor = 0;
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t e = next_lane(p->dist_live, 0, p->dist_removed_at, p->distance_count, p->distance_capacity, cursor, step_count);
+        cursor = e + 1;
+        int32_t a = d[k].a.lane, b = d[k].b.lane;
+        p->lane_list[k] = e;
+        p->distance_count = e + 1 > p->distance_count ? e + 1 : p->distance_count;
+        p->dist_a[e] = a;
+        p->dist_b[e] = b;
+        p->dist_rest[e] = d[k].rest >= 0.0f
+                              ? d[k].rest
+                              : vlen(vsub((v3){p->rest_x[a], p->rest_y[a], p->rest_z[a]}, (v3){p->rest_x[b], p->rest_y[b], p->rest_z[b]}));
+        p->dist_compliance[e] = d[k].compliance;
+        p->dist_tension[e] = 0.0f;
+        p->dist_live[e] = 1;
+    }
+    int32_t status = rederive_topology(p);
+    if (status != YMIR_PARTICLES_OK)
+    {
+        for (int32_t k = 0; k < n; ++k) // back out: the lanes read as they did before the command
+        {
+            int32_t e = p->lane_list[k];
+            p->dist_a[e] = p->dist_b[e] = 0;
+            p->dist_rest[e] = p->dist_compliance[e] = 0.0f;
+            p->dist_live[e] = 0;
+        }
+        p->distance_count = old_count;
+        return status;
+    }
+    if (out != NULL)
+    {
+        for (int32_t k = 0; k < n; ++k)
+        {
+            out[k] = (ymir_handle){p->lane_list[k], p->dist_generation[p->lane_list[k]]};
+        }
+    }
+    return YMIR_PARTICLES_OK;
+}
+
+int32_t ymir_particles_create_bends(ymir_particles* p, int32_t n, const ymir_bend_desc* d, uint64_t step_count, ymir_handle* out)
+{
+    if (p == NULL || n < 0 || (n > 0 && d == NULL))
+    {
+        return YMIR_PARTICLES_INVALID_ARGUMENT;
+    }
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t e1 = d[k].e1.lane, e2 = d[k].e2.lane;
+        if (!distance_ok(p, e1, d[k].e1.generation) || !distance_ok(p, e2, d[k].e2.generation) || e1 == e2 ||
+            !isfinite(d[k].compliance) || !isfinite(d[k].max_angle) || d[k].max_angle > 3.14159265f ||
+            (d[k].compliance < 0.0f && d[k].max_angle < 0.0f) || !(p->dist_rest[e1] > 0.0f) || !(p->dist_rest[e2] > 0.0f))
+        {
+            return YMIR_PARTICLES_INVALID_ARGUMENT; // a bend that does nothing, or over links of no length, or not over two links
+        }
+        int32_t a1 = p->dist_a[e1], b1 = p->dist_b[e1], a2 = p->dist_a[e2], b2 = p->dist_b[e2];
+        int shared = (a1 == a2) + (a1 == b2) + (b1 == a2) + (b1 == b2);
+        if (shared != 1)
+        {
+            return YMIR_PARTICLES_INVALID_ARGUMENT; // the two distances must share exactly one particle
+        }
+    }
+    if (free_count(p->bend_live, 0, p->bend_removed_at, p->bend_count, p->bend_capacity, step_count) < n)
+    {
+        return YMIR_PARTICLES_FULL;
+    }
+    int32_t cursor = 0;
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t i = next_lane(p->bend_live, 0, p->bend_removed_at, p->bend_count, p->bend_capacity, cursor, step_count);
+        cursor = i + 1;
+        int32_t e1 = d[k].e1.lane, e2 = d[k].e2.lane;
+        int32_t a1 = p->dist_a[e1], b1 = p->dist_b[e1], a2 = p->dist_a[e2], b2 = p->dist_b[e2];
+        int32_t a, b, c;
+        if (b1 == a2) { a = a1; b = b1; c = b2; }
+        else if (a1 == a2) { a = b1; b = a1; c = b2; }
+        else if (b1 == b2) { a = a1; b = b1; c = a2; }
+        else { a = b1; b = a1; c = a2; }
+        p->bend_count = i + 1 > p->bend_count ? i + 1 : p->bend_count;
+        p->bend_e1[i] = e1; p->bend_e2[i] = e2;
+        p->bend_a[i] = a; p->bend_b[i] = b; p->bend_c[i] = c;
+        v3 ra = {p->rest_x[a], p->rest_y[a], p->rest_z[a]}, rb = {p->rest_x[b], p->rest_y[b], p->rest_z[b]},
+           rc = {p->rest_x[c], p->rest_y[c], p->rest_z[c]};
+        v3 centroid = vmul(vadd(vadd(ra, rb), rc), 1.0f / 3.0f);
+        p->bend_rest[i] = vlen(vsub(rb, centroid));
+        float l1 = p->dist_rest[e1], l2 = p->dist_rest[e2];
+        // |b - centroid| = |(a - b) + (c - b)| / 3, and at deflection phi from straight the links' sum has
+        // squared length l1^2 + l2^2 - 2 l1 l2 cos(phi): the offset at the limit.
+        p->bend_limit[i] = d[k].max_angle < 0.0f ? -1.0f : sqrtf(vmax(0.0f, l1 * l1 + l2 * l2 - 2.0f * l1 * l2 * cosf(d[k].max_angle))) / 3.0f;
+        p->bend_compliance[i] = d[k].compliance;
+        p->bend_live[i] = 1;
+        if (out != NULL)
+        {
+            out[k] = (ymir_handle){i, p->bend_generation[i]};
+        }
+    }
+    return rederive_topology(p);
+}
+
+int32_t ymir_particles_attach(ymir_particles* p, const ymir_attachment_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out)
+{
+    if (p == NULL || d == NULL || (d->kind != YMIR_ATTACH_BODY && d->kind != YMIR_ATTACH_STATIC) ||
+        (d->flags & ~(uint32_t)YMIR_ATTACH_FLAG_TETHER) != 0 || !particle_ok(p, d->particle.lane, d->particle.generation) ||
+        !finite3(d->point) || !isfinite(d->compliance) || d->compliance < 0.0f)
+    {
+        return YMIR_PARTICLES_INVALID_ARGUMENT;
+    }
+    if (d->kind == YMIR_ATTACH_BODY && (d->body < 0 || d->body >= body_count))
+    {
+        return YMIR_PARTICLES_INVALID_ARGUMENT;
+    }
+    int32_t a = next_lane(p->att_kind, YMIR_ATTACH_REMOVED, p->att_removed_at, p->attachment_count, p->attachment_capacity, 0, step_count);
     if (a < 0)
     {
         return YMIR_PARTICLES_FULL;
     }
-    if (a == p->attachment_count)
-    {
-        p->attachment_count++;
-    }
+    int32_t old_count = p->attachment_count;
+    p->attachment_count = a + 1 > p->attachment_count ? a + 1 : p->attachment_count;
     p->att_kind[a] = d->kind;
-    p->att_particle[a] = d->particle;
-    p->att_body[a] = d->kind == YMIR_ATTACH_PARTICLE_STATIC ? -1 : d->body;
+    p->att_flags[a] = d->flags;
+    p->att_particle[a] = d->particle.lane;
+    p->att_body[a] = d->kind == YMIR_ATTACH_BODY ? d->body : -1;
     p->att_point_x[a] = d->point[0];
     p->att_point_y[a] = d->point[1];
     p->att_point_z[a] = d->point[2];
     p->att_compliance[a] = d->compliance;
     p->att_force_x[a] = p->att_force_y[a] = p->att_force_z[a] = 0.0f;
-    if (attachment != NULL)
+    int32_t status = rederive_topology(p);
+    if (status != YMIR_PARTICLES_OK)
     {
-        *attachment = a;
+        p->att_kind[a] = a < old_count ? YMIR_ATTACH_REMOVED : 0;
+        p->att_flags[a] = 0;
+        p->att_particle[a] = a < old_count ? -1 : 0;
+        p->att_body[a] = a < old_count ? -1 : 0;
+        p->att_point_x[a] = p->att_point_y[a] = p->att_point_z[a] = 0.0f;
+        p->att_compliance[a] = 0.0f;
+        p->attachment_count = old_count;
+        return status;
     }
-    if (generation != NULL)
+    if (out != NULL)
     {
-        *generation = p->att_generation[a];
+        *out = (ymir_handle){a, p->att_generation[a]};
     }
     return YMIR_PARTICLES_OK;
 }
 
-int32_t ymir_particles_detach(ymir_particles* p, int32_t attachment, uint32_t generation, uint64_t step_count)
+int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const ymir_handle* h, uint64_t step_count)
 {
-    if (p == NULL || attachment < 0 || attachment >= p->attachment_count || p->att_kind[attachment] == YMIR_ATTACH_REMOVED ||
-        p->att_generation[attachment] != generation)
+    if (p == NULL || n < 0 || (n > 0 && h == NULL) ||
+        (type != YMIR_LANES_DISTANCE && type != YMIR_LANES_BEND && type != YMIR_LANES_ATTACHMENT))
     {
         return YMIR_PARTICLES_INVALID_ARGUMENT;
     }
-    tombstone_attachment(p, attachment, step_count);
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int ok = type == YMIR_LANES_DISTANCE   ? distance_ok(p, h[k].lane, h[k].generation)
+                 : type == YMIR_LANES_BEND     ? bend_ok(p, h[k].lane, h[k].generation)
+                                               : attachment_ok(p, h[k].lane, h[k].generation);
+        if (!ok)
+        {
+            return YMIR_PARTICLES_INVALID_ARGUMENT;
+        }
+    }
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t lane = h[k].lane;
+        if (type == YMIR_LANES_DISTANCE && p->dist_live[lane])
+        {
+            kill_distance(p, lane, step_count);
+        }
+        else if (type == YMIR_LANES_BEND && p->bend_live[lane])
+        {
+            kill_bend(p, lane, step_count);
+        }
+        else if (type == YMIR_LANES_ATTACHMENT && p->att_kind[lane] != YMIR_ATTACH_REMOVED)
+        {
+            kill_attachment(p, lane, step_count);
+        }
+    }
+    return rederive_topology(p);
+}
+
+int32_t ymir_particles_set_material(ymir_particles* p, int32_t index, const ymir_material_desc* d)
+{
+    if (p == NULL || d == NULL || index < 0 || index >= p->material_capacity || !isfinite(d->friction) || d->friction < 0.0f)
+    {
+        return YMIR_PARTICLES_INVALID_ARGUMENT;
+    }
+    p->mat_friction[index] = d->friction;
+    p->mat_id[index] = d->material_id;
     return YMIR_PARTICLES_OK;
 }
 
@@ -575,62 +866,35 @@ static void proxy_push(const phase* f, ymir_particle_proxy* b, v3 at, v3 imp)
 // The world point an attachment holds, and the inverse mass of what it holds it to along `n`.
 static v3 end_point(const ymir_particles* p, int32_t a)
 {
-    if (p->att_kind[a] == YMIR_ATTACH_PARTICLE_BODY)
+    if (p->att_kind[a] == YMIR_ATTACH_BODY)
     {
         const ymir_particle_proxy* b = p->proxies + p->att_body[a];
         v3 local = {p->att_point_x[a], p->att_point_y[a], p->att_point_z[a]};
         return vadd((v3){b->position[0], b->position[1], b->position[2]}, qrot(b->rotation, local));
-    }
-    if (p->att_kind[a] == YMIR_ATTACH_PARTICLE_PARTICLE)
-    {
-        return P(p, p->pp_x, p->pp_y, p->pp_z, p->att_body[a]);
     }
     return (v3){p->att_point_x[a], p->att_point_y[a], p->att_point_z[a]};
 }
 
 static float end_w(const ymir_particles* p, int32_t a, v3 at, v3 n)
 {
-    if (p->att_kind[a] == YMIR_ATTACH_PARTICLE_BODY)
-    {
-        return proxy_w(p->proxies + p->att_body[a], at, n);
-    }
-    if (p->att_kind[a] == YMIR_ATTACH_PARTICLE_PARTICLE)
-    {
-        return p->inv_mass[p->att_body[a]];
-    }
-    return 0.0f;
+    return p->att_kind[a] == YMIR_ATTACH_BODY ? proxy_w(p->proxies + p->att_body[a], at, n) : 0.0f;
 }
 
 static void end_push(const phase* f, int32_t a, v3 at, v3 imp)
 {
     ymir_particles* p = f->p;
-    if (p->att_kind[a] == YMIR_ATTACH_PARTICLE_BODY)
+    if (p->att_kind[a] == YMIR_ATTACH_BODY)
     {
         proxy_push(f, p->proxies + p->att_body[a], at, imp);
     }
-    else if (p->att_kind[a] == YMIR_ATTACH_PARTICLE_PARTICLE)
-    {
-        int32_t q = p->att_body[a];
-        put(p->pp_x, p->pp_y, p->pp_z, q, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, q), vmul(imp, p->inv_mass[q])));
-    }
 }
 
-// Adds a force (N) the attachment `a` exerts on the chain to its sensor lane.
+// Adds a force (N) the attachment `a` exerts on its particles to its sensor lane.
 static void add_force(ymir_particles* p, int32_t a, v3 force)
 {
     p->att_force_x[a] += force.x;
     p->att_force_y[a] += force.y;
     p->att_force_z[a] += force.z;
-}
-
-// Books a structural position impulse (kg m) the chain delivers to its particle `i`: links, bends and tethers.
-// Every booking has an equal and opposite one, so the sum over the particles past a link is the load the link
-// carries (momentum balance), however the solver routed it.
-static void add_struct(ymir_particles* p, int32_t i, v3 imp)
-{
-    p->struct_x[i] += imp.x;
-    p->struct_y[i] += imp.y;
-    p->struct_z[i] += imp.z;
 }
 
 // ---- grid and particle-particle contact ----------------------------------------------------------------------
@@ -652,7 +916,7 @@ static float build_grid(ymir_particles* p)
     float rmax = 0.0f;
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (p->chain[i] >= 0)
+        if (p->particle_live[i])
         {
             rmax = vmax(rmax, p->radius[i]);
         }
@@ -662,7 +926,7 @@ static float build_grid(ymir_particles* p)
     memset(p->cell_start, 0, sizeof(int32_t) * (size_t)(buckets + 1));
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (p->chain[i] < 0)
+        if (!p->particle_live[i])
         {
             continue;
         }
@@ -678,7 +942,7 @@ static float build_grid(ymir_particles* p)
     }
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (p->chain[i] >= 0)
+        if (p->particle_live[i])
         {
             uint32_t c = cell_hash(p->cell_x[i], p->cell_y[i], p->cell_z[i], p->table_mask);
             p->sorted[p->cell_start[c] + p->cell_fill[c]++] = i;
@@ -687,62 +951,107 @@ static float build_grid(ymir_particles* p)
     return rmax;
 }
 
-// Particles of different chains, or of one chain more than two links apart, push each other apart. Gather
-// form: particle i reads its neighbours' predicted positions and writes only its own correction.
+
+// Do particles i and j collide by contact? Symmetric in i and j, which momentum conservation needs. Particles of
+// different groups always do; of one group only when both set SELF_COLLIDE, and not, when either sets
+// SELF_FILTER, if they touched in the rest pose.
+static int collides(const ymir_particles* p, int32_t i, int32_t j)
+{
+    uint32_t a = p->phase[i], b = p->phase[j];
+    if ((a & YMIR_PHASE_GROUP_MASK) != (b & YMIR_PHASE_GROUP_MASK))
+    {
+        return 1;
+    }
+    if (!(a & b & YMIR_PHASE_SELF_COLLIDE))
+    {
+        return 0;
+    }
+    if ((a | b) & YMIR_PHASE_SELF_FILTER)
+    {
+        v3 d = vsub((v3){p->rest_x[i], p->rest_y[i], p->rest_z[i]}, (v3){p->rest_x[j], p->rest_y[j], p->rest_z[j]});
+        float reach = 1.5f * (p->radius[i] + p->radius[j]);
+        if (vdot(d, d) < reach * reach)
+        {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// Overlapping pairs push each other apart, split by inverse mass. Gather form in two passes: the first counts each
+// particle's overlaps, the second has particle i read its neighbours' predicted positions and write only its own
+// correction, each pair weighted 1 / max(n_i, n_j) from both ends. The pair's two corrections then hold equal and
+// opposite momentum, so contact conserves it; a per-particle average would not.
 static void particle_contacts(ymir_particles* p)
 {
-    for (int32_t i = 0; i < p->particle_count; ++i)
+    for (int pass = 0; pass < 2; ++pass)
     {
-        p->dp_x[i] = p->dp_y[i] = p->dp_z[i] = 0.0f;
-        if (p->chain[i] < 0 || p->inv_mass[i] == 0.0f)
+        for (int32_t i = 0; i < p->particle_count; ++i)
         {
-            continue;
-        }
-        v3 xi = P(p, p->pp_x, p->pp_y, p->pp_z, i);
-        v3 sum = {0.0f, 0.0f, 0.0f};
-        int32_t contacts = 0;
-        for (int32_t da = -1; da <= 1; ++da)
-        {
-            for (int32_t db = -1; db <= 1; ++db)
+            if (pass == 1)
             {
-                for (int32_t dc = -1; dc <= 1; ++dc)
+                p->dp_x[i] = p->dp_y[i] = p->dp_z[i] = 0.0f;
+            }
+            else
+            {
+                p->contacts[i] = 0;
+            }
+            if (!p->particle_live[i] || (pass == 1 && p->inv_mass[i] == 0.0f))
+            {
+                continue;
+            }
+            v3 xi = P(p, p->pp_x, p->pp_y, p->pp_z, i);
+            v3 sum = {0.0f, 0.0f, 0.0f};
+            int32_t overlaps = 0;
+            for (int32_t da = -1; da <= 1; ++da)
+            {
+                for (int32_t db = -1; db <= 1; ++db)
                 {
-                    int32_t ca = p->cell_x[i] + da, cb = p->cell_y[i] + db, cc = p->cell_z[i] + dc;
-                    uint32_t bucket = cell_hash(ca, cb, cc, p->table_mask);
-                    for (int32_t q = p->cell_start[bucket]; q < p->cell_start[bucket + 1]; ++q)
+                    for (int32_t dc = -1; dc <= 1; ++dc)
                     {
-                        int32_t j = p->sorted[q];
-                        if (j == i || p->cell_x[j] != ca || p->cell_y[j] != cb || p->cell_z[j] != cc)
+                        int32_t ca = p->cell_x[i] + da, cb = p->cell_y[i] + db, cc = p->cell_z[i] + dc;
+                        uint32_t bucket = cell_hash(ca, cb, cc, p->table_mask);
+                        for (int32_t q = p->cell_start[bucket]; q < p->cell_start[bucket + 1]; ++q)
                         {
-                            continue; // another cell sharing the bucket
+                            int32_t j = p->sorted[q];
+                            if (j == i || p->cell_x[j] != ca || p->cell_y[j] != cb || p->cell_z[j] != cc || !collides(p, i, j))
+                            {
+                                continue; // itself, another cell sharing the bucket, or a pair that never collides
+                            }
+                            v3 d = vsub(xi, P(p, p->pp_x, p->pp_y, p->pp_z, j));
+                            float md = p->radius[i] + p->radius[j];
+                            float r2 = vdot(d, d);
+                            float wsum = p->inv_mass[i] + p->inv_mass[j];
+                            if (r2 >= md * md || r2 < 1e-12f || wsum == 0.0f)
+                            {
+                                continue;
+                            }
+                            if (pass == 0)
+                            {
+                                overlaps++;
+                                continue;
+                            }
+                            float rr = sqrtf(r2);
+                            int32_t most = p->contacts[i] > p->contacts[j] ? p->contacts[i] : p->contacts[j];
+                            float weight = 1.0f / (float)most;
+                            sum = vadd(sum, vmul(d, weight * (p->inv_mass[i] / wsum) * (md - rr) / rr));
                         }
-                        if (p->chain[j] == p->chain[i] && (j - i <= 2 && i - j <= 2))
-                        {
-                            continue;
-                        }
-                        v3 d = vsub(xi, P(p, p->pp_x, p->pp_y, p->pp_z, j));
-                        float md = p->radius[i] + p->radius[j];
-                        float r2 = vdot(d, d);
-                        float wsum = p->inv_mass[i] + p->inv_mass[j];
-                        if (r2 >= md * md || r2 < 1e-12f || wsum == 0.0f)
-                        {
-                            continue;
-                        }
-                        float rr = sqrtf(r2);
-                        sum = vadd(sum, vmul(d, (p->inv_mass[i] / wsum) * (md - rr) / rr));
-                        contacts++;
                     }
                 }
             }
-        }
-        if (contacts > 0)
-        {
-            put(p->dp_x, p->dp_y, p->dp_z, i, vmul(sum, 1.0f / (float)contacts)); // averaged: a Jacobi sum overshoots
+            if (pass == 0)
+            {
+                p->contacts[i] = overlaps;
+            }
+            else
+            {
+                put(p->dp_x, p->dp_y, p->dp_z, i, sum);
+            }
         }
     }
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (p->chain[i] >= 0)
+        if (p->particle_live[i])
         {
             p->pp_x[i] += p->dp_x[i];
             p->pp_y[i] += p->dp_y[i];
@@ -820,12 +1129,11 @@ static void body_contacts(phase* f)
     ymir_particles* p = f->p;
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        int32_t chain = p->chain[i];
-        if (chain < 0 || p->inv_mass[i] == 0.0f)
+        if (!p->particle_live[i] || p->inv_mass[i] == 0.0f)
         {
             continue;
         }
-        float mu = p->chain_friction[chain];
+        float mu = p->mat_friction[p->material[i]];
         float r = p->radius[i];
         float wi = p->inv_mass[i];
         for (int32_t k = 0; k < p->body_count; ++k)
@@ -877,7 +1185,22 @@ static void body_contacts(phase* f)
     }
 }
 
-// ---- attachments, chain constraints, tethers -----------------------------------------------------------------
+// ---- attachments, distances, bends, tethers ------------------------------------------------------------------
+
+// Books on edge `e` the load an impulse `imp` (kg m) delivered to the particle `far`, the side of the edge away
+// from `near`, puts on it: along the edge, positive when the edge is being stretched. Every impulse the
+// structure delivers has an equal and opposite one, so the sum past an edge is the load it carries however the
+// solver routed it.
+static void book(const phase* f, int32_t e, int32_t near_i, int32_t far_i, v3 imp)
+{
+    ymir_particles* p = f->p;
+    v3 d = vsub(P(p, p->pp_x, p->pp_y, p->pp_z, far_i), P(p, p->pp_x, p->pp_y, p->pp_z, near_i));
+    float len = vlen(d);
+    if (len > 1e-9f)
+    {
+        p->dist_acc[e] += -vdot(imp, d) / len * f->k;
+    }
+}
 
 // Pulls an attached particle onto the point it is attached to (rest length 0), by inverse mass.
 static void solve_attachments(phase* f)
@@ -910,110 +1233,103 @@ static void solve_attachments(phase* f)
     }
 }
 
-// One distance constraint between two particles; returns lambda (negative when it pulled them together).
-static float distance_constraint(ymir_particles* p, int32_t i, int32_t j, float rest, float alpha)
-{
-    float wi = p->inv_mass[i], wj = p->inv_mass[j];
-    v3 d = vsub(P(p, p->pp_x, p->pp_y, p->pp_z, j), P(p, p->pp_x, p->pp_y, p->pp_z, i));
-    float len = vlen(d);
-    if (len < 1e-9f || wi + wj + alpha == 0.0f)
-    {
-        return 0.0f;
-    }
-    v3 n = vmul(d, 1.0f / len);
-    float dl = -(len - rest) / (wi + wj + alpha);
-    put(p->pp_x, p->pp_y, p->pp_z, i, vsub(P(p, p->pp_x, p->pp_y, p->pp_z, i), vmul(n, wi * dl)));
-    put(p->pp_x, p->pp_y, p->pp_z, j, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, j), vmul(n, wj * dl)));
-    add_struct(p, i, vmul(n, -dl));
-    add_struct(p, j, vmul(n, dl));
-    return dl;
-}
-
-// Each chain in lane order, links in index order (Gauss-Seidel), stretch then bend. One iteration per substep:
-// the small step does the converging. Stretch lambda is the link's tension (positive when stretched).
-static void solve_chains(phase* f)
+// Each live distance in lane order (Gauss-Seidel), one iteration per substep: the small step does the converging.
+// Its lambda is its tension (positive when stretched).
+static void solve_distances(phase* f)
 {
     ymir_particles* p = f->p;
-    float hh = f->h * f->h;
-    for (int32_t c = 0; c < p->chain_count; ++c)
+    for (int32_t e = 0; e < p->distance_count; ++e)
     {
-        if (p->chain_kind[c] != YMIR_CHAIN_LIVE)
+        if (!p->dist_live[e])
         {
             continue;
         }
-        int32_t first = p->chain_first[c], last = first + p->chain_size[c];
-        for (int32_t i = first; i + 1 < last; ++i)
-        {
-            distance_constraint(p, i, i + 1, p->rest_link[i], p->chain_stretch[c] / hh);
-        }
-        for (int32_t i = first; i + 2 < last; ++i)
-        {
-            distance_constraint(p, i, i + 2, p->rest_bend[i], p->chain_bend[c] / hh);
-        }
-    }
-}
-
-static int tetherable(const ymir_particles* p, int32_t a)
-{
-    return p->att_kind[a] == YMIR_ATTACH_PARTICLE_BODY || p->att_kind[a] == YMIR_ATTACH_PARTICLE_STATIC;
-}
-
-// Long-range attachments: a unilateral distance bound at the chain's rest path length from each attachment point
-// to every particle of its chain, and between the attachment points of one chain. They bear load past the links,
-// so their structural impulses are booked on the particles they pull and the sensors read the load, not the path.
-static void solve_tethers(phase* f)
-{
-    ymir_particles* p = f->p;
-    for (int32_t a = 0; a < p->attachment_count; ++a)
-    {
-        if (!tetherable(p, a))
+        int32_t i = p->dist_a[e], j = p->dist_b[e];
+        float wi = p->inv_mass[i], wj = p->inv_mass[j], alpha = p->dist_compliance[e] / (f->h * f->h);
+        v3 d = vsub(P(p, p->pp_x, p->pp_y, p->pp_z, j), P(p, p->pp_x, p->pp_y, p->pp_z, i));
+        float len = vlen(d);
+        if (len < 1e-9f || wi + wj + alpha == 0.0f)
         {
             continue;
         }
-        int32_t i = p->att_particle[a], c = p->chain[i];
-        int32_t first = p->chain_first[c], last = first + p->chain_size[c];
-        for (int32_t j = first; j < last; ++j)
+        v3 n = vmul(d, 1.0f / len);
+        float dl = -(len - p->dist_rest[e]) / (wi + wj + alpha);
+        put(p->pp_x, p->pp_y, p->pp_z, i, vsub(P(p, p->pp_x, p->pp_y, p->pp_z, i), vmul(n, wi * dl)));
+        put(p->pp_x, p->pp_y, p->pp_z, j, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, j), vmul(n, wj * dl)));
+        p->dist_acc[e] += -dl * f->k;
+    }
+}
+
+// Each live bend in lane order, on the offset of the shared particle b from the centroid of a, b, c (Kelager
+// 2010): a soft pass (XPBD, compliance / h^2) toward the rest offset, then a hard unilateral pass at the offset the
+// maximum angle allows, free inside it and rigid at it. The three position impulses sum to zero; what crossed
+// each of the two distances is booked on it.
+static void solve_bends(phase* f)
+{
+    ymir_particles* p = f->p;
+    for (int32_t k = 0; k < p->bend_count; ++k)
+    {
+        if (!p->bend_live[k])
         {
-            if (j == i)
+            continue;
+        }
+        int32_t a = p->bend_a[k], b = p->bend_b[k], c = p->bend_c[k];
+        float wa = p->inv_mass[a], wb = p->inv_mass[b], wc = p->inv_mass[c];
+        v3 ja = {0.0f, 0.0f, 0.0f}, jc = {0.0f, 0.0f, 0.0f};
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            if ((pass == 0 && p->bend_compliance[k] < 0.0f) || (pass == 1 && p->bend_limit[k] < 0.0f))
             {
                 continue;
             }
-            float bound = fabsf(p->rest_pos[j] - p->rest_pos[i]);
-            v3 at = end_point(p, a);
-            v3 d = vsub(P(p, p->pp_x, p->pp_y, p->pp_z, j), at);
+            float target = pass == 0 ? p->bend_rest[k] : p->bend_limit[k];
+            v3 centroid = vmul(vadd(vadd(P(p, p->pp_x, p->pp_y, p->pp_z, a), P(p, p->pp_x, p->pp_y, p->pp_z, b)),
+                                    P(p, p->pp_x, p->pp_y, p->pp_z, c)), 1.0f / 3.0f);
+            v3 d = vsub(P(p, p->pp_x, p->pp_y, p->pp_z, b), centroid);
             float len = vlen(d);
-            if (len <= bound)
+            if (len < 1e-9f)
             {
                 continue;
             }
-            v3 n = vmul(d, 1.0f / len);
-            float den = p->inv_mass[j] + end_w(p, a, at, n);
+            float violation = len - target;
+            if (pass == 1 && violation <= 0.0f)
+            {
+                continue;
+            }
+            float alpha = pass == 0 ? p->bend_compliance[k] / (f->h * f->h) : 0.0f;
+            float den = (wa + 4.0f * wb + wc) / 9.0f + alpha;
             if (den == 0.0f)
             {
                 continue;
             }
-            float dl = -(len - bound) / den;
-            put(p->pp_x, p->pp_y, p->pp_z, j, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, j), vmul(n, p->inv_mass[j] * dl)));
-            end_push(f, a, at, vmul(n, -dl));
-            add_force(p, a, vmul(n, dl * f->k)); // the force on the chain, toward the attachment
-            add_struct(p, j, vmul(n, dl));        // the chain between i and j pulls j toward i
-            add_struct(p, i, vmul(n, -dl));       // and i toward j
+            v3 n = vmul(d, 1.0f / len);
+            float dl = -violation / den;
+            v3 ia = vmul(n, -dl / 3.0f), ib = vmul(n, 2.0f * dl / 3.0f), ic = vmul(n, -dl / 3.0f);
+            put(p->pp_x, p->pp_y, p->pp_z, a, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, a), vmul(ia, wa)));
+            put(p->pp_x, p->pp_y, p->pp_z, b, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, b), vmul(ib, wb)));
+            put(p->pp_x, p->pp_y, p->pp_z, c, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, c), vmul(ic, wc)));
+            ja = vadd(ja, ia);
+            jc = vadd(jc, ic);
         }
+        book(f, p->bend_e1[k], a, b, vmul(ja, -1.0f)); // what crossed e1 toward b and c
+        book(f, p->bend_e2[k], b, c, jc);
     }
-    for (int32_t a = 0; a < p->attachment_count; ++a)
+}
+
+// Long-range bounds derived from the graph, unilateral: a tether holds a particle within the rest path of an
+// attachment point, a pair tether holds two attachment points within the rest path between their particles. They
+// bear load past the distances, so each tether's impulse is routed leaves first up its path tree and booked on the
+// edges it crossed: the tension sensors read the load, not the path.
+static void solve_tethers(phase* f)
+{
+    ymir_particles* p = f->p;
+    for (int32_t t = 0; t < p->tether_count; ++t)
     {
-        if (!tetherable(p, a))
+        p->tacc_x[t] = p->tacc_y[t] = p->tacc_z[t] = 0.0f;
+        int32_t a = p->tether_att[t], b = p->tether_other[t];
+        float bound = p->tether_bound[t];
+        if (b >= 0)
         {
-            continue;
-        }
-        for (int32_t b = a + 1; b < p->attachment_count; ++b)
-        {
-            if (!tetherable(p, b) || p->chain[p->att_particle[a]] != p->chain[p->att_particle[b]] ||
-                p->att_particle[a] == p->att_particle[b])
-            {
-                continue;
-            }
-            float bound = fabsf(p->rest_pos[p->att_particle[a]] - p->rest_pos[p->att_particle[b]]);
             v3 pa = end_point(p, a), pb = end_point(p, b);
             v3 d = vsub(pa, pb);
             float len = vlen(d);
@@ -1030,10 +1346,44 @@ static void solve_tethers(phase* f)
             float dl = -(len - bound) / den;
             end_push(f, a, pa, vmul(n, dl));
             end_push(f, b, pb, vmul(n, -dl));
-            add_force(p, a, vmul(n, -dl * f->k)); // each point pulls the chain away from the other
+            add_force(p, a, vmul(n, -dl * f->k)); // each point pulls the particles away from the other
             add_force(p, b, vmul(n, dl * f->k));
-            add_struct(p, p->att_particle[a], vmul(n, dl)); // the chain between pulls each end toward the other
-            add_struct(p, p->att_particle[b], vmul(n, -dl));
+            put(p->tacc_x, p->tacc_y, p->tacc_z, t, vmul(n, -dl)); // delivered to b's particle, toward a
+            continue;
+        }
+        int32_t j = p->tether_particle[t];
+        v3 at = end_point(p, a);
+        v3 d = vsub(P(p, p->pp_x, p->pp_y, p->pp_z, j), at);
+        float len = vlen(d);
+        if (len <= bound)
+        {
+            continue;
+        }
+        v3 n = vmul(d, 1.0f / len);
+        float den = p->inv_mass[j] + end_w(p, a, at, n);
+        if (den == 0.0f)
+        {
+            continue;
+        }
+        float dl = -(len - bound) / den;
+        put(p->pp_x, p->pp_y, p->pp_z, j, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, j), vmul(n, p->inv_mass[j] * dl)));
+        end_push(f, a, at, vmul(n, -dl));
+        add_force(p, a, vmul(n, dl * f->k)); // the force on the particles, toward the attachment
+        put(p->tacc_x, p->tacc_y, p->tacc_z, t, vmul(n, dl));
+    }
+    for (int32_t t = p->tether_count - 1; t >= 0; --t)
+    {
+        v3 load = P(p, p->tacc_x, p->tacc_y, p->tacc_z, t);
+        int32_t e = p->tether_edge[t];
+        if (e >= 0)
+        {
+            int32_t j = p->tether_particle[t], other = p->dist_a[e] == j ? p->dist_b[e] : p->dist_a[e];
+            book(f, e, other, j, load);
+        }
+        if (p->tether_parent[t] >= 0)
+        {
+            int32_t q = p->tether_parent[t];
+            put(p->tacc_x, p->tacc_y, p->tacc_z, q, vadd(P(p, p->tacc_x, p->tacc_y, p->tacc_z, q), load));
         }
     }
 }
@@ -1042,7 +1392,7 @@ static void solve_tethers(phase* f)
 
 int32_t ymir_particles_begin(ymir_particles* p)
 {
-    if (p == NULL || p->live_chains == 0)
+    if (p == NULL || p->live_particles == 0)
     {
         return 0;
     }
@@ -1055,12 +1405,15 @@ int32_t ymir_particles_begin(ymir_particles* p)
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
         p->skip_body[i] = -1;
-        p->tension_acc[i] = 0.0f;
+    }
+    for (int32_t e = 0; e < p->distance_count; ++e)
+    {
+        p->dist_acc[e] = 0.0f;
     }
     for (int32_t a = 0; a < p->attachment_count; ++a)
     {
         p->att_force_x[a] = p->att_force_y[a] = p->att_force_z[a] = 0.0f;
-        if (p->att_kind[a] == YMIR_ATTACH_PARTICLE_BODY)
+        if (p->att_kind[a] == YMIR_ATTACH_BODY)
         {
             p->skip_body[p->att_particle[a]] = p->att_body[a];
         }
@@ -1074,7 +1427,7 @@ int32_t ymir_particles_begin(ymir_particles* p)
 // velocity and momentum stay one state: XPBD's velocity update, done by the rigid integrator.
 void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, float gz)
 {
-    if (p == NULL || p->live_chains == 0)
+    if (p == NULL || p->live_particles == 0)
     {
         return;
     }
@@ -1110,7 +1463,7 @@ void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, floa
     }
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (p->chain[i] < 0)
+        if (!p->particle_live[i])
         {
             continue;
         }
@@ -1122,37 +1475,17 @@ void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, floa
             x = vadd(x, vmul(v, h));
         }
         put(p->pp_x, p->pp_y, p->pp_z, i, x);
-        p->struct_x[i] = p->struct_y[i] = p->struct_z[i] = 0.0f;
     }
     build_grid(p);
     particle_contacts(p);
     solve_attachments(&f);
-    solve_chains(&f);
+    solve_distances(&f);
+    solve_bends(&f);
     solve_tethers(&f);
     body_contacts(&f);
-    // Link tension by momentum balance: what the structure delivered to the particles past the link, along it.
-    for (int32_t c = 0; c < p->chain_count; ++c)
-    {
-        if (p->chain_kind[c] != YMIR_CHAIN_LIVE)
-        {
-            continue;
-        }
-        int32_t first = p->chain_first[c], last = first + p->chain_size[c];
-        v3 past = {0.0f, 0.0f, 0.0f};
-        for (int32_t i = last - 2; i >= first; --i)
-        {
-            past = vadd(past, P(p, p->struct_x, p->struct_y, p->struct_z, i + 1));
-            v3 d = vsub(P(p, p->pp_x, p->pp_y, p->pp_z, i + 1), P(p, p->pp_x, p->pp_y, p->pp_z, i));
-            float len = vlen(d);
-            if (len > 1e-9f)
-            {
-                p->tension_acc[i] += -vdot(past, d) / len * f.k;
-            }
-        }
-    }
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (p->chain[i] < 0)
+        if (!p->particle_live[i])
         {
             continue;
         }
@@ -1176,21 +1509,14 @@ void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, floa
 
 void ymir_particles_end(ymir_particles* p, int32_t substeps)
 {
-    if (p == NULL || p->live_chains == 0)
+    if (p == NULL || p->live_particles == 0)
     {
         return;
     }
     float mean = 1.0f / (float)substeps;
-    for (int32_t i = 0; i < p->particle_count; ++i)
+    for (int32_t e = 0; e < p->distance_count; ++e)
     {
-        p->link_tension[i] = p->chain[i] >= 0 ? p->tension_acc[i] * mean : 0.0f;
-    }
-    for (int32_t c = 0; c < p->chain_count; ++c) // the last particle of a chain starts no link
-    {
-        if (p->chain_kind[c] == YMIR_CHAIN_LIVE)
-        {
-            p->link_tension[p->chain_first[c] + p->chain_size[c] - 1] = 0.0f;
-        }
+        p->dist_tension[e] = p->dist_live[e] ? p->dist_acc[e] * mean : 0.0f;
     }
     for (int32_t a = 0; a < p->attachment_count; ++a)
     {

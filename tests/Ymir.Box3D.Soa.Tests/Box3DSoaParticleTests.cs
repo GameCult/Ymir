@@ -1,13 +1,19 @@
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using Ymir.Box3D;
 
 namespace Ymir.Box3D.Soa.Tests;
 
-/// <summary>Particle chains and attachments: the contract of docs/soa-world.md, particle section.</summary>
+using Pos = (float X, float Y, float Z);
+
+/// <summary>The particle graph: the contract of docs/soa-world.md, particle section.</summary>
 public sealed class Box3DSoaParticleTests
 {
-    private const float Dt = 1f / 120f;
-    private const int Sub = 4;
+    internal const float Dt = 1f / 120f;
+    internal const int Sub = 4;
+    internal const float Spacing = 0.03f;
+    internal const float ParticleMass = 0.02f;
+    internal const float ParticleRadius = 0.0125f;
 
     private static ulong Fnv(ulong h, ReadOnlySpan<byte> bytes)
     {
@@ -59,106 +65,83 @@ public sealed class Box3DSoaParticleTests
 
     // ---- scenes ---------------------------------------------------------------------------------------------
 
-    private const float Spacing = 0.03f;
-    private const float ParticleMass = 0.02f;
-    private const float ParticleRadius = 0.0125f;
+    internal static Box3DSoaWorld World(
+        int bodies = 8, int particles = 256, int distances = 600, int bends = 600, int attachments = 8, int tethers = 600, int joints = 2,
+        float gravityX = 0f, float gravityY = -10f) =>
+        new(bodies, gravityX: gravityX, gravityY: gravityY, jointCapacity: joints,
+            particles: new Box3DSoaParticleCapacities(particles, distances, bends, attachments, tethers, 2));
 
-    private static Box3DSoaWorld World(int bodies = 8, int particles = 256, int chains = 8, int attachments = 8, int joints = 2) =>
-        new(bodies, gravityY: -10f, jointCapacity: joints, particleCapacity: particles, chainCapacity: chains, attachmentCapacity: attachments);
-
-    internal static (float X, float Y, float Z)[] Line((float X, float Y, float Z) from, (float X, float Y, float Z) step, int count)
-    {
-        var p = new (float, float, float)[count];
-        for (var i = 0; i < count; i++) p[i] = (from.X + step.X * i, from.Y + step.Y * i, from.Z + step.Z * i);
-        return p;
-    }
-
-    private static float Dist(Box3DSoaView v, int a, int b) =>
-        MathF.Sqrt(Sq(v.ParticleX[a] - v.ParticleX[b]) + Sq(v.ParticleY[a] - v.ParticleY[b]) + Sq(v.ParticleZ[a] - v.ParticleZ[b]));
-
-    private static float Sq(float x) => x * x;
-
-    /// <summary>Total link length of a chain over its rest length, minus 1.</summary>
-    private static float Stretch(Box3DSoaView v, Box3DSoaChainHandle chain, float restLength)
-    {
-        var first = v.ChainFirst[chain.Lane];
-        var last = first + v.ChainSize[chain.Lane];
-        var length = 0f;
-        for (var i = first; i + 1 < last; i++) length += Dist(v, i, i + 1);
-        return length / restLength - 1f;
-    }
-
-    private static void Run(Box3DSoaWorld world, int steps)
+    internal static void Run(Box3DSoaWorld world, int steps)
     {
         for (var i = 0; i < steps; i++) world.Step(Dt, Sub);
     }
 
-    private static float SphereDensity(float mass, float radius) => mass / (4f / 3f * MathF.PI * radius * radius * radius);
+    private static Pos[] Line(Pos from, Pos step, int count) => Graph.Line(from, step, count);
+    private static float Sq(float x) => x * x;
 
     // ---- behaviour ------------------------------------------------------------------------------------------
 
     [Fact]
-    public void Chain_hangs_near_rest_length()
+    public void Rope_hangs_near_rest_length()
     {
         using var world = World();
         var positions = Line((0f, 3f, 0f), (0f, -Spacing, 0f), 48);
-        var chain = world.CreateChain(1, positions, ParticleMass, ParticleRadius);
-        world.Attach(Box3DSoaAttachKind.Static, 0, point: positions[0]);
+        var rope = Graph.Rope(world, positions, ParticleMass, ParticleRadius);
+        world.Attach(Box3DSoaAttachKind.Static, rope.Particles[0], point: positions[0], tether: true);
         var view = world.View;
-        var rest = 47 * Spacing;
         var worst = 0f;
         for (var i = 0; i < 4 * 120; i++)
         {
             world.Step(Dt, Sub);
-            worst = MathF.Max(worst, MathF.Abs(Stretch(view, chain, rest)));
+            worst = MathF.Max(worst, MathF.Abs(Graph.Stretch(view, rope)));
         }
         Assert.True(worst < 0.01f, $"stretch peaked at {worst}");
-        Assert.Equal(3f - rest, view.ParticleY[47], 0.05f); // it hangs, not sags to the side or floats
+        Assert.Equal(3f - 47 * Spacing, view.ParticleY[47], 0.05f); // it hangs, not sags to the side or floats
         Assert.Equal(0f, view.ParticleX[47], 0.05f);
     }
 
     [Fact]
-    public void Chain_holds_a_70kg_body()
+    public void Rope_holds_a_70kg_body()
     {
         using var world = World();
         var positions = Line((0f, 5f, 0f), (0f, -Spacing, 0f), 48);
-        var chain = world.CreateChain(1, positions, ParticleMass, ParticleRadius);
-        world.Attach(Box3DSoaAttachKind.Static, 0, point: positions[0]);
+        var rope = Graph.Rope(world, positions, ParticleMass, ParticleRadius);
+        world.Attach(Box3DSoaAttachKind.Static, rope.Particles[0], point: positions[0], tether: true);
         const float radius = 0.15f, mass = 70f;
         var end = positions[47];
-        var sphere = world.AddSphere(10, (end.X, end.Y - radius, end.Z), radius, SphereDensity(mass, radius));
-        world.Attach(Box3DSoaAttachKind.Body, 47, sphere, (0f, radius, 0f));
+        var sphere = world.AddSphere(10, (end.X, end.Y - radius, end.Z), radius, Graph.Dens(mass, radius));
+        world.Attach(Box3DSoaAttachKind.Body, rope.Particles[47], sphere, (0f, radius, 0f), tether: true);
         var view = world.View;
-        var rest = 47 * Spacing;
         float worstStretch = 0f, worstSpeed = 0f, worstImpulse = 0f;
         for (var i = 0; i < 5 * 120; i++)
         {
             world.Step(Dt, Sub);
             if (i < 120) continue; // from 1 s to 5 s the body is still
-            worstStretch = MathF.Max(worstStretch, MathF.Abs(Stretch(view, chain, rest)));
+            worstStretch = MathF.Max(worstStretch, MathF.Abs(Graph.Stretch(view, rope)));
             worstSpeed = MathF.Max(worstSpeed, MathF.Sqrt(Sq(view.VelocityX[sphere]) + Sq(view.VelocityY[sphere]) + Sq(view.VelocityZ[sphere])));
             worstImpulse = MathF.Max(worstImpulse, MathF.Abs(view.ParticleImpulseY[sphere] - mass * 10f * Dt));
         }
         Assert.True(worstStretch < 0.001f, $"stretch peaked at {worstStretch}");
         Assert.True(worstSpeed < 0.001f, $"the body moves at {worstSpeed} m/s");
-        Assert.True(worstImpulse < 0.005f * mass * 10f * Dt, $"the impulse per tick strays {worstImpulse} N s from M g dt = {mass * 10f * Dt}"); // the body is held, so the chain gives exactly its weight
+        Assert.True(worstImpulse < 0.005f * mass * 10f * Dt, $"the impulse per tick strays {worstImpulse} N s from M g dt = {mass * 10f * Dt}");
         Assert.Equal(end.Y - radius, view.PositionY[sphere], 0.1f);
     }
 
     [Fact]
-    public void Chain_drags_a_resting_box()
+    public void Rope_drags_a_resting_box()
     {
         using var world = World();
         world.AddStaticBox(1, (0f, -0.5f, 0f), (20f, 0.5f, 20f), friction: 0.6f);
+        world.SetMaterial(0, 0.3f);
         const float half = 0.15f;
         var count = 29;
         var positions = Line((0f, ParticleRadius, 0f), (Spacing, 0f, 0f), count);
         var tip = positions[count - 1];
         var box = world.AddBox(2, (tip.X + half, half, 0f), (half, half, half), 5f / (8f * half * half * half), friction: 0.6f);
         var anchor = world.AddAnchor(3, positions[0]);
-        world.CreateChain(1, positions, ParticleMass, ParticleRadius, friction: 0.3f);
-        world.Attach(Box3DSoaAttachKind.Body, 0, anchor);
-        world.Attach(Box3DSoaAttachKind.Body, count - 1, box, (-half, ParticleRadius - half, 0f));
+        var rope = Graph.Rope(world, positions, ParticleMass, ParticleRadius);
+        world.Attach(Box3DSoaAttachKind.Body, rope.Particles[0], anchor, tether: true);
+        world.Attach(Box3DSoaAttachKind.Body, rope.Particles[count - 1], box, (-half, ParticleRadius - half, 0f), tether: true);
         var view = world.View;
         var startX = view.PositionX[box];
         var peak = 0f;
@@ -177,7 +160,7 @@ public sealed class Box3DSoaParticleTests
     {
         var px = v.ParticleX[i] - v.PositionX[b]; var py = v.ParticleY[i] - v.PositionY[b]; var pz = v.ParticleZ[i] - v.PositionZ[b];
         float qx = v.RotationX[b], qy = v.RotationY[b], qz = v.RotationZ[b], qw = v.RotationW[b];
-        (float X, float Y, float Z) Rot(float x, float y, float z, float s) // rotate by q (s = 1) or its inverse (s = -1)
+        Pos Rot(float x, float y, float z, float s) // rotate by q (s = 1) or its inverse (s = -1)
         {
             var ux = qx * s; var uy = qy * s; var uz = qz * s;
             var tx = 2f * (uy * z - uz * y); var ty = 2f * (uz * x - ux * z); var tz = 2f * (ux * y - uy * x);
@@ -211,9 +194,9 @@ public sealed class Box3DSoaParticleTests
     {
         using var world = World();
         world.AddStaticBox(1, (0f, -0.5f, 0f), (20f, 0.5f, 20f), friction: 0.6f);
-        var positions = Line((0f, ParticleRadius, 0f), (Spacing, 0f, 0f), 12);
-        world.CreateChain(1, positions, ParticleMass, ParticleRadius, friction: 0.3f);
-        // The body starts half a particle radius into the chain's end and, if it moves, is pushed on into it.
+        world.SetMaterial(0, 0.3f);
+        Graph.Rope(world, Line((0f, ParticleRadius, 0f), (Spacing, 0f, 0f), 12), ParticleMass, ParticleRadius);
+        // The body starts half a particle radius into the rope's end and, if it moves, is pushed on into it.
         var x0 = -0.05f - 0.5f * ParticleRadius;
         var body = kind switch
         {
@@ -226,122 +209,383 @@ public sealed class Box3DSoaParticleTests
         var worst = 0f;
         for (var step = 0; step < 120; step++)
         {
-            if (kind != Box3DSoaKind.StaticBox) view.ForceX[body] = 6f; // pushes into the chain
+            if (kind != Box3DSoaKind.StaticBox) view.ForceX[body] = 6f; // pushes into the rope
             world.Step(Dt, Sub);
             if (step >= 60)
                 for (var i = 0; i < 12; i++) worst = MathF.Max(worst, Penetration(view, body, i));
         }
         Assert.True(worst < 0.1f * ParticleRadius, $"{kind}: a particle sits {worst / ParticleRadius:P0} of its radius inside the body");
-        Assert.True(view.ParticleX[0] > positions[0].X + 0.001f, $"{kind}: the chain end was pushed on"); // the contact acted, it was not merely clear
+        Assert.True(view.ParticleX[0] > 0.001f, $"{kind}: the rope end was pushed on");
     }
 
     [Fact]
-    public void Overload_never_splits()
+    public void Sheet_and_rope_are_one_code_path()
+    {
+        // A 16 x 16 sheet hung by two corners, made by a test-local builder out of the same distances and bends a rope uses.
+        using var world = World(particles: 256, distances: 512, bends: 512, tethers: 1024);
+        const float sp = 0.04f;
+        var sheet = Graph.Sheet(world, (0f, 2f, 0f), (sp, 0f, 0f), (0f, -sp, 0f), 16, 16, ParticleMass, 0.02f, bend: 1e-4f);
+        world.Attach(Box3DSoaAttachKind.Static, sheet.Particles[0], point: (0f, 2f, 0f), tether: true);
+        world.Attach(Box3DSoaAttachKind.Static, sheet.Particles[15], point: (15 * sp, 2f, 0f), tether: true);
+        var view = world.View;
+        Run(world, 5 * 120);
+        double fy = 0;
+        for (var a = 0; a < 2; a++) fy += view.AttachmentForceY[a];
+        var weight = 256 * ParticleMass * 10.0;
+        Assert.True(Math.Abs(fy - weight) < 0.01 * weight, $"the corners carry {fy} N of {weight} N");
+        var maxStretch = 0f;
+        foreach (var e in sheet.Edges) maxStretch = MathF.Max(maxStretch, MathF.Abs(Graph.Dist(view, view.DistanceA[e.Lane], view.DistanceB[e.Lane]) / view.DistanceRest[e.Lane] - 1f));
+        Assert.True(maxStretch < 0.05f, $"an edge stretched by {maxStretch}");
+    }
+
+    [Theory]
+    [InlineData(1f)]
+    [InlineData(5f)]
+    [InlineData(20f)]
+    [InlineData(70f)]
+    public void Edge_tension_reads_the_load(float mass)
+    {
+        using var world = World();
+        var (_, top, bottom, rope) = Box3DSoaCouplingTests.Hung(world, mass);
+        var view = world.View;
+        Run(world, 240);
+        double t0 = 0, t10 = 0, t46 = 0, topForce = 0, bodyForce = 0;
+        for (var i = 0; i < 60; i++)
+        {
+            world.Step(Dt, Sub);
+            t0 += view.DistanceTension[rope.Edges[0].Lane]; t10 += view.DistanceTension[rope.Edges[10].Lane]; t46 += view.DistanceTension[rope.Edges[46].Lane];
+            topForce += view.AttachmentForceY[top.Lane]; bodyForce += view.AttachmentForceY[bottom.Lane];
+        }
+        t0 /= 60; t10 /= 60; t46 /= 60; topForce /= 60; bodyForce /= 60;
+        double Below(int edge) => (mass + (47 - edge) * ParticleMass) * 10.0;
+        Assert.True(Math.Abs(t0 - Below(0)) < 0.01 * Below(0), $"edge 0 reads {t0} N, load {Below(0)} N");
+        Assert.True(Math.Abs(t10 - Below(10)) < 0.01 * Below(10), $"edge 10 reads {t10} N, load {Below(10)} N");
+        Assert.True(Math.Abs(t46 - Below(46)) < 0.01 * Below(46), $"edge 46 reads {t46} N, load {Below(46)} N");
+        Assert.True(Math.Abs(bodyForce + mass * 10.0) < 0.005 * mass * 10.0, $"the body's pull reads {bodyForce} N, weight {mass * 10.0} N");
+        var all = (mass + 48 * ParticleMass) * 10.0;
+        Assert.True(Math.Abs(topForce - all) < 0.01 * all, $"the static point's support reads {topForce} N, load {all} N");
+    }
+
+    [Fact]
+    public void Cut_removes_bends_and_rederives_tethers()
+    {
+        using var world = World();
+        var positions = Line((0f, 4f, 0f), (0f, -Spacing, 0f), 40);
+        var rope = Graph.Rope(world, positions, ParticleMass, ParticleRadius);
+        world.Attach(Box3DSoaAttachKind.Static, rope.Particles[0], point: positions[0], tether: true);
+        var view = world.View;
+        Assert.Equal(39, view.TetherCount);
+        Assert.True(view.ParticleComponent[..40].ToArray().All(c => c == 0));
+        Run(world, 60);
+        world.Remove(rope.Edges[19]);
+        Assert.Equal(19, world.View.TetherCount);
+        Assert.Equal(0u, view.DistanceLive[19]);
+        Assert.Equal(0u, view.BendLive[18]); // the two bends over edge 19 died with it
+        Assert.Equal(0u, view.BendLive[19]);
+        Assert.Equal(1u, view.BendLive[17]);
+        Assert.Equal(0, view.ParticleComponent[19]);
+        Assert.Equal(20, view.ParticleComponent[20]); // the tail is its own component, named by its lowest lane
+        Assert.Equal(20, view.ParticleComponent[39]);
+        Run(world, 120);
+        Assert.True(view.ParticleY[19] > 4f - 19 * Spacing - 0.1f, "the head holds");
+        Assert.True(view.ParticleY[39] < 4f - 39 * Spacing - 2f, "the tail falls");
+        double top = 0;
+        for (var i = 0; i < 30; i++) { world.Step(Dt, Sub); top += view.DistanceTension[rope.Edges[0].Lane]; }
+        top /= 30;
+        var load = 19 * ParticleMass * 10.0;
+        Assert.True(Math.Abs(top - load) < 0.01 * load, $"the top edge reads {top} N, the load below it is {load} N");
+    }
+
+    [Fact]
+    public void Overload_never_removes_a_constraint()
     {
         using var world = World();
         var positions = Line((0f, 5f, 0f), (0f, -Spacing, 0f), 48);
-        var chain = world.CreateChain(1, positions, ParticleMass, ParticleRadius, materialId: 7);
-        world.Attach(Box3DSoaAttachKind.Static, 0, point: positions[0]);
+        var rope = Graph.Rope(world, positions, ParticleMass, ParticleRadius);
+        world.Attach(Box3DSoaAttachKind.Static, rope.Particles[0], point: positions[0], tether: true);
         const float radius = 0.2f;
         var end = positions[47];
-        var sphere = world.AddSphere(10, (end.X, end.Y - radius, end.Z), radius, SphereDensity(300f, radius));
-        world.Attach(Box3DSoaAttachKind.Body, 47, sphere, (0f, radius, 0f));
+        var sphere = world.AddSphere(10, (end.X, end.Y - radius, end.Z), radius, Graph.Dens(300f, radius));
+        world.Attach(Box3DSoaAttachKind.Body, rope.Particles[47], sphere, (0f, radius, 0f), tether: true);
         var view = world.View;
         Run(world, 3 * 120);
         var tension = 0f;
-        for (var i = 0; i < 47; i++) tension = MathF.Max(tension, view.ParticleLinkTension[i]);
+        foreach (var e in rope.Edges) tension = MathF.Max(tension, view.DistanceTension[e.Lane]);
         Assert.True(tension > 1000f, $"the load is read: {tension} N"); // 300 kg: far past any strength a material would give it
-        Assert.Equal(1, view.ChainCount);
-        Assert.Equal((uint)Box3DSoaChainKind.Live, view.ChainKind[chain.Lane]);
-        Assert.Equal(48, view.ChainSize[chain.Lane]);
-        for (var i = 0; i < 48; i++) Assert.Equal(chain.Lane, view.ParticleChain[i]);
-        Assert.Equal(1, world.SplitChain(chain, 20, 2).Lane); // only the command splits it
+        for (var i = 0; i < 47; i++) Assert.Equal(1u, view.DistanceLive[i]);
+        for (var i = 0; i < 46; i++) Assert.Equal(1u, view.BendLive[i]);
+        for (var i = 0; i < 48; i++) Assert.Equal(1u, view.ParticleLive[i]);
+        Assert.Equal(2, view.AttachmentCount);
+        world.Remove(rope.Edges[20]); // only the command cuts
+        Assert.Equal(0u, view.DistanceLive[20]);
     }
 
     [Fact]
-    public void Split_keeps_lanes()
+    public void Destroy_particles_removes_their_constraints()
     {
         using var world = World();
-        var positions = Line((0f, 5f, 0f), (0f, -Spacing, 0f), 10);
-        var chain = world.CreateChain(11, positions, ParticleMass, ParticleRadius, materialId: 5);
-        world.Attach(Box3DSoaAttachKind.Static, 0, point: positions[0]);
+        var positions = Line((0f, 5f, 0f), (0f, -Spacing, 0f), 48);
+        var rope = Graph.Rope(world, positions, ParticleMass, ParticleRadius);
+        world.Attach(Box3DSoaAttachKind.Static, rope.Particles[0], point: positions[0], tether: true);
+        const float radius = 0.15f, mass = 70f;
+        var end = positions[47];
+        var sphere = world.AddSphere(10, (end.X, end.Y - radius, end.Z), radius, Graph.Dens(mass, radius));
+        world.Attach(Box3DSoaAttachKind.Body, rope.Particles[47], sphere, (0f, radius, 0f), tether: true);
         var view = world.View;
-        Run(world, 60);
-        var before = (view.ParticleY.ToArray(), view.ParticleX.ToArray());
-        var addressBefore = ParticleLaneAddress(view);
-        var tail = world.SplitChain(chain, 4, 99);
-        view = world.View;
-        Assert.Equal(addressBefore, ParticleLaneAddress(view)); // no particle changes address
-        Assert.True(before.Item1.AsSpan().SequenceEqual(view.ParticleY) && before.Item2.AsSpan().SequenceEqual(view.ParticleX), "no particle moved");
-        Assert.Equal(11ul, view.ChainStableId[chain.Lane]);
-        Assert.Equal(99ul, view.ChainStableId[tail.Lane]);
-        Assert.Equal(5, view.ChainSize[chain.Lane]);
-        Assert.Equal(5, view.ChainSize[tail.Lane]);
-        Assert.Equal(5, view.ChainFirst[tail.Lane]);
-        Assert.Equal(5ul, view.ChainMaterialId[tail.Lane]);
-        for (var i = 0; i < 10; i++) Assert.Equal(i < 5 ? chain.Lane : tail.Lane, view.ParticleChain[i]);
-        var tailY = view.ParticleY[9];
-        Run(world, 120);
-        Assert.True(tailY - view.ParticleY[9] > 1.5f, "the tail falls free"); // 0.5 g t^2 = 5 m, less the settling
-        Assert.True(view.ParticleY[4] > 4.5f, "the head still hangs");
+        Run(world, 2 * 120);
+        Assert.True(MathF.Abs(view.VelocityY[sphere]) < 0.001f, "held");
+        world.DestroyParticles([rope.Particles[24]]);
+        Assert.Equal(0u, view.ParticleLive[24]);
+        Assert.Equal(0u, view.DistanceLive[23]); // its two distances
+        Assert.Equal(0u, view.DistanceLive[24]);
+        foreach (var k in new[] { 22, 23, 24 }) Assert.Equal(0u, view.BendLive[k]); // the bends over them
+        Assert.Equal(1u, view.BendLive[21]);
+        Assert.Equal(23 + 22, world.View.TetherCount); // the head 1..23 bound by the static point, the tail 25..46 by the body at 47
+        Run(world, 1);
+        Assert.True(view.VelocityY[sphere] < -0.05f, $"the held body fell the step after: vy {view.VelocityY[sphere]}");
     }
 
-    private static unsafe nint ParticleLaneAddress(Box3DSoaView v)
+    [Theory]
+    [InlineData(32)]
+    public void Soft_bend_and_hard_limit_one_constraint(int substeps)
     {
-        fixed (float* p = v.ParticleX) return (nint)p;
+        // A 24-particle cantilever held at both of its first particles: the soft pass alone, the hard limit alone and both.
+        (float Drop, float Defl) Cantilever(float compliance, float limitDeg)
+        {
+            using var world = World(gravityY: -9.81f);
+            var positions = Line((0f, 1f, 0f), (0.04f, 0f, 0f), 24);
+            var rope = Graph.Rope(world, positions, ParticleMass, 0.02f, bend: compliance, maxAngle: limitDeg < 0 ? -1f : limitDeg * MathF.PI / 180f);
+            world.Attach(Box3DSoaAttachKind.Static, rope.Particles[0], point: positions[0]);
+            world.Attach(Box3DSoaAttachKind.Static, rope.Particles[1], point: positions[1]);
+            var view = world.View;
+            for (var i = 0; i < 300; i++) world.Step(1f / 60f, substeps);
+            float worst = 0f;
+            for (var k = 1; k + 1 < 24; k++)
+            {
+                (float X, float Y) a = (view.ParticleX[k] - view.ParticleX[k - 1], view.ParticleY[k] - view.ParticleY[k - 1]);
+                (float X, float Y) b = (view.ParticleX[k + 1] - view.ParticleX[k], view.ParticleY[k + 1] - view.ParticleY[k]);
+                var c = (a.X * b.X + a.Y * b.Y) / MathF.Sqrt((a.X * a.X + a.Y * a.Y) * (b.X * b.X + b.Y * b.Y));
+                worst = MathF.Max(worst, MathF.Acos(MathF.Min(1f, c)) * 180f / MathF.PI);
+            }
+            return (1f - view.ParticleY[23], worst);
+        }
+        var stiff = Cantilever(1e-7f, -1f);
+        var floppy = Cantilever(1e-4f, -1f);
+        var thirty = Cantilever(-1f, 30f);
+        var ten = Cantilever(-1f, 10f);
+        Assert.True(stiff.Drop < floppy.Drop, $"stiff {stiff.Drop} m, floppy {floppy.Drop} m");
+        Assert.True(thirty.Defl <= 31f, $"the 30 degree limit allowed {thirty.Defl} degrees");
+        Assert.True(ten.Defl <= 11.5f, $"the 10 degree limit allowed {ten.Defl} degrees");
+        Assert.True(ten.Drop < thirty.Drop, "the tighter limit droops less");
+        // A limit alone applies nothing inside its cone: a gently swinging hung rope is bit-identical with and without it.
+        float[] Swing(bool limited)
+        {
+            using var world = World(gravityY: -10f);
+            var step = (MathF.Sin(0.05f) * Spacing, -MathF.Cos(0.05f) * Spacing, 0f);
+            var positions = Line((0f, 3f, 0f), step, 24);
+            var rope = limited ? Graph.Rope(world, positions, ParticleMass, ParticleRadius, bend: -1f, maxAngle: 30f * MathF.PI / 180f)
+                               : Graph.Rope(world, positions, ParticleMass, ParticleRadius, bend: -1f);
+            world.Attach(Box3DSoaAttachKind.Static, rope.Particles[0], point: positions[0], tether: true);
+            var view = world.View;
+            Run(world, 60);
+            return [.. view.ParticleX, .. view.ParticleY];
+        }
+        Assert.True(Swing(true).AsSpan().SequenceEqual(Swing(false)), "a limit-only bend moved something inside its cone");
     }
 
     [Fact]
-    public void Removed_lanes_reused_after_a_step()
+    public void Contact_conserves_momentum()
     {
-        using var world = World(particles: 12, chains: 2, attachments: 2);
-        var positions = Line((0f, 5f, 0f), (0f, -Spacing, 0f), 10);
-        var a = world.CreateChain(1, positions, ParticleMass, ParticleRadius);
-        var attachment = world.Attach(Box3DSoaAttachKind.Static, 0, point: positions[0]);
-        world.Step(Dt, Sub);
-        world.DestroyChain(a);
+        // Zero gravity: a self-colliding rope thrown at 3 m/s into a self-colliding sheet and a loose blob; the sum of momentum
+        // may not drift and the kinetic energy may not rise (a per-particle average of contacts fails both).
+        using var world = World(particles: 512, distances: 512, bends: 512, tethers: 8, gravityY: 0f);
+        world.AddStaticBox(1, (0f, -100f, 0f), (1f, 1f, 1f));
+        var sheet = Graph.Sheet(world, (0f, 0f, 0f), (0.04f, 0f, 0f), (0f, 0.04f, 0f), 12, 12, ParticleMass, 0.02f, Box3DSoaPhase.Of(7, true, true));
+        var rope = Graph.Rope(world, Line((-0.6f, 0.2f, -0.3f), (0f, 0f, 0.04f), 31), 0.03f, 0.02f, Box3DSoaPhase.Of(8, true, true), bend: 1e-5f, velocity: (3f, 0f, 0f));
+        var blob = new List<Box3DSoaParticleDesc>();
+        for (var a = 0; a < 5; a++) for (var b = 0; b < 5; b++) for (var c = 0; c < 5; c++)
+            blob.Add(new Box3DSoaParticleDesc((0.15f + a * 0.04f, 0.15f + b * 0.04f, 0.4f + c * 0.04f), 0.008f, 0.02f, Box3DSoaPhase.Of(9), velocity: (0f, 0f, -4f)));
+        world.CreateParticles(blob.ToArray());
         var view = world.View;
-        Assert.Equal((uint)Box3DSoaChainKind.Removed, view.ChainKind[a.Lane]);
-        Assert.Equal((uint)Box3DSoaAttachKind.Removed, view.AttachmentKind[attachment.Lane]); // it would dangle
-        Assert.Equal(-1, view.ParticleChain[0]);
+        (double X, double Y, double Z, double E) Total()
+        {
+            double x = 0, y = 0, z = 0, e = 0;
+            for (var i = 0; i < view.ParticleCount; i++)
+            {
+                if (view.ParticleLive[i] == 0 || view.ParticleInvMass[i] == 0f) continue;
+                double m = 1.0 / view.ParticleInvMass[i];
+                x += m * view.ParticleVx[i]; y += m * view.ParticleVy[i]; z += m * view.ParticleVz[i];
+                e += 0.5 * m * (Sq(view.ParticleVx[i]) + Sq(view.ParticleVy[i]) + Sq(view.ParticleVz[i]));
+            }
+            return (x, y, z, e);
+        }
+        var p0 = Total();
+        var emax = p0.E;
+        for (var i = 0; i < 180; i++)
+        {
+            world.Step(1f / 60f, 8);
+            emax = Math.Max(emax, Total().E);
+        }
+        var p1 = Total();
+        var mag = Math.Sqrt(p0.X * p0.X + p0.Y * p0.Y + p0.Z * p0.Z);
+        var drift = Math.Sqrt(Sq((float)(p1.X - p0.X)) + Sq((float)(p1.Y - p0.Y)) + Sq((float)(p1.Z - p0.Z)));
+        Assert.True(drift / mag < 2e-4, $"momentum drifted by {drift / mag:P4}");
+        Assert.True(emax <= p0.E * (1 + 1e-5), $"kinetic energy rose from {p0.E} to {emax}");
+        _ = sheet; _ = rope;
+    }
+
+    [Fact]
+    public void Phase_rules()
+    {
+        using var world = World(gravityY: 0f);
+        world.AddStaticBox(1, (0f, -100f, 0f), (1f, 1f, 1f));
+        // Two pairs of particles flying at each other: different groups collide, one group without SELF_COLLIDE passes through.
+        var apart = new Box3DSoaParticleDesc[]
+        {
+            new((0f, 0f, 0f), 0.02f, 0.02f, Box3DSoaPhase.Of(1), velocity: (1f, 0f, 0f)),
+            new((0.2f, 0f, 0f), 0.02f, 0.02f, Box3DSoaPhase.Of(2), velocity: (-1f, 0f, 0f)),
+            new((0f, 1f, 0f), 0.02f, 0.02f, Box3DSoaPhase.Of(3), velocity: (1f, 0f, 0f)),
+            new((0.2f, 1f, 0f), 0.02f, 0.02f, Box3DSoaPhase.Of(3), velocity: (-1f, 0f, 0f)),
+        };
+        world.CreateParticles(apart);
+        var view = world.View;
+        Run(world, 60);
+        Assert.True(view.ParticleX[1] - view.ParticleX[0] > 0.039f && view.ParticleX[0] < view.ParticleX[1], "different groups collided");
+        Assert.True(view.ParticleX[2] > view.ParticleX[3] + 0.1f, "one group without SELF_COLLIDE passed through");
+        // SELF_FILTER: two particles that touch in the rest pose and are held by a stitch keep their distance; a folded rope's far parts do not overlap.
+        var phase = Box3DSoaPhase.Of(4, true, true);
+        var pair = new Box3DSoaParticleHandle[2];
+        world.CreateParticles([new((0f, 3f, 0f), 0.02f, 0.0125f, phase), new((0.01f, 3f, 0f), 0.02f, 0.0125f, phase)], pair);
+        world.CreateDistances([new Box3DSoaDistanceDesc(pair[0], pair[1])]);
+        var straight = Line((0f, 6f, 0f), (Spacing, 0f, 0f), 24);
+        var folded = new Pos[24];
+        for (var i = 0; i < 12; i++) folded[i] = (i * Spacing, 6f, 0f);
+        for (var i = 12; i < 24; i++) folded[i] = ((23 - i) * Spacing, 6f, 0.02f); // the second arm lies 2 cm over the first
+        var rope = Graph.Rope(world, folded, ParticleMass, ParticleRadius, phase, rest: straight, bend: -1f, maxAngle: -1f);
+        view = world.View;
+        Run(world, 120);
+        var held = Graph.Dist(view, pair[0], pair[1]);
+        Assert.True(MathF.Abs(held - 0.01f) < 0.0005f, $"a rest-touching pair was pushed apart to {held}");
+        var closest = float.MaxValue;
+        for (var i = 0; i < 24; i++)
+            for (var j = i + 3; j < 24; j++)
+                closest = MathF.Min(closest, Graph.Dist(view, rope.Particles[i], rope.Particles[j]));
+        Assert.True(closest > 0.9f * 2f * ParticleRadius, $"far parts of the folded rope overlap: {closest}");
+    }
+
+    [Fact]
+    public void Off_centre_attachment_spins_a_free_box()
+    {
+        // A particle tied to a point off a free box's centre and pulled by a world point: the box's angular velocity changes by
+        // I^-1 (r x J), J being the impulse lane. Dropping sub_angular or the proxy's rotation prediction breaks the 2%.
+        using var world = World(gravityY: 0f);
+        const float half = 0.2f, mass = 1f;
+        var box = world.AddBox(2, (0f, 0f, 0f), (half, half, half), mass / (8f * half * half * half));
+        var p = new Box3DSoaParticleHandle[1];
+        world.CreateParticles([new((half, 0f, 0f), 0.05f, 0.02f)], p);
+        world.Attach(Box3DSoaAttachKind.Body, p[0], box, (half, 0f, 0f));
+        world.Attach(Box3DSoaAttachKind.Static, p[0], point: (half, 0.05f, 0f), compliance: 1e-3f);
+        var view = world.View;
+        world.Step(Dt, Sub);
+        var j = (X: view.ParticleImpulseX[box], Y: view.ParticleImpulseY[box], Z: view.ParticleImpulseZ[box]);
+        var inertia = mass * (2f * half) * (2f * half) / 6f; // a cube: m s^2 / 6
+        var wz = (half * j.Y - 0f * j.X) / inertia; // r = (half, 0, 0): (r x J).z = half * Jy
+        Assert.True(MathF.Abs(j.Y) > 0.001f, $"the pull is read: {j.Y}");
+        Assert.True(MathF.Abs(view.AngularVelocityZ[box] - wz) < 0.02f * MathF.Abs(wz), $"omega_z {view.AngularVelocityZ[box]}, expected {wz}");
+        Assert.True(MathF.Abs(view.VelocityY[box] - j.Y / mass) < 0.02f * MathF.Abs(j.Y / mass), $"vy {view.VelocityY[box]}, expected {j.Y / mass}");
+    }
+
+    // ---- lanes ----------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void Lanes_reused_after_a_step_and_refusals_change_nothing()
+    {
+        using var world = World(particles: 12, distances: 12, bends: 12, attachments: 2, tethers: 20);
+        var positions = Line((0f, 5f, 0f), (0f, -Spacing, 0f), 10);
+        var a = Graph.Rope(world, positions, ParticleMass, ParticleRadius);
+        var attachment = world.Attach(Box3DSoaAttachKind.Static, a.Particles[0], point: positions[0], tether: true);
+        world.Step(Dt, Sub);
+        world.DestroyParticles(a.Particles);
+        var view = world.View;
+        Assert.Equal(0u, view.ParticleLive[0]);
         Assert.Equal(0f, view.ParticleY[0]);
-        Assert.Equal(2, world.FreeParticleSlots); // only the two slots beyond the destroyed range
-        Assert.Throws<InvalidOperationException>(() => world.CreateChain(2, positions, ParticleMass, ParticleRadius)); // the range is held this step
+        Assert.Equal(1u, view.ParticleGeneration[0]);
+        Assert.Equal(world.StepCount, view.ParticleRemovedAt[0]);
+        Assert.Equal((uint)Box3DSoaAttachKind.Removed, view.AttachmentKind[attachment.Lane]); // it would dangle
+        Assert.Equal(0, world.View.TetherCount);
+        Assert.Equal(2, world.FreeParticleSlots); // only the two lanes beyond the destroyed ones
+        Assert.Throws<InvalidOperationException>(() => Graph.Rope(world, positions, ParticleMass, ParticleRadius)); // the lanes are held this step
+        Assert.Equal(10, view.ParticleCount);
         world.Step(Dt, Sub);
         Assert.Equal(12, world.FreeParticleSlots);
-        var b = world.CreateChain(2, positions, ParticleMass, ParticleRadius);
-        Assert.Equal(a.Lane, b.Lane); // the lowest reusable lane, and its range
-        Assert.Equal(0, world.View.ChainFirst[b.Lane]);
-        Assert.NotEqual(a.Generation, b.Generation);
-        Assert.Throws<InvalidOperationException>(() => world.DestroyChain(a)); // stale
-        Assert.Throws<InvalidOperationException>(() => world.SplitChain(a, 3, 5));
-        Assert.Throws<InvalidOperationException>(() => world.Detach(attachment));
-        var c = world.Attach(Box3DSoaAttachKind.Static, 0, point: positions[0]);
-        world.Detach(c);
+        var b = Graph.Rope(world, positions, ParticleMass, ParticleRadius);
+        Assert.Equal(a.Particles.Select(h => h.Lane), b.Particles.Select(h => h.Lane)); // lowest first
+        Assert.Equal(a.Edges.Select(h => h.Lane), b.Edges.Select(h => h.Lane));
+        Assert.Equal(1u, b.Particles[0].Generation);
+        Assert.Throws<InvalidOperationException>(() => world.DestroyParticles([a.Particles[0]])); // stale
+        Assert.Throws<InvalidOperationException>(() => world.Remove(a.Edges[0]));
+        Assert.Throws<InvalidOperationException>(() => world.Remove(attachment));
+        var c = world.Attach(Box3DSoaAttachKind.Static, b.Particles[0], point: positions[0]);
+        world.Remove(c);
         world.Step(Dt, Sub);
-        var d = world.Attach(Box3DSoaAttachKind.Static, 0, point: positions[0]);
-        Assert.Equal(c.Lane, d.Lane);
-        Assert.Throws<InvalidOperationException>(() => world.Detach(c));
+        Assert.Equal(c.Lane, world.Attach(Box3DSoaAttachKind.Static, b.Particles[0], point: positions[0]).Lane);
+
+        // a derivation that does not fit is refused whole
+        using var small = World(particles: 12, distances: 12, bends: 12, attachments: 2, tethers: 5);
+        var ps = new Box3DSoaParticleHandle[10];
+        small.CreateParticles(Line((0f, 1f, 0f), (Spacing, 0f, 0f), 10).Select(q => new Box3DSoaParticleDesc(q, 0.02f, 0.0125f)).ToArray(), ps);
+        small.Attach(Box3DSoaAttachKind.Static, ps[0], point: (0f, 1f, 0f), tether: true);
+        var d = Enumerable.Range(0, 9).Select(i => new Box3DSoaDistanceDesc(ps[i], ps[i + 1])).ToArray();
+
+        Assert.Throws<InvalidOperationException>(() => small.CreateDistances(d)); // would need 9 tethers
+        Assert.Equal(0, small.View.DistanceCount);
+        Assert.Equal(0, small.View.TetherCount);
+        Assert.Equal(12, small.FreeDistanceSlots);
+        small.CreateDistances(d[..5]); // 5 tethers fit
+        Assert.Equal(5, small.View.TetherCount);
+        Assert.Throws<InvalidOperationException>(() => small.CreateDistances(d[5..6])); // the sixth would not
+        Assert.Equal(5, small.View.DistanceCount);
+        Assert.Equal(5, small.View.TetherCount);
+
+        // refusals
+        Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((float.NaN, 0f, 0f), 1f, 0.01f)]));
+        Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((0f, 0f, 0f), 1f, 0f)])); // no radius
+        Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((0f, 0f, 0f), 1f, 0.01f, 1u << 22)])); // an unknown phase bit
+        Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((0f, 0f, 0f), 1f, 0.01f, 0, 2)])); // no such material
+        Assert.Throws<InvalidOperationException>(() => small.CreateDistances([new Box3DSoaDistanceDesc(ps[0], ps[0])]));
+        Assert.Throws<InvalidOperationException>(() => small.Attach(Box3DSoaAttachKind.Body, ps[0], 5)); // no such body
+        Assert.Throws<InvalidOperationException>(() => small.Attach(Box3DSoaAttachKind.Static, new Box3DSoaParticleHandle(99, 0)));
+        Assert.Throws<InvalidOperationException>(() => small.Attach(Box3DSoaAttachKind.Static, ps[0], point: (float.PositiveInfinity, 0f, 0f)));
+        Assert.Throws<InvalidOperationException>(() => small.CreateBends([new Box3DSoaBendDesc(new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Distance, 0, 0), new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Distance, 3, 0))])); // share no particle
+        Assert.Equal(10, small.View.ParticleCount);
+        Assert.Equal(0, small.View.BendCount);
+        Assert.Equal(1, small.View.AttachmentCount);
+        using var plain = new Box3DSoaWorld(2); // no particle capacity: every command is refused
+        Assert.Throws<InvalidOperationException>(() => plain.CreateParticles([new((0f, 0f, 0f), 1f, 0.01f)]));
+        Assert.Throws<InvalidOperationException>(() => new Box3DSoaWorld(2, particles: new Box3DSoaParticleCapacities(-1, 0, 0, 0, 0, 0)));
     }
 
     // ---- determinism --------------------------------------------------------------------------------------
 
     private static Box3DSoaWorld PileScene(bool nudge = false)
     {
-        var world = World(bodies: 8, particles: 128, chains: 8, attachments: 8);
+        var world = World(bodies: 8, particles: 192, distances: 256, bends: 256, attachments: 8, tethers: 256);
         world.AddStaticBox(1, (0f, -0.5f, 0f), (20f, 0.5f, 20f), friction: 0.6f);
+        world.SetMaterial(0, 0.3f);
         var sphere = world.AddSphere(2, (0.2f, 0.35f, 0.1f), 0.15f, 800f);
-        var box = world.AddBox(3, (-0.3f, 0.2f, -0.1f), (0.2f, 0.1f, 0.2f), 300f);
+        world.AddBox(3, (-0.3f, 0.2f, -0.1f), (0.2f, 0.1f, 0.2f), 300f);
+        var ropes = new Made[4];
         for (var c = 0; c < 4; c++)
         {
             var from = (-0.5f + 0.1f * c, 0.5f + 0.06f * c, -0.3f + 0.2f * c);
             var step = c % 2 == 0 ? (Spacing, 0f, 0.012f * c) : (0.01f * c, 0f, Spacing);
             var line = Line(from, step, 24);
-            if (nudge && c == 2) line[7].Item2 = BitConverter.UInt32BitsToSingle(BitConverter.SingleToUInt32Bits(line[7].Item2) + 1);
-            world.CreateChain((ulong)(10 + c), line, ParticleMass, ParticleRadius, friction: 0.3f, materialId: (ulong)c);
+            if (nudge && c == 2) line[7].Y = BitConverter.UInt32BitsToSingle(BitConverter.SingleToUInt32Bits(line[7].Y) + 1);
+            ropes[c] = Graph.Rope(world, line, ParticleMass, ParticleRadius, Box3DSoaPhase.Of((uint)(c + 1), true, true));
         }
-        world.Attach(Box3DSoaAttachKind.Body, 24 * 3 + 23, sphere, (0f, 0.15f, 0f)); // a chain tied to a body on the pile
-        world.Attach(Box3DSoaAttachKind.Static, 0, point: (-0.5f, 0.5f, -0.3f));
+        Graph.Sheet(world, (0.1f, 0.9f, -0.2f), (0.03f, 0f, 0f), (0f, 0f, 0.03f), 8, 8, ParticleMass, ParticleRadius, Box3DSoaPhase.Of(9, true, true));
+        world.Attach(Box3DSoaAttachKind.Body, ropes[3].Particles[23], sphere, (0f, 0.15f, 0f), tether: true); // a rope tied to a body on the pile
+        world.Attach(Box3DSoaAttachKind.Static, ropes[0].Particles[0], point: (-0.5f, 0.5f, -0.3f), tether: true);
         return world;
     }
 
@@ -349,11 +593,13 @@ public sealed class Box3DSoaParticleTests
     {
         var h = 1469598103934665603ul;
         void F(ReadOnlySpan<float> lane) => h = Fnv(h, MemoryMarshal.AsBytes(lane));
-        F(v.ParticleX); F(v.ParticleY); F(v.ParticleZ); F(v.ParticleVx); F(v.ParticleVy); F(v.ParticleVz); F(v.ParticleLinkTension);
+        F(v.ParticleX); F(v.ParticleY); F(v.ParticleZ); F(v.ParticleVx); F(v.ParticleVy); F(v.ParticleVz); F(v.DistanceTension);
         F(v.AttachmentForceX); F(v.AttachmentForceY); F(v.AttachmentForceZ);
         F(v.PositionX); F(v.PositionY); F(v.PositionZ); F(v.RotationX); F(v.RotationY); F(v.RotationZ); F(v.RotationW);
         F(v.VelocityX); F(v.VelocityY); F(v.VelocityZ); F(v.AngularVelocityX); F(v.AngularVelocityY); F(v.AngularVelocityZ);
-        F(v.ParticleImpulseX); F(v.ParticleImpulseY); F(v.ParticleImpulseZ);
+        F(v.ParticleImpulseX); F(v.ParticleImpulseY); F(v.ParticleImpulseZ); F(v.TetherBound);
+        h = Fnv(h, MemoryMarshal.AsBytes(v.TetherParent));
+        h = Fnv(h, MemoryMarshal.AsBytes(v.ParticleComponent));
         return h;
     }
 
@@ -370,6 +616,9 @@ public sealed class Box3DSoaParticleTests
         return hashes;
     }
 
+    // Recorded on this commit's build (gcc 13.2, -ffp-contract=off): the pile of four ropes and a sheet on two bodies.
+    private static readonly ulong[] PileHashes = [12993313564863515222ul, 2307790533006845688ul, 13436656559607346955ul, 6468437088969606470ul, 10562521318003626344ul, 7711170181992570593ul];
+
     [Fact]
     public void Particle_world_is_byte_deterministic()
     {
@@ -378,13 +627,14 @@ public sealed class Box3DSoaParticleTests
         Assert.True(a.AsSpan().SequenceEqual(b), "two runs diverged: " + string.Join(",", a) + " vs " + string.Join(",", b));
         Assert.True(a.Distinct().Count() == 6, "the scene moves");
         Assert.False(a.AsSpan().SequenceEqual(Checkpoints(nudge: true)), "a one-ulp input difference must diverge");
+        Assert.True(PileHashes.AsSpan().SequenceEqual(a), string.Join(",", a.Select(g => g + "ul")));
     }
 
     [Fact]
     public async Task Particle_world_is_the_same_bytes_on_any_thread_under_load()
     {
-        // The solver is single-threaded by construction (no threads in this cut); what is provable is that nothing in it
-        // depends on which thread runs it or what else is running: eight worlds at once give the serial bytes.
+        // The solver is single-threaded by construction; what is provable is that nothing in it depends on which thread
+        // runs it or what else is running: eight worlds at once give the serial bytes.
         var serial = Checkpoints();
         var results = Enumerable.Range(0, 8).Select(_ => Task.Factory.StartNew(() => Checkpoints(), TaskCreationOptions.LongRunning)).ToArray();
         await Task.WhenAll(results);
@@ -392,56 +642,44 @@ public sealed class Box3DSoaParticleTests
     }
 
     [Fact]
-    public void Particle_step_does_not_allocate()
+    public void Particle_step_and_commands_do_not_allocate()
     {
         using var world = PileScene();
         var view = world.View;
         Run(world, 20);
+        var spare = new Box3DSoaParticleHandle[2];
+        var fresh = new[] { new Box3DSoaParticleDesc((3f, 3f, 3f), 0.02f, 0.0125f), new Box3DSoaParticleDesc((3f, 3.03f, 3f), 0.02f, 0.0125f) };
+        var edge = new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Distance, 10, view.DistanceGeneration[10]);
+        var victim = new[] { new Box3DSoaParticleHandle(100, view.ParticleGeneration[100]) };
         var sink = 0f;
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 100; i++)
         {
             world.Step(Dt, Sub);
-            sink += view.ParticleY[3] + view.ParticleLinkTension[1] + view.ParticleImpulseX[2] + view.AttachmentForceY[0];
+            sink += view.ParticleY[3] + view.DistanceTension[1] + view.ParticleImpulseX[2] + view.AttachmentForceY[0];
         }
+        world.Remove(edge); // a cut
+        world.DestroyParticles(victim); // a destroy
+        world.Step(Dt, Sub);
+        world.Step(Dt, Sub);
+        world.CreateParticles(fresh, spare); // a create
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         Assert.True(sink != 0f);
         Assert.Equal(0L, allocated);
-    }
-
-    [Fact]
-    public void Refusals_change_nothing()
-    {
-        using var world = World();
-        var good = Line((0f, 1f, 0f), (Spacing, 0f, 0f), 4);
-        world.CreateChain(1, good, ParticleMass, ParticleRadius);
-        Assert.Throws<InvalidOperationException>(() => world.CreateChain(1, good, ParticleMass, ParticleRadius)); // duplicate id
-        var nan = Line((0f, 1f, 0f), (Spacing, 0f, 0f), 4); nan[2].Item2 = float.NaN;
-        Assert.Throws<InvalidOperationException>(() => world.CreateChain(2, nan, ParticleMass, ParticleRadius));
-        Assert.Throws<InvalidOperationException>(() => world.CreateChain(3, good, ParticleMass, 0f)); // no radius
-        Assert.Throws<InvalidOperationException>(() => world.CreateChain(3, Line((0f, 1f, 0f), (0f, 0f, 0f), 3), ParticleMass, ParticleRadius)); // links of no length
-        Assert.Throws<InvalidOperationException>(() => world.Attach(Box3DSoaAttachKind.Body, 0, 5)); // no such body
-        Assert.Throws<InvalidOperationException>(() => world.Attach(Box3DSoaAttachKind.Static, 99));
-        Assert.Throws<InvalidOperationException>(() => world.Attach(Box3DSoaAttachKind.Static, 0, point: (float.PositiveInfinity, 0f, 0f)));
-        var view = world.View;
-        Assert.Equal(1, view.ChainCount);
-        Assert.Equal(0, view.AttachmentCount);
-        Assert.Equal(4, view.ParticleCount);
-        using var plain = new Box3DSoaWorld(2); // no particle capacity: every command is refused
-        Assert.Throws<InvalidOperationException>(() => plain.CreateChain(1, good, ParticleMass, ParticleRadius));
-        Assert.Throws<InvalidOperationException>(() => new Box3DSoaWorld(2, particleCapacity: -1));
     }
 }
 
 /// <summary>The structural promises of the particle module, read from its source.</summary>
 public sealed class Box3DSoaParticleSourceTests
 {
-    private static string Native()
+    private static string Root()
     {
         var dir = AppContext.BaseDirectory;
         while (dir != null && !File.Exists(Path.Combine(dir, "native", "Ymir.Box3D", "ymir_particles.c"))) dir = Path.GetDirectoryName(dir);
-        return Path.Combine(dir ?? throw new FileNotFoundException("native/Ymir.Box3D"), "native", "Ymir.Box3D");
+        return dir ?? throw new FileNotFoundException("native/Ymir.Box3D");
     }
+
+    private static string Native() => Path.Combine(Root(), "native", "Ymir.Box3D");
 
     /// <summary>The text of a function from its signature line to its closing brace at column 0.</summary>
     private static string Body(string source, string signature)
@@ -455,27 +693,46 @@ public sealed class Box3DSoaParticleSourceTests
         return source.Substring(start, end - start + 2);
     }
 
-    private static string Without(string source, string body) => source.Replace(body, "");
+    private static string StripComments(string s) => Regex.Replace(s, @"//[^\n]*|/\*.*?\*/", "", RegexOptions.Singleline);
 
-    [Fact]
-    public void The_particle_module_calls_no_box3d_and_nothing_else_it_must_not()
-    {
-        var c = File.ReadAllText(Path.Combine(Native(), "ymir_particles.c"));
-        var h = File.ReadAllText(Path.Combine(Native(), "ymir_particles.h"));
-        Assert.Empty(System.Text.RegularExpressions.Regex.Matches(c + h, @"b3[A-Z_]|box3d\.h"));
-        var outside = Without(Without(c, Body(c, "ymir_particles* ymir_particles_create(")), Body(c, "void ymir_particles_free("));
-        Assert.Empty(System.Text.RegularExpressions.Regex.Matches(outside, @"malloc|calloc|realloc|free\("));
-        Assert.Empty(System.Text.RegularExpressions.Regex.Matches(c, @"\bomp\b|#pragma|pthread|_Atomic|atomic_"));
-    }
+    private static int Count(string text, string pattern) => Regex.Matches(text, pattern).Count;
 
     private static int Calls(string name) =>
         Directory.GetFiles(Native(), "*.c").Where(f => !f.EndsWith("ymir_particles.c")).Concat(Directory.GetFiles(Native(), "*.h").Where(f => !f.EndsWith("ymir_particles.h")))
-            .Sum(f => System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(f), name + @"\(").Count);
-
-    private static int Count(string text, string pattern) => System.Text.RegularExpressions.Regex.Matches(text, pattern).Count;
+            .Sum(f => Count(File.ReadAllText(f), name + @"\("));
 
     [Fact]
-    public void The_particle_phase_runs_in_the_substep_callback_and_never_splits_or_destroys()
+    public void Particle_source_rules()
+    {
+        var c = File.ReadAllText(Path.Combine(Native(), "ymir_particles.c"));
+        var h = File.ReadAllText(Path.Combine(Native(), "ymir_particles.h"));
+        var code = StripComments(c + h);
+        Assert.Equal(0, Count(c + h, @"b3[A-Z_]|box3d\.h"));
+        var outside = c.Replace(Body(c, "ymir_particles* ymir_particles_create("), "").Replace(Body(c, "void ymir_particles_free("), "");
+        Assert.Equal(0, Count(outside, @"malloc|calloc|realloc|free\("));
+        Assert.Equal(0, Count(c, @"\bomp\b|#pragma|pthread|_Atomic|atomic_"));
+        // no object kind: a rope, a sheet, a cloth or a chain is what a caller builds, never a name in the solver or its binding
+        var bindings = string.Join("\n", Directory.GetFiles(Path.Combine(Root(), "src", "Ymir.Box3D"), "*.cs").Select(f => StripComments(File.ReadAllText(f))));
+        Assert.Equal(0, Count(code + bindings, @"(?<![A-Za-z])(rope|sheet|cloth|chain|Rope|Sheet|Cloth|Chain)(?![a-z])"));
+        // tether lanes and the component lane have one writer: the derivation
+        var outsideWriters = c.Replace(Body(c, "static void derive_from("), "").Replace(Body(c, "static int32_t rederive_topology("), "");
+        var rest = StripComments(outsideWriters);
+        Assert.Equal(0, Count(rest, @"->(component|tether_att|tether_particle|tether_parent|tether_edge|tether_bound)\[[^\]]*\]\s*=[^=]|->tether_count\s*=[^=]"));
+        Assert.Contains("rederive_topology(p)", Body(c, "int32_t ymir_particles_remove("));
+        foreach (var command in new[] { "create_particles", "destroy_particles", "create_distances", "create_bends", "attach", "remove" })
+            Assert.Contains("rederive_topology(p)", Body(c, $"int32_t ymir_particles_{command}("));
+        // the retired owners stay gone
+        var retired = string.Join("|", "create_" + "chain", "split_" + "chain", "destroy_" + "chain", "chain_" + "first", "chain_" + "size", "chain_stable_" + "id",
+            "Chain" + "Handle", "Create" + "Chain", "Split" + "Chain", "Destroy" + "Chain", "FreeChain" + "Slots", "link_" + "tension", "Link" + "Tension");
+        foreach (var dir in new[] { "native", "src", "tests", "docs" })
+            foreach (var f in Directory.GetFiles(Path.Combine(Root(), dir), "*.*", SearchOption.AllDirectories).Where(f => !f.Contains("obj") && !f.Contains("bin") && (f.EndsWith(".c") || f.EndsWith(".h") || f.EndsWith(".cs") || f.EndsWith(".md"))))
+                Assert.True(Count(File.ReadAllText(f), retired) == 0, f);
+        Assert.Equal(0, Count(c + h, @"PARTICLE_" + @"PARTICLE|find_range|mark_slots|stable_id_taken|rest_pos|add_struct"));
+        Assert.Equal(0, Count(c, @"1\.0f / \(float\)contacts"));
+    }
+
+    [Fact]
+    public void The_particle_phase_runs_in_the_substep_callback_and_never_removes()
     {
         var soa = File.ReadAllText(Path.Combine(Native(), "ymir_box3d_soa.c"));
         var c = File.ReadAllText(Path.Combine(Native(), "ymir_particles.c"));
@@ -489,17 +746,18 @@ public sealed class Box3DSoaParticleSourceTests
         Assert.Contains("ymir_particles_end(", step);
         Assert.Contains("ymir_particles_substep(", callback);
         Assert.Equal(1, Count(soa, @"b3World_SetSubStepCallback\("));
+        Assert.Contains("live_particles == 0", callback);
         // a body is touched only through the callback's two fork accessors: never pushed after the step, never teleported
         Assert.Equal(0, Count(step + callback, @"b3Body_ApplyLinearImpulse|b3Body_ApplyAngularImpulse|b3Body_SetTransform"));
         Assert.Equal(1, Count(soa, @"b3Body_GetSubStepState\("));
         Assert.Equal(1, Count(soa, @"b3Body_ApplySubStepImpulse\("));
         Assert.Contains("b3Body_GetSubStepState(", callback);
         Assert.Contains("b3Body_ApplySubStepImpulse(", callback);
+        // no topology change inside the step
         var phases = new[] { Body(c, "int32_t ymir_particles_begin("), Body(c, "void ymir_particles_substep("), Body(c, "void ymir_particles_end(") };
         foreach (var text in phases.Append(step).Append(callback))
-            Assert.Equal(0, Count(text, @"split_chain|destroy_chain|detach"));
-        // the retired owners stay gone
-        Assert.Equal(0, Count(c, @"carry|hard_impulse|cancel|k_body|end_force_scale|tension_diff|add_link_load|ymir_particles_step"));
-        Assert.Equal(0, Count(soa, @"carry|ymir_particles_step|ymir_soa_apply_particle_impulses"));
+            Assert.Equal(0, Count(text, @"rederive_topology|kill_|ymir_particles_(create|destroy|remove|attach)"));
+        Assert.Equal(0, Count(c, @"carry|hard_impulse|cancel|k_body|end_force_scale|tension_diff|add_link_load|ymir_particles_step"));
+        Assert.Equal(0, Count(soa, @"carry|ymir_particles_step|ymir_soa_apply_particle_impulses"));
     }
 }
