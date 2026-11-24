@@ -371,9 +371,11 @@ public sealed class Box3DSoaCouplingTests
     // ---- cost ---------------------------------------------------------------------------------------------------
 
     [Theory]
-    [InlineData(1)]
-    [InlineData(40)]
-    public void Particle_cost_line(int bodies)
+    [InlineData(1, false)]
+    [InlineData(40, false)]
+    [InlineData(1, true)]
+    [InlineData(40, true)]
+    public void Particle_cost_line(int bodies, bool sheet)
     {
         using var world = new Box3DSoaWorld(64, gravityY: -G, particles: new Box3DSoaParticleCapacities(16 * 48 + 256, 16 * 47 + 480, 16 * 46 + 448, 16, 600, 1));
         world.AddStaticBox(1, (0f, -0.5f, 0f), (20f, 0.5f, 20f));
@@ -381,11 +383,11 @@ public sealed class Box3DSoaCouplingTests
             world.AddSphere((ulong)(100 + b), (0.2f * (b % 8), 0.3f + 0.25f * (b / 8), 0.5f), 0.08f, 800f);
         for (var c = 0; c < 16; c++) // a pile: ropes zig-zag so particles meet their neighbours' links
             Graph.Rope(world, Line((0f, 0.5f + 0.03f * c, 0.02f * (c % 4)), (Spacing, 0f, 0f), 48), ParticleMass, ParticleRadius, Box3DSoaPhase.Of((uint)(c + 1), true, true));
-        Graph.Sheet(world, (0.2f, 1.2f, 0f), (0.03f, 0f, 0f), (0f, 0f, 0.03f), 16, 16, ParticleMass, ParticleRadius, Box3DSoaPhase.Of(99, true, true));
+        if (sheet) Graph.Sheet(world, (0.2f, 1.2f, 0f), (0.03f, 0f, 0f), (0f, 0f, 0.03f), 16, 16, ParticleMass, ParticleRadius, Box3DSoaPhase.Of(99, true, true));
         Run(world, 60);
         var watch = System.Diagnostics.Stopwatch.StartNew();
         Run(world, 240);
-        var line = $"PARTICLE_COST 16 ropes x 48 and one 16 x 16 sheet, 4 substeps, {bodies} bod{(bodies == 1 ? "y" : "ies")}: {watch.Elapsed.TotalMilliseconds / 240:F3} ms per tick";
+        var line = $"PARTICLE_COST 16 ropes x 48{(sheet ? " and one 16 x 16 sheet" : "")}, 4 substeps, {bodies} bod{(bodies == 1 ? "y" : "ies")}: {watch.Elapsed.TotalMilliseconds / 240:F3} ms per tick";
         Console.Error.WriteLine(line);
         Reading(line);
         Assert.True(watch.Elapsed.TotalMilliseconds > 0);

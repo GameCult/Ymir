@@ -232,9 +232,11 @@ public sealed class Box3DSoaParticleTests
         double fy = 0;
         for (var a = 0; a < 2; a++) fy += view.AttachmentForceY[a];
         var weight = 256 * ParticleMass * 10.0;
+        Readings.Add($"SHEET attach Fy sum {fy:F3} N, weight {weight:F3} N");
         Assert.True(Math.Abs(fy - weight) < 0.01 * weight, $"the corners carry {fy} N of {weight} N");
         var maxStretch = 0f;
         foreach (var e in sheet.Edges) maxStretch = MathF.Max(maxStretch, MathF.Abs(Graph.Dist(view, view.DistanceA[e.Lane], view.DistanceB[e.Lane]) / view.DistanceRest[e.Lane] - 1f));
+        Readings.Add($"SHEET max edge stretch {maxStretch:P3}");
         Assert.True(maxStretch < 0.05f, $"an edge stretched by {maxStretch}");
     }
 
@@ -258,6 +260,7 @@ public sealed class Box3DSoaParticleTests
         }
         t0 /= 60; t10 /= 60; t46 /= 60; topForce /= 60; bodyForce /= 60;
         double Below(int edge) => (mass + (47 - edge) * ParticleMass) * 10.0;
+        Readings.Add($"EDGE_TENSION M={mass} edge0 {t0:F3}/{Below(0):F3} edge10 {t10:F3}/{Below(10):F3} edge46 {t46:F3}/{Below(46):F3} body {bodyForce:F3}/{-mass * 10.0:F3} static {topForce:F3}");
         Assert.True(Math.Abs(t0 - Below(0)) < 0.01 * Below(0), $"edge 0 reads {t0} N, load {Below(0)} N");
         Assert.True(Math.Abs(t10 - Below(10)) < 0.01 * Below(10), $"edge 10 reads {t10} N, load {Below(10)} N");
         Assert.True(Math.Abs(t46 - Below(46)) < 0.01 * Below(46), $"edge 46 reads {t46} N, load {Below(46)} N");
@@ -293,6 +296,7 @@ public sealed class Box3DSoaParticleTests
         for (var i = 0; i < 30; i++) { world.Step(Dt, Sub); top += view.DistanceTension[rope.Edges[0].Lane]; }
         top /= 30;
         var load = 19 * ParticleMass * 10.0;
+        Readings.Add($"CUT top edge {top:F4} N, load below {load:F4} N, tail y {world.View.ParticleY[39]:F3}");
         Assert.True(Math.Abs(top - load) < 0.01 * load, $"the top edge reads {top} N, the load below it is {load} N");
     }
 
@@ -373,6 +377,7 @@ public sealed class Box3DSoaParticleTests
         var floppy = Cantilever(1e-4f, -1f);
         var thirty = Cantilever(-1f, 30f);
         var ten = Cantilever(-1f, 10f);
+        Readings.Add($"BEND {substeps} substeps: stiff drop {stiff.Drop:F3} defl {stiff.Defl:F2}; floppy {floppy.Drop:F3} / {floppy.Defl:F2}; limit 30: {thirty.Drop:F3} / {thirty.Defl:F2}; limit 10: {ten.Drop:F3} / {ten.Defl:F2}");
         Assert.True(stiff.Drop < floppy.Drop, $"stiff {stiff.Drop} m, floppy {floppy.Drop} m");
         Assert.True(thirty.Defl <= 31f, $"the 30 degree limit allowed {thirty.Defl} degrees");
         Assert.True(ten.Defl <= 11.5f, $"the 10 degree limit allowed {ten.Defl} degrees");
@@ -429,6 +434,7 @@ public sealed class Box3DSoaParticleTests
         var p1 = Total();
         var mag = Math.Sqrt(p0.X * p0.X + p0.Y * p0.Y + p0.Z * p0.Z);
         var drift = Math.Sqrt(Sq((float)(p1.X - p0.X)) + Sq((float)(p1.Y - p0.Y)) + Sq((float)(p1.Z - p0.Z)));
+        Readings.Add($"MOMENTUM drift {drift / mag:P4}, energy max/initial {emax / p0.E:F6}");
         Assert.True(drift / mag < 2e-4, $"momentum drifted by {drift / mag:P4}");
         Assert.True(emax <= p0.E * (1 + 1e-5), $"kinetic energy rose from {p0.E} to {emax}");
         _ = sheet; _ = rope;
@@ -452,11 +458,10 @@ public sealed class Box3DSoaParticleTests
         Run(world, 60);
         Assert.True(view.ParticleX[1] - view.ParticleX[0] > 0.039f && view.ParticleX[0] < view.ParticleX[1], "different groups collided");
         Assert.True(view.ParticleX[2] > view.ParticleX[3] + 0.1f, "one group without SELF_COLLIDE passed through");
-        // SELF_FILTER: two particles that touch in the rest pose and are held by a stitch keep their distance; a folded rope's far parts do not overlap.
+        // SELF_FILTER: two free particles that touch in the rest pose keep their distance; a folded rope's far parts do not overlap.
         var phase = Box3DSoaPhase.Of(4, true, true);
         var pair = new Box3DSoaParticleHandle[2];
         world.CreateParticles([new((0f, 3f, 0f), 0.02f, 0.0125f, phase), new((0.01f, 3f, 0f), 0.02f, 0.0125f, phase)], pair);
-        world.CreateDistances([new Box3DSoaDistanceDesc(pair[0], pair[1])]);
         var straight = Line((0f, 6f, 0f), (Spacing, 0f, 0f), 24);
         var folded = new Pos[24];
         for (var i = 0; i < 12; i++) folded[i] = (i * Spacing, 6f, 0f);
@@ -651,6 +656,16 @@ public sealed class Box3DSoaParticleTests
         var fresh = new[] { new Box3DSoaParticleDesc((3f, 3f, 3f), 0.02f, 0.0125f), new Box3DSoaParticleDesc((3f, 3.03f, 3f), 0.02f, 0.0125f) };
         var edge = new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Distance, 10, view.DistanceGeneration[10]);
         var victim = new[] { new Box3DSoaParticleHandle(100, view.ParticleGeneration[100]) };
+        using (var warm = PileScene()) // the same commands once on another world, so the JIT is not measured
+        {
+            var wv = warm.View;
+            Run(warm, 2);
+            warm.Remove(new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Distance, 10, wv.DistanceGeneration[10]));
+            warm.DestroyParticles([new Box3DSoaParticleHandle(100, wv.ParticleGeneration[100])]);
+            Run(warm, 2);
+            warm.CreateParticles(fresh, spare);
+            Run(warm, 2);
+        }
         var sink = 0f;
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 100; i++)

@@ -91,3 +91,13 @@ internal static class Graph
 
     public static float Dens(float mass, float radius) => mass / (4f / 3f * MathF.PI * radius * radius * radius);
 }
+
+internal static class Readings
+{
+    /// <summary>Appends a line to the file named by YMIR_READINGS when that variable is set (the numbers the tests judge).</summary>
+    public static void Add(string line)
+    {
+        var path = Environment.GetEnvironmentVariable("YMIR_READINGS");
+        if (!string.IsNullOrEmpty(path)) File.AppendAllText(path, line + "\n");
+    }
+}
