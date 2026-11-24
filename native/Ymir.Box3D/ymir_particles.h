@@ -32,13 +32,15 @@ enum
     YMIR_PARTICLES_OUT_OF_MEMORY = 4
 };
 
-// Phase word: bits 0-19 are the group; the two flags below are the only other bits.
+// Phase word: bits 0-19 are the group; the three flags below are the only other bits.
 enum
 {
     YMIR_PHASE_GROUP_MASK = 0xFFFFFu,
     YMIR_PHASE_SELF_COLLIDE = 1u << 20, // particles of one group collide (both must set it)
     YMIR_PHASE_SELF_FILTER = 1u << 21,  // ... except pairs closer than 1.5 (ri + rj) in the rest pose (either sets it)
-    YMIR_PHASE_VALID = YMIR_PHASE_GROUP_MASK | YMIR_PHASE_SELF_COLLIDE | YMIR_PHASE_SELF_FILTER
+    YMIR_PHASE_FLUID = 1u << 22,        // a fluid particle: number density, not contact, with other fluid; contact with solids. Group and
+                                        // the SELF_* flags are ignored between two fluid particles (all fluid shares one density field)
+    YMIR_PHASE_VALID = YMIR_PHASE_GROUP_MASK | YMIR_PHASE_SELF_COLLIDE | YMIR_PHASE_SELF_FILTER | YMIR_PHASE_FLUID
 };
 
 // Lane sets a command names (a type for remove, a set for free_slots).
@@ -158,6 +160,7 @@ typedef struct ymir_particles
     int32_t tether_count;                                                 // derived: the live tethers
     int32_t body_count;                                                   // bodies filled in `proxies` this step
     int32_t live_particles;
+    int32_t live_fluid; // derived: the live particles with the FLUID phase bit; the create and destroy commands are its only writers
     ymir_particle_proxy* proxies;
 
     // particle lanes; a free lane reads live 0 and every other lane 0 except generation and removed_at

@@ -446,8 +446,25 @@ static int has_pair(const ymir_particles* p, int32_t a, const int32_t* label)
 // The only writer of the tether lanes and the component lane. Called at the end of every topology command. The
 // tether count is known from the component sizes before anything is written: a derivation that would not fit is
 // refused with every lane as it was.
-static int32_t rederive_topology(ymir_particles* p)
+// ISOLATED is for a command that changed no distance and no attachment, only which lanes are live: the graph, so every
+// tether and every other lane's component, is as it was. It writes the component of the `n` lanes in `lanes` (each
+// just created, which is its own component, or just destroyed, which reads 0) and returns.
+enum
 {
+    TOPO_FULL = 0,
+    TOPO_ISOLATED = 1
+};
+
+static int32_t rederive_topology(ymir_particles* p, int mode, const int32_t* lanes, int32_t n)
+{
+    if (mode == TOPO_ISOLATED)
+    {
+        for (int32_t k = 0; k < n; ++k)
+        {
+            p->component[lanes[k]] = p->particle_live[lanes[k]] ? lanes[k] : 0;
+        }
+        return YMIR_PARTICLES_OK;
+    }
     int32_t np = p->particle_count;
     memset(p->adj_start, 0, sizeof(int32_t) * ((size_t)np + 1));
     for (int32_t e = 0; e < p->distance_count; ++e)
@@ -722,12 +739,14 @@ int32_t ymir_particles_create_particles(ymir_particles* p, int32_t n, const ymir
         p->material[i] = d[k].material;
         p->particle_live[i] = 1;
         p->live_particles++;
+        p->live_fluid += (d[k].phase & YMIR_PHASE_FLUID) != 0;
+        p->queue[k] = i;
         if (out != NULL)
         {
             out[k] = (ymir_handle){i, p->particle_generation[i]};
         }
     }
-    return rederive_topology(p);
+    return rederive_topology(p, TOPO_ISOLATED, p->queue, n); // a new particle holds no constraint
 }
 
 int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymir_handle* h, uint64_t step_count)
@@ -743,6 +762,20 @@ int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymi
             return YMIR_PARTICLES_INVALID_ARGUMENT;
         }
     }
+    int held = 0; // whether a named particle holds a live distance or attachment: then the graph changes
+    for (int32_t k = 0; k < n && !held; ++k)
+    {
+        int32_t i = h[k].lane;
+        for (int32_t e = 0; e < p->distance_count && !held; ++e)
+        {
+            held = p->dist_live[e] && (p->dist_a[e] == i || p->dist_b[e] == i);
+        }
+        for (int32_t a = 0; a < p->attachment_count && !held; ++a)
+        {
+            held = p->att_kind[a] != YMIR_ATTACH_REMOVED && p->att_particle[a] == i;
+        }
+    }
+    int32_t killed = 0;
     for (int32_t k = 0; k < n; ++k)
     {
         int32_t i = h[k].lane;
@@ -750,6 +783,8 @@ int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymi
         {
             continue; // named twice
         }
+        p->queue[killed++] = i;
+        p->live_fluid -= (p->phase[i] & YMIR_PHASE_FLUID) != 0;
         for (int32_t e = 0; e < p->distance_count; ++e)
         {
             if (p->dist_live[e] && (p->dist_a[e] == i || p->dist_b[e] == i))
@@ -774,7 +809,7 @@ int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymi
         p->particle_removed_at[i] = step_count;
         p->live_particles--;
     }
-    return rederive_topology(p);
+    return rederive_topology(p, held ? TOPO_FULL : TOPO_ISOLATED, p->queue, killed);
 }
 
 int32_t ymir_particles_create_distances(ymir_particles* p, int32_t n, const ymir_distance_desc* d, uint64_t step_count, ymir_handle* out)
@@ -786,7 +821,8 @@ int32_t ymir_particles_create_distances(ymir_particles* p, int32_t n, const ymir
     for (int32_t k = 0; k < n; ++k)
     {
         if (!particle_ok(p, d[k].a.lane, d[k].a.generation) || !particle_ok(p, d[k].b.lane, d[k].b.generation) ||
-            d[k].a.lane == d[k].b.lane || !isfinite(d[k].rest) || !isfinite(d[k].compliance) || d[k].compliance < 0.0f)
+            d[k].a.lane == d[k].b.lane || !isfinite(d[k].rest) || !isfinite(d[k].compliance) || d[k].compliance < 0.0f ||
+            ((p->phase[d[k].a.lane] | p->phase[d[k].b.lane]) & YMIR_PHASE_FLUID) != 0) // fluid holds no constraint
         {
             return YMIR_PARTICLES_INVALID_ARGUMENT;
         }
@@ -812,7 +848,7 @@ int32_t ymir_particles_create_distances(ymir_particles* p, int32_t n, const ymir
         p->dist_tension[e] = 0.0f;
         p->dist_live[e] = 1;
     }
-    int32_t status = rederive_topology(p);
+    int32_t status = rederive_topology(p, TOPO_FULL, NULL, 0);
     if (status != YMIR_PARTICLES_OK)
     {
         for (int32_t k = 0; k < n; ++k) // back out: the lanes read as they did before the command
@@ -891,14 +927,15 @@ int32_t ymir_particles_create_bends(ymir_particles* p, int32_t n, const ymir_ben
             out[k] = (ymir_handle){i, p->bend_generation[i]};
         }
     }
-    return rederive_topology(p);
+    return rederive_topology(p, TOPO_FULL, NULL, 0);
 }
 
 int32_t ymir_particles_attach(ymir_particles* p, const ymir_attachment_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out)
 {
     if (p == NULL || d == NULL || (d->kind != YMIR_ATTACH_BODY && d->kind != YMIR_ATTACH_STATIC) ||
         (d->flags & ~(uint32_t)YMIR_ATTACH_FLAG_TETHER) != 0 || !particle_ok(p, d->particle.lane, d->particle.generation) ||
-        !finite3(d->point) || !isfinite(d->compliance) || d->compliance < 0.0f)
+        !finite3(d->point) || !isfinite(d->compliance) || d->compliance < 0.0f ||
+        (p->phase[d->particle.lane] & YMIR_PHASE_FLUID) != 0) // fluid holds no constraint
     {
         return YMIR_PARTICLES_INVALID_ARGUMENT;
     }
@@ -922,7 +959,7 @@ int32_t ymir_particles_attach(ymir_particles* p, const ymir_attachment_desc* d, 
     p->att_point_z[a] = d->point[2];
     p->att_compliance[a] = d->compliance;
     p->att_force_x[a] = p->att_force_y[a] = p->att_force_z[a] = 0.0f;
-    int32_t status = rederive_topology(p);
+    int32_t status = rederive_topology(p, TOPO_FULL, NULL, 0);
     if (status != YMIR_PARTICLES_OK)
     {
         p->att_kind[a] = a < old_count ? YMIR_ATTACH_REMOVED : 0;
@@ -974,7 +1011,7 @@ int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const
             kill_attachment(p, lane, step_count);
         }
     }
-    return rederive_topology(p);
+    return rederive_topology(p, TOPO_FULL, NULL, 0);
 }
 
 int32_t ymir_particles_set_material(ymir_particles* p, int32_t index, const ymir_material_desc* d)

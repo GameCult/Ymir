@@ -868,7 +868,7 @@ public sealed class Box3DSoaParticleTests
         // refusals
         Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((float.NaN, 0f, 0f), 1f, 0.01f)]));
         Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((0f, 0f, 0f), 1f, 0f)])); // no radius
-        Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((0f, 0f, 0f), 1f, 0.01f, 1u << 22)])); // an unknown phase bit
+        Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((0f, 0f, 0f), 1f, 0.01f, 1u << 23)])); // an unknown phase bit
         Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((0f, 0f, 0f), 1f, 0.01f, 0, 2)])); // no such material
         Assert.Throws<InvalidOperationException>(() => small.CreateDistances([new Box3DSoaDistanceDesc(ps[0], ps[0])]));
         Assert.Throws<InvalidOperationException>(() => small.Attach(Box3DSoaAttachKind.Body, ps[0], 5)); // no such body
@@ -1079,14 +1079,18 @@ public sealed class Box3DSoaParticleSourceTests
         Assert.Equal(0, Count(c, @"\bomp\b|#pragma|pthread|_Atomic|atomic_"));
         // no object kind: a rope, a sheet, a cloth or a chain is what a caller builds, never a name in the solver or its binding
         var bindings = string.Join("\n", Directory.GetFiles(Path.Combine(Root(), "src", "Ymir.Box3D"), "*.cs").Select(f => StripComments(File.ReadAllText(f))));
-        Assert.Equal(0, Count(code + bindings, @"(?<![A-Za-z])(rope|sheet|cloth|chain|Rope|Sheet|Cloth|Chain)(?![a-z])"));
+        Assert.Equal(0, Count(code + bindings, @"(?<![A-Za-z])(rope|sheet|cloth|chain|blood|water|Rope|Sheet|Cloth|Chain|Blood|Water)(?![a-z])"));
         // tether lanes and the component lane have one writer: the derivation
         var outsideWriters = c.Replace(Body(c, "static int32_t rederive_topology("), "");
         var rest = StripComments(outsideWriters);
         Assert.Equal(0, Count(rest, @"->(component|tether_att|tether_particle|tether_parent|tether_edge|tether_bound)\[[^\]]*\]\s*=[^=]|->tether_count\s*=[^=]"));
-        Assert.Contains("rederive_topology(p)", Body(c, "int32_t ymir_particles_remove("));
+        // every call names a mode; only a command that changed no distance and no attachment may derive the isolated lanes
+        Assert.Equal(0, Count(c, @"rederive_topology\(p\)"));
         foreach (var command in new[] { "create_particles", "destroy_particles", "create_distances", "create_bends", "attach", "remove" })
-            Assert.Contains("rederive_topology(p)", Body(c, $"int32_t ymir_particles_{command}("));
+            Assert.Contains("rederive_topology(p, ", Body(c, $"int32_t ymir_particles_{command}("));
+        foreach (var command in new[] { "create_distances", "create_bends", "attach", "remove" })
+            Assert.DoesNotContain("TOPO_ISOLATED", Body(c, $"int32_t ymir_particles_{command}("));
+        Assert.Equal(0, Count(c + h, @"PxReal|physx"));
         // the retired owners stay gone
         var retired = string.Join("|", "create_" + "chain", "split_" + "chain", "destroy_" + "chain", "chain_" + "first", "chain_" + "size", "chain_stable_" + "id",
             "Chain" + "Handle", "Create" + "Chain", "Split" + "Chain", "Destroy" + "Chain", "FreeChain" + "Slots", "link_" + "tension", "Link" + "Tension");

@@ -100,9 +100,11 @@ public static class Box3DSoaPhase
     public const uint SelfCollide = 1u << 20;
     /// <summary>...except pairs closer than 1.5 (ri + rj) in the rest pose (either may carry it).</summary>
     public const uint SelfFilter = 1u << 21;
+    /// <summary>A fluid particle: number density, not contact, with other fluid; contact with solids. Fluid holds no distance, bend or attachment.</summary>
+    public const uint Fluid = 1u << 22;
 
-    public static uint Of(uint group, bool selfCollide = false, bool selfFilter = false) =>
-        (group & GroupMask) | (selfCollide ? SelfCollide : 0u) | (selfFilter ? SelfFilter : 0u);
+    public static uint Of(uint group, bool selfCollide = false, bool selfFilter = false, bool fluid = false) =>
+        (group & GroupMask) | (selfCollide ? SelfCollide : 0u) | (selfFilter ? SelfFilter : 0u) | (fluid ? Fluid : 0u);
 }
 
 /// <summary>Capacities of the particle state; <c>null</c> or all zero is a world without particles (ABI 8 behaviour).</summary>
