@@ -62,6 +62,10 @@ static void put(float* x, float* y, float* z, int i, v3 v)
 }
 
 
+// A particle is held to the nearest point of each of its two nearest tether islands (Kim, Chentanez, Mueller 2012 sec. 3.4);
+// Kim's typical four were measured on the 20-pin 32x32 sheet: 1.66% worst edge against 1.72%, for twice the lanes.
+#define YMIR_TETHER_ISLANDS 2
+
 // ---- memory: one block, laid out once at create -------------------------------------------------------------
 
 static size_t layout(ymir_particles* p, unsigned char* base)
@@ -112,6 +116,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(heap_key, float, heap); CARVE(heap_node, int32_t, heap); CARVE(heap_edge, int32_t, heap);
     CARVE(path, float, np); CARVE(via, int32_t, np); CARVE(owner, int32_t, np); CARVE(tether_of, int32_t, np);
     CARVE(queue, int32_t, np); CARVE(comp_size, int32_t, np); CARVE(done, uint8_t, np);
+    CARVE(isle, int32_t, np); CARVE(near_isle, int32_t, YMIR_TETHER_ISLANDS * np); CARVE(near_path, float, YMIR_TETHER_ISLANDS * np);
 #undef CARVE
     return off + 16;
 }
@@ -342,20 +347,23 @@ static int is_tether(const ymir_particles* p, int32_t a)
     return p->att_kind[a] != YMIR_ATTACH_REMOVED && (p->att_flags[a] & YMIR_ATTACH_FLAG_TETHER);
 }
 
-// 1 when attachments a < b are both tethers on different particles of one component (`label` names components),
-// so the rest path between their particles bounds the distance between their points.
+// 1 when attachments a < b are both tethers on different particles of one component (`label` names components) and at
+// least one is on a body, so the rest path between their particles bounds the distance between their points. Two world
+// points never move: their pair has no end to pull (end_w is 0 at both).
 static int pairs_with(const ymir_particles* p, int32_t a, int32_t b, const int32_t* label)
 {
     int32_t pa = p->att_particle[a], pb = p->att_particle[b];
-    return is_tether(p, b) && pa != pb && label[pa] == label[pb];
+    return is_tether(p, b) && pa != pb && label[pa] == label[pb] &&
+           (p->att_kind[a] == YMIR_ATTACH_BODY || p->att_kind[b] == YMIR_ATTACH_BODY);
 }
 
-// Dijkstra (binary heap, ties by node then edge) over the live distances' rest lengths, from the particle of every
-// TETHER attachment (`only` < 0) or from one attachment's particle (`only` >= 0). Writes for each settled particle
-// its rest path `path`, the edge it was reached by `via` (-1 at a source), the attachment it is nearest `owner`
-// (the lowest attachment on a particle that holds several), and its place in settle order `queue`: a parent settles
-// before its children. Returns the settled count. Writes no lane.
-static int32_t settle(ymir_particles* p, int32_t only)
+// Dijkstra (binary heap, ties by node then edge) over the live distances' rest lengths, from one attachment's particle
+// (`only` >= 0) or from every particle of the tether island named `island` (>= 0; `isle` labels them). Writes for each
+// settled particle its rest path `path`, the edge it was reached by `via` (-1 at a source), the attachment it is nearest
+// `owner` (the lowest TETHER attachment on a source particle), and its place in settle order `queue`: a parent settles
+// before its children. In island mode a tether particle of another island is settled but not expanded: the path through
+// it is implied by its own tethers and the pair tethers. Returns the settled count. Writes no lane.
+static int32_t settle(ymir_particles* p, int32_t only, int32_t island)
 {
     int32_t size = 0, n = 0;
     for (int32_t i = 0; i < p->particle_count; ++i)
@@ -368,7 +376,7 @@ static int32_t settle(ymir_particles* p, int32_t only)
     for (int32_t a = 0; a < p->attachment_count; ++a)
     {
         int32_t s = p->att_particle[a];
-        if (only >= 0 ? a != only : !is_tether(p, a))
+        if (only >= 0 ? a != only : !is_tether(p, a) || p->isle[s] != island)
         {
             continue;
         }
@@ -390,6 +398,10 @@ static int32_t settle(ymir_particles* p, int32_t only)
         }
         p->done[u] = 1;
         p->queue[n++] = u;
+        if (only < 0 && p->isle[u] >= 0 && p->via[u] >= 0)
+        {
+            continue; // another island's tether particle: settled, not expanded
+        }
         for (int32_t k = p->adj_start[u]; k < p->adj_start[u + 1]; ++k)
         {
             int32_t e = p->adj_edge[k], v = p->dist_a[e] == u ? p->dist_b[e] : p->dist_a[e];
@@ -488,13 +500,91 @@ static int32_t rederive_topology(ymir_particles* p)
         }
         p->comp_size[i] = tail;
     }
-    // One tether per particle that is not a source, to the attachment it is nearest (Kim 2012), plus for each pair of
-    // tether attachments one pair tether behind a route of booking lanes along their rest path. Counted before written.
-    int64_t need = 0;
-    int32_t n = settle(p, -1);
-    for (int32_t k = 0; k < n; ++k)
+    // Islands (Kim 2012 sec. 3.4): a particle holding a live TETHER attachment is a tether particle; an island is a maximal
+    // set of them joined by live distances, named by its lowest TETHER attachment. isle labels tether particles, -1 elsewhere
+    // (-2 while a tether particle awaits its island).
+    for (int32_t i = 0; i < np; ++i)
     {
-        need += p->via[p->queue[k]] >= 0;
+        p->isle[i] = -1;
+    }
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        if (is_tether(p, a))
+        {
+            p->isle[p->att_particle[a]] = -2;
+        }
+    }
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        int32_t s = p->att_particle[a];
+        if (!is_tether(p, a) || p->isle[s] != -2)
+        {
+            continue;
+        }
+        int32_t head = 0, tail = 0;
+        p->isle[s] = a;
+        p->queue[tail++] = s;
+        while (head < tail)
+        {
+            int32_t u = p->queue[head++];
+            for (int32_t k = p->adj_start[u]; k < p->adj_start[u + 1]; ++k)
+            {
+                int32_t e = p->adj_edge[k], v = p->dist_a[e] == u ? p->dist_b[e] : p->dist_a[e];
+                if (p->isle[v] == -2)
+                {
+                    p->isle[v] = a;
+                    p->queue[tail++] = v;
+                }
+            }
+        }
+    }
+    // Each particle that is not a tether particle is held to the nearest point of each of its YMIR_TETHER_ISLANDS nearest
+    // islands: pass 1 keeps, per particle, the nearest islands by rest path (ties to the lower island); pass 2 writes them.
+    // Plus for each pair of tether attachments with a body among them one pair tether behind a route of booking lanes along
+    // their rest path. Counted before written.
+    int64_t need = 0;
+    for (int32_t i = 0; i < YMIR_TETHER_ISLANDS * np; ++i)
+    {
+        p->near_isle[i] = -1;
+    }
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        if (!is_tether(p, a) || p->isle[p->att_particle[a]] != a)
+        {
+            continue;
+        }
+        int32_t n = settle(p, -1, a);
+        for (int32_t k = 0; k < n; ++k)
+        {
+            int32_t u = p->queue[k];
+            if (p->via[u] < 0 || p->isle[u] >= 0)
+            {
+                continue;
+            }
+            int32_t* isl = p->near_isle + YMIR_TETHER_ISLANDS * u;
+            float* dist = p->near_path + YMIR_TETHER_ISLANDS * u;
+            float d = p->path[u];
+            int32_t m = 0;
+            while (m < YMIR_TETHER_ISLANDS && isl[m] >= 0 && !(d < dist[m])) // an equal path keeps the earlier island
+            {
+                ++m;
+            }
+            if (m == YMIR_TETHER_ISLANDS)
+            {
+                continue;
+            }
+            for (int32_t j = YMIR_TETHER_ISLANDS - 1; j > m; --j)
+            {
+                isl[j] = isl[j - 1];
+                dist[j] = dist[j - 1];
+            }
+            isl[m] = a;
+            dist[m] = d;
+        }
+    }
+    for (int32_t i = 0; i < YMIR_TETHER_ISLANDS * np; ++i)
+    {
+        need += p->near_isle[i] >= 0;
     }
     for (int32_t a = 0; a < p->attachment_count; ++a)
     {
@@ -502,7 +592,7 @@ static int32_t rederive_topology(ymir_particles* p)
         {
             continue;
         }
-        settle(p, a);
+        settle(p, a, -1);
         for (int32_t b = a + 1; b < p->attachment_count; ++b)
         {
             if (pairs_with(p, a, b, p->tether_of))
@@ -520,26 +610,42 @@ static int32_t rederive_topology(ymir_particles* p)
         p->component[i] = p->tether_of[i] >= 0 ? p->tether_of[i] : 0;
     }
     int32_t nt = 0;
-    n = settle(p, -1);
-    for (int32_t i = 0; i < np; ++i)
+    for (int32_t a = 0; a < p->attachment_count; ++a)
     {
-        p->tether_of[i] = -1;
-    }
-    for (int32_t k = 0; k < n; ++k)
-    {
-        int32_t u = p->queue[k], e = p->via[u];
-        if (e < 0)
+        if (!is_tether(p, a) || p->isle[p->att_particle[a]] != a)
         {
             continue;
         }
-        int32_t t = nt++, other = p->dist_a[e] == u ? p->dist_b[e] : p->dist_a[e];
-        p->tether_att[t] = p->owner[u];
-        p->tether_particle[t] = u;
-        p->tether_bound[t] = p->path[u];
-        p->tether_edge[t] = e;
-        p->tether_other[t] = -1;
-        p->tether_parent[t] = p->tether_of[other];
-        p->tether_of[u] = t;
+        int32_t n = settle(p, -1, a);
+        for (int32_t i = 0; i < np; ++i)
+        {
+            p->tether_of[i] = -1;
+        }
+        for (int32_t k = 0; k < n; ++k)
+        {
+            int32_t u = p->queue[k], e = p->via[u], held = 0;
+            if (e < 0 || p->isle[u] >= 0)
+            {
+                continue;
+            }
+            for (int32_t m = 0; m < YMIR_TETHER_ISLANDS; ++m)
+            {
+                held |= p->near_isle[YMIR_TETHER_ISLANDS * u + m] == a;
+            }
+            int32_t other = p->dist_a[e] == u ? p->dist_b[e] : p->dist_a[e];
+            if (!held || (p->via[other] >= 0 && p->tether_of[other] < 0))
+            {
+                continue; // not one of u's nearest islands; or its parent is not held to this island (a float tie at rank 2)
+            }
+            int32_t t = nt++;
+            p->tether_att[t] = p->owner[u];
+            p->tether_particle[t] = u;
+            p->tether_bound[t] = p->path[u];
+            p->tether_edge[t] = e;
+            p->tether_other[t] = -1;
+            p->tether_parent[t] = p->tether_of[other];
+            p->tether_of[u] = t;
+        }
     }
     for (int32_t a = 0; a < p->attachment_count; ++a)
     {
@@ -547,7 +653,7 @@ static int32_t rederive_topology(ymir_particles* p)
         {
             continue;
         }
-        settle(p, a);
+        settle(p, a, -1);
         for (int32_t b = a + 1; b < p->attachment_count; ++b)
         {
             if (!pairs_with(p, a, b, p->component))

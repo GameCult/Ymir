@@ -541,22 +541,107 @@ public sealed class Box3DSoaParticleTests
     }
 
     [Fact]
-    public void A_particle_between_two_tether_points_takes_the_nearer_and_a_tie_the_lower_lane()
+    public void Each_particle_takes_the_nearest_point_of_its_two_nearest_islands()
     {
-        // A 5-particle rope held at both ends: particle 1 is nearest the first point, particle 3 the second, and particle 2 is two
-        // edges from each. A tie goes to the path through the lower particle lane, so to the first attachment.
-        using var world = World();
-        var rope = Graph.Rope(world, Line((0f, 0f, 0f), (0.03f, 0f, 0f), 5), ParticleMass, ParticleRadius, bend: -1f);
-        var first = world.Attach(Box3DSoaAttachKind.Static, rope.Particles[0], point: (0f, 0f, 0f), tether: true);
-        var second = world.Attach(Box3DSoaAttachKind.Static, rope.Particles[4], point: (0.12f, 0f, 0f), tether: true);
-        var view = world.View;
-        var owner = new Dictionary<int, int>();
+        // (a) A 5-rope held at both ends by static tether points: each middle particle has one tether per end, bounded by the
+        // rest path to it, and the two world points get no pair tether between them (neither can move).
+        using (var world = World())
+        {
+            var rope = Graph.Rope(world, Line((0f, 0f, 0f), (0.03f, 0f, 0f), 5), ParticleMass, ParticleRadius, bend: -1f);
+            var first = world.Attach(Box3DSoaAttachKind.Static, rope.Particles[0], point: (0f, 0f, 0f), tether: true);
+            var second = world.Attach(Box3DSoaAttachKind.Static, rope.Particles[4], point: (0.12f, 0f, 0f), tether: true);
+            var view = world.View;
+            Assert.Equal(6, view.TetherCount);
+            Assert.DoesNotContain(view.TetherOther.ToArray(), o => o >= 0);
+            for (var k = 1; k <= 3; k++)
+            {
+                Assert.Equal(0.03f * k, Bound(view, first.Lane, rope.Particles[k].Lane), 1e-5f);
+                Assert.Equal(0.03f * (4 - k), Bound(view, second.Lane, rope.Particles[k].Lane), 1e-5f);
+            }
+        }
+        // (b) A star: the centre is joined by arms of one, two and three edges to three static tether points, and is held to
+        // the one- and two-edge points only: the third island is not among its two nearest.
+        using (var world = World())
+        {
+            var star = new List<Box3DSoaParticleDesc> { new((0f, 0f, 0f), ParticleMass, ParticleRadius, 0) };
+            Pos[] dir = [(1f, 0f, 0f), (-0.5f, 0.866f, 0f), (-0.5f, -0.866f, 0f)];
+            var ends = new int[3];
+            var arm = new List<(int From, int To)>();
+            for (var a = 0; a < 3; a++)
+            {
+                var from = 0;
+                for (var s2 = 1; s2 <= a + 1; s2++)
+                {
+                    star.Add(new Box3DSoaParticleDesc((dir[a].X * 0.03f * s2, dir[a].Y * 0.03f * s2, 0f), ParticleMass, ParticleRadius, 0));
+                    arm.Add((from, star.Count - 1));
+                    from = star.Count - 1;
+                }
+                ends[a] = from;
+            }
+            var particles = new Box3DSoaParticleHandle[star.Count];
+            world.CreateParticles(star.ToArray(), particles);
+            var edges = new Box3DSoaConstraintHandle[arm.Count];
+            world.CreateDistances(arm.Select(x => new Box3DSoaDistanceDesc(particles[x.From], particles[x.To], 0f)).ToArray(), edges);
+            var points = new Box3DSoaConstraintHandle[3];
+            for (var a = 0; a < 3; a++)
+                points[a] = world.Attach(Box3DSoaAttachKind.Static, particles[ends[a]], point: (dir[a].X * 0.03f * (a + 1), dir[a].Y * 0.03f * (a + 1), 0f), tether: true);
+            var view = world.View;
+            Assert.Equal(0.03f, Bound(view, points[0].Lane, particles[0].Lane), 1e-5f);
+            Assert.Equal(0.06f, Bound(view, points[1].Lane, particles[0].Lane), 1e-5f);
+            Assert.Equal(-1f, Bound(view, points[2].Lane, particles[0].Lane, absent: -1f));
+        }
+        // (c) A 9-rope with tether points on particles 0 and 1 (one island: they touch) and on 8: particle 4 is held to the
+        // nearer of the island's two points, the one on particle 1, and to the point on 8, never to the one on 0.
+        using (var world = World())
+        {
+            var line = Line((0f, 0f, 0f), (0.03f, 0f, 0f), 9);
+            var rope = Graph.Rope(world, line, ParticleMass, ParticleRadius, bend: -1f);
+            var p0 = world.Attach(Box3DSoaAttachKind.Static, rope.Particles[0], point: line[0], tether: true);
+            var p1 = world.Attach(Box3DSoaAttachKind.Static, rope.Particles[1], point: line[1], tether: true);
+            var p8 = world.Attach(Box3DSoaAttachKind.Static, rope.Particles[8], point: line[8], tether: true);
+            var view = world.View;
+            var q = rope.Particles[4].Lane;
+            Assert.Equal(0.09f, Bound(view, p1.Lane, q), 1e-5f);
+            Assert.Equal(0.12f, Bound(view, p8.Lane, q), 1e-5f);
+            Assert.Equal(-1f, Bound(view, p0.Lane, q, absent: -1f));
+            Assert.Equal(12, view.TetherCount); // particles 2..7, two each
+        }
+    }
+
+    // The bound of the one tether that holds `particle` to attachment `att` (a particle tether, not a pair route).
+    private static float Bound(Box3DSoaView view, int att, int particle, float absent = float.NaN)
+    {
+        var found = new List<float>();
         for (var t = 0; t < view.TetherCount; t++)
-            if (view.TetherAttachment[t] >= 0 && view.TetherOther[t] < 0) owner[view.TetherParticle[t]] = view.TetherAttachment[t];
-        Assert.Equal(3, owner.Count); // the three particles that are not themselves a tether point: one tether each, not two
-        Assert.Equal(first.Lane, owner[rope.Particles[1].Lane]);
-        Assert.Equal(first.Lane, owner[rope.Particles[2].Lane]);
-        Assert.Equal(second.Lane, owner[rope.Particles[3].Lane]);
+            if (view.TetherAttachment[t] == att && view.TetherParticle[t] == particle && view.TetherOther[t] < 0) found.Add(view.TetherBound[t]);
+        if (found.Count == 0 && !float.IsNaN(absent)) return absent;
+        Assert.Single(found);
+        return found[0];
+    }
+
+    [Fact]
+    public void Sheet_hung_by_two_corner_groups()
+    {
+        // 16 x 16 hung by pins on top-row particles 0, 1, 14 and 15: two corners of two adjacent pins each. Ranking pins instead
+        // of islands spends both of a particle's tethers on one corner's two pins and the sheet stretches by 11.6% at 5 s.
+        // Read at 8 s: the sheet still rings at 5 s (Fy 50.636 N of 51.200, 1.10% under) and carries its weight within 0.2% from
+        // 6 s (51.286, 51.227, 51.132 N at 6, 7, 8 s); the two-corner single-pin sheet settles by about 9 s the same way.
+        using var world = World(particles: 256, distances: 512, bends: 512, attachments: 8, tethers: 1024);
+        const float sp = 0.04f;
+        var sheet = Graph.Sheet(world, (0f, 2f, 0f), (sp, 0f, 0f), (0f, -sp, 0f), 16, 16, ParticleMass, 0.02f, bend: 1e-4f);
+        foreach (var i in new[] { 0, 15, 1, 14 })
+            world.Attach(Box3DSoaAttachKind.Static, sheet.Particles[i], point: (i * sp, 2f, 0f), tether: true);
+        var view = world.View;
+        Run(world, 8 * 120);
+        double fy = 0;
+        for (var a = 0; a < 4; a++) fy += view.AttachmentForceY[a];
+        var weight = 256 * ParticleMass * 10.0;
+        Readings.Add($"CORNER_GROUPS attach Fy sum {fy:F3} N, weight {weight:F3} N");
+        Assert.True(Math.Abs(fy - weight) < 0.01 * weight, $"the pins carry {fy} N of {weight} N");
+        var maxStretch = 0f;
+        foreach (var e in sheet.Edges) maxStretch = MathF.Max(maxStretch, MathF.Abs(Graph.Dist(view, view.DistanceA[e.Lane], view.DistanceB[e.Lane]) / view.DistanceRest[e.Lane] - 1f));
+        Readings.Add($"CORNER_GROUPS max edge stretch {maxStretch:P3}");
+        Assert.True(maxStretch < 0.05f, $"an edge stretched by {maxStretch}");
     }
 
     [Fact]
@@ -805,7 +890,7 @@ public sealed class Box3DSoaParticleTests
 
     // Recorded on this commit's build (gcc 13.2, -ffp-contract=off): the pile of four ropes and a sheet on two bodies. Re-pinned when each particle took
     // one tether to its nearest tether point (the hash covers the tether lanes) and pair contact summed in a new order; behaviour is held by the tests around it.
-    private static readonly ulong[] PileHashes = [15006925195759244470ul, 16721272710792469888ul, 16453595234508470899ul, 14765572690055433670ul, 9516360654899358608ul, 11390100683950314529ul];
+    private static readonly ulong[] PileHashes = [12993313564863515222ul, 2307790533006845688ul, 13436656559607346955ul, 6468437088969606470ul, 10562521318003626344ul, 7711170181992570593ul];
 
     [Fact]
     public void Particle_world_is_byte_deterministic()

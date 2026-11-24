@@ -59,7 +59,7 @@ enum
 
 enum
 {
-    YMIR_ATTACH_FLAG_TETHER = 1u // the attachment bounds every particle its component reaches by the rest path
+    YMIR_ATTACH_FLAG_TETHER = 1u // bounds each particle by the rest path to the nearest point of its two nearest islands of tether attachments
 };
 
 enum
@@ -187,8 +187,10 @@ typedef struct ymir_particles
     float *att_force_x, *att_force_y, *att_force_z; // N, the force the attachment exerts on its particles (mean): a sensor
     uint64_t* att_removed_at;
 
-    // tether lanes: derived: one per particle that is not a source, to the attachment it is nearest, in settle order, then per
-    // attachment pair a route of booking lanes (attachment -1, edge only) along their rest path and the pair tether; parents come first;
+    // tether lanes: derived: grouped by island in lane order (an island: tether particles joined by live distances, named by its
+    // lowest tether attachment), settle order within; per island one for each particle that is not a tether particle and holds the island
+    // among its two nearest, to the attachment point it is nearest; then per attachment pair with a body among them a route of
+    // booking lanes (attachment -1, edge only) along their rest path and the pair tether; parents come first;
     // other >= 0 makes the tether a bound between two attachment points (edge -1) instead of a particle and a point
     int32_t *tether_att, *tether_particle, *tether_parent, *tether_edge, *tether_other;
     float* tether_bound;
@@ -200,8 +202,8 @@ typedef struct ymir_particles
     // solver scratch, allocated once at create
     float *pp_x, *pp_y, *pp_z, *dp_x, *dp_y, *dp_z, *dist_acc, *tacc_x, *tacc_y, *tacc_z;
     int32_t *lane_list, *cell_x, *cell_y, *cell_z, *cell_start, *cell_fill, *sorted, *contacts;
-    int32_t *adj_start, *adj_edge, *heap_node, *heap_edge, *via, *owner, *tether_of, *queue, *comp_size;
-    float *heap_key, *path;
+    int32_t *adj_start, *adj_edge, *heap_node, *heap_edge, *via, *owner, *tether_of, *queue, *comp_size, *isle, *near_isle;
+    float *heap_key, *path, *near_path;
     uint8_t* done;
     uint32_t table_mask;
     void* arena;
@@ -213,7 +215,7 @@ void ymir_particles_free(ymir_particles* p);
 
 // Commands. `step_count` is the world's completed steps: a removed lane is reused once a step has passed, lowest
 // lane first. Every refusal happens before anything changes; a command that would need more tethers than the
-// capacity is refused whole. Every topology command ends in the one rederive_topology.
+// capacity is refused whole (tether capacity: up to two per particle reached, plus the pair routes). Every topology command ends in the one rederive_topology.
 int32_t ymir_particles_create_particles(ymir_particles* p, int32_t n, const ymir_particle_desc* d, uint64_t step_count, ymir_handle* out);
 int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymir_handle* h, uint64_t step_count);
 int32_t ymir_particles_create_distances(ymir_particles* p, int32_t n, const ymir_distance_desc* d, uint64_t step_count, ymir_handle* out);
