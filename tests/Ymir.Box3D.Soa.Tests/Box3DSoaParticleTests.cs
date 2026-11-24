@@ -228,7 +228,7 @@ public sealed class Box3DSoaParticleTests
         world.Attach(Box3DSoaAttachKind.Static, sheet.Particles[0], point: (0f, 2f, 0f), tether: true);
         world.Attach(Box3DSoaAttachKind.Static, sheet.Particles[15], point: (15 * sp, 2f, 0f), tether: true);
         var view = world.View;
-        Run(world, 20 * 120); // a tether holds each particle to its nearest corner only, so the sheet rings for ~15 s before it carries its weight
+        Run(world, 5 * 120);
         double fy = 0;
         for (var a = 0; a < 2; a++) fy += view.AttachmentForceY[a];
         var weight = 256 * ParticleMass * 10.0;
@@ -237,7 +237,7 @@ public sealed class Box3DSoaParticleTests
         var maxStretch = 0f;
         foreach (var e in sheet.Edges) maxStretch = MathF.Max(maxStretch, MathF.Abs(Graph.Dist(view, view.DistanceA[e.Lane], view.DistanceB[e.Lane]) / view.DistanceRest[e.Lane] - 1f));
         Readings.Add($"SHEET max edge stretch {maxStretch:P3}");
-        Assert.True(maxStretch < 0.4f, $"an edge stretched by {maxStretch}"); // the edge where two corners' nearest tethers meet carries the slack: 33% here, 3% when every particle was tethered to both corners
+        Assert.True(maxStretch < 0.05f, $"an edge stretched by {maxStretch}");
     }
 
     [Theory]
@@ -403,7 +403,9 @@ public sealed class Box3DSoaParticleTests
     public void Contact_conserves_momentum()
     {
         // Zero gravity: a self-colliding rope thrown at 3 m/s into a self-colliding sheet and a loose blob; the sum of momentum
-        // may not drift and the kinetic energy may not rise (a per-particle average of contacts fails both).
+        // may not drift and the kinetic energy may not rise (a per-particle average of contacts fails both: it drifts by 5.6e-2).
+        // 5e-4 is the float32 floor, not a contact property: translating the whole scene moves the position noise between
+        // 0.56e-4 and 4.0e-4 under both contact walks.
         using var world = World(particles: 512, distances: 512, bends: 512, tethers: 8, gravityY: 0f);
         world.AddStaticBox(1, (0f, -100f, 0f), (1f, 1f, 1f));
         var sheet = Graph.Sheet(world, (0f, 0f, 0f), (0.04f, 0f, 0f), (0f, 0.04f, 0f), 12, 12, ParticleMass, 0.02f, Box3DSoaPhase.Of(7, true, true));
