@@ -1099,6 +1099,12 @@ public sealed class Box3DSoaParticleSourceTests
                 Assert.True(Count(File.ReadAllText(f), retired) == 0, f);
         Assert.Equal(0, Count(c + h, @"PARTICLE_" + @"PARTICLE|find_range|mark_slots|stable_id_taken|rest_pos|add_struct"));
         Assert.Equal(0, Count(c, @"1\.0f / \(float\)contacts"));
+        // no fluid path runs in a world with no live fluid: both passes sit behind the counter
+        var substep = StripComments(Body(c, "void ymir_particles_substep("));
+        Assert.Equal(1, Count(substep, @"if \(p->live_fluid > 0\)\s*\{\s*fluid_density\(p\);"));
+        Assert.Equal(1, Count(substep, @"if \(p->live_fluid > 0\)\s*\{\s*fluid_viscosity\(p\);"));
+        // fluid has one writer of live_fluid pair: the two commands
+        Assert.Equal(0, Count(StripComments(c.Replace(Body(c, "int32_t ymir_particles_create_particles("), "").Replace(Body(c, "int32_t ymir_particles_destroy_particles("), "")), @"live_fluid\s*(\+\+|--|[-+]?=[^=])"));
     }
 
     [Fact]

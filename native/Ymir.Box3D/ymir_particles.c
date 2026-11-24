@@ -66,6 +66,15 @@ static void put(float* x, float* y, float* z, int i, v3 v)
 // Kim's typical four were measured on the 20-pin 32x32 sheet: 1.66% worst edge against 1.72%, for twice the lanes.
 #define YMIR_TETHER_ISLANDS 2
 
+// Kernels (Mueller, Charypar, Gross 2003 as used by Macklin and Mueller 2013): Poly6 W(r, h) = 315 / (64 pi h^9) (h^2 - r^2)^3 for the
+// density, Spiky grad W = -45 / (pi h^6) (h - r)^2 r_hat for the gradient.
+#define YMIR_POLY6 (315.0f / (64.0f * 3.14159265358979f))
+#define YMIR_SPIKY (-45.0f / 3.14159265358979f)
+
+// Regularisation of the density constraint (Macklin and Mueller 2013 eq. 11), added to sum |grad C|^2 with the gradients over n0
+// in 1/m^2.
+#define YMIR_PBF_EPS 1.0e-4f
+
 // ---- memory: one block, laid out once at create -------------------------------------------------------------
 
 static size_t layout(ymir_particles* p, unsigned char* base)
@@ -90,6 +99,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(rest_x, float, np); CARVE(rest_y, float, np); CARVE(rest_z, float, np);
     CARVE(phase, uint32_t, np); CARVE(material, uint32_t, np); CARVE(particle_live, uint32_t, np);
     CARVE(particle_generation, uint32_t, np); CARVE(particle_removed_at, uint64_t, np); CARVE(component, int32_t, np);
+    CARVE(density, float, np);
     CARVE(dist_a, int32_t, nd); CARVE(dist_b, int32_t, nd); CARVE(dist_rest, float, nd); CARVE(dist_compliance, float, nd);
     CARVE(dist_tension, float, nd); CARVE(dist_live, uint32_t, nd); CARVE(dist_generation, uint32_t, nd);
     CARVE(dist_removed_at, uint64_t, nd);
@@ -104,10 +114,10 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(att_removed_at, uint64_t, na);
     CARVE(tether_att, int32_t, nt); CARVE(tether_particle, int32_t, nt); CARVE(tether_parent, int32_t, nt);
     CARVE(tether_edge, int32_t, nt); CARVE(tether_other, int32_t, nt); CARVE(tether_bound, float, nt);
-    CARVE(mat_friction, float, nm); CARVE(mat_id, uint64_t, nm);
+    CARVE(mat_friction, float, nm); CARVE(mat_viscosity, float, nm); CARVE(mat_id, uint64_t, nm);
     CARVE(pp_x, float, np); CARVE(pp_y, float, np); CARVE(pp_z, float, np);
     CARVE(dp_x, float, np); CARVE(dp_y, float, np); CARVE(dp_z, float, np);
-    CARVE(dist_acc, float, nd);
+    CARVE(dist_acc, float, nd); CARVE(lambda, float, np);
     CARVE(tacc_x, float, nt); CARVE(tacc_y, float, nt); CARVE(tacc_z, float, nt);
     CARVE(lane_list, int32_t, nd); CARVE(cell_x, int32_t, np); CARVE(cell_y, int32_t, np); CARVE(cell_z, int32_t, np);
     CARVE(cell_start, int32_t, table + 1); CARVE(cell_fill, int32_t, table); CARVE(sorted, int32_t, np);
@@ -154,6 +164,20 @@ ymir_particles* ymir_particles_create(const ymir_particle_capacities* c, int32_t
         return NULL;
     }
     layout(p, (unsigned char*)p->arena);
+    // n0 for h = 1: the Poly6 kernel summed over the simple-cubic lattice of spacing 1/2 within reach (self included); at h it is k / h^3
+    float k = 0.0f;
+    for (int a = -2; a <= 2; ++a)
+    {
+        for (int b = -2; b <= 2; ++b)
+        {
+            for (int e = -2; e <= 2; ++e)
+            {
+                float t = 1.0f - 0.25f * (float)(a * a + b * b + e * e);
+                k += t > 0.0f ? t * t * t : 0.0f;
+            }
+        }
+    }
+    p->fluid_k = k * YMIR_POLY6;
     return p;
 }
 
@@ -804,6 +828,7 @@ int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymi
         p->rest_x[i] = p->rest_y[i] = p->rest_z[i] = 0.0f;
         p->radius[i] = p->inv_mass[i] = 0.0f;
         p->phase[i] = p->material[i] = 0;
+        p->density[i] = p->lambda[i] = 0.0f;
         p->particle_live[i] = 0;
         p->particle_generation[i] += 1;
         p->particle_removed_at[i] = step_count;
@@ -1016,11 +1041,13 @@ int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const
 
 int32_t ymir_particles_set_material(ymir_particles* p, int32_t index, const ymir_material_desc* d)
 {
-    if (p == NULL || d == NULL || index < 0 || index >= p->material_capacity || !isfinite(d->friction) || d->friction < 0.0f)
+    if (p == NULL || d == NULL || index < 0 || index >= p->material_capacity || !isfinite(d->friction) || d->friction < 0.0f ||
+        !isfinite(d->viscosity) || d->viscosity < 0.0f)
     {
         return YMIR_PARTICLES_INVALID_ARGUMENT;
     }
     p->mat_friction[index] = d->friction;
+    p->mat_viscosity[index] = d->viscosity;
     p->mat_id[index] = d->material_id;
     return YMIR_PARTICLES_OK;
 }
@@ -1135,15 +1162,20 @@ static int32_t cell_of(float v, float inv_cell)
 // index order, so every neighbour walk is the same on every run.
 static float build_grid(ymir_particles* p)
 {
-    float rmax = 0.0f;
+    float rmax = 0.0f, rfmax = 0.0f;
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
         if (p->particle_live[i])
         {
             rmax = vmax(rmax, p->radius[i]);
+            if (p->phase[i] & YMIR_PHASE_FLUID)
+            {
+                rfmax = vmax(rfmax, p->radius[i]);
+            }
         }
     }
-    float inv_cell = 1.0f / (2.0f * rmax);
+    // A cell holds every contact pair (reach 2 rmax); with fluid it holds every kernel pair too (reach h = 2 (ri + rj)).
+    float inv_cell = p->live_fluid == 0 ? 1.0f / (2.0f * rmax) : 1.0f / vmax(2.0f * rmax, 2.0f * (rfmax + rmax));
     int32_t buckets = (int32_t)p->table_mask + 1;
     memset(p->cell_start, 0, sizeof(int32_t) * (size_t)(buckets + 1));
     for (int32_t i = 0; i < p->particle_count; ++i)
@@ -1174,12 +1206,16 @@ static float build_grid(ymir_particles* p)
 }
 
 
-// Do particles i and j collide by contact? Symmetric in i and j, which momentum conservation needs. Particles of
-// different groups always do; of one group only when both set SELF_COLLIDE, and not, when either sets
+// Do particles i and j collide by contact? Symmetric in i and j, which momentum conservation needs. Two fluid particles
+// never do. Particles of different groups always do; of one group only when both set SELF_COLLIDE, and not, when either sets
 // SELF_FILTER, if they touched in the rest pose.
 static int collides(const ymir_particles* p, int32_t i, int32_t j)
 {
     uint32_t a = p->phase[i], b = p->phase[j];
+    if (a & b & YMIR_PHASE_FLUID)
+    {
+        return 0; // two fluid particles meet in the density, not by contact
+    }
     if ((a & YMIR_PHASE_GROUP_MASK) != (b & YMIR_PHASE_GROUP_MASK))
     {
         return 1;
@@ -1211,9 +1247,69 @@ static int touching(const ymir_particles* p, int32_t i, int32_t j, v3 xi, v3* d,
     return *r2 < *md * *md && *r2 >= 1e-12f && *wsum != 0.0f && collides(p, i, j);
 }
 
+// The pairs of the live particles, each once: from every particle i, the partners j of its own cell with a higher index and
+// every partner of the 13 cells that follow its own in lexicographic offset order, cells read in that order and a cell's
+// particles in index order. `fn` sees each candidate pair (a bucket can hold other cells' particles; those are skipped here)
+// and decides if it counts. Inlined at each call, so the contact pass pays nothing for sharing the walk.
+#if defined(_MSC_VER)
+#define YMIR_INLINE static __forceinline
+#else
+#define YMIR_INLINE static inline __attribute__((always_inline))
+#endif
+
+typedef void (*pair_fn)(ymir_particles* p, void* ctx, int32_t i, int32_t j);
+
+YMIR_INLINE void walk_half(ymir_particles* p, pair_fn fn, void* ctx)
+{
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        if (!p->particle_live[i])
+        {
+            continue;
+        }
+        for (int32_t cell = 0; cell < 14; ++cell) // 0 is the own cell; 1..13 are offsets 14..26 of the 27
+        {
+            int32_t o = cell == 0 ? 13 : 13 + cell, da = o / 9 - 1, db = o / 3 % 3 - 1, dc = o % 3 - 1;
+            int32_t ca = p->cell_x[i] + da, cb = p->cell_y[i] + db, cc = p->cell_z[i] + dc;
+            uint32_t bucket = cell_hash(ca, cb, cc, p->table_mask);
+            for (int32_t q = p->cell_start[bucket]; q < p->cell_start[bucket + 1]; ++q)
+            {
+                int32_t j = p->sorted[q];
+                if ((cell == 0 && j <= i) || p->cell_x[j] != ca || p->cell_y[j] != cb || p->cell_z[j] != cc)
+                {
+                    continue; // the other end of a pair, or another cell sharing the bucket
+                }
+                fn(p, ctx, i, j);
+            }
+        }
+    }
+}
+
+// One pass of the contact walk: pass 0 counts every particle's overlaps, pass 1 moves both ends of each pair.
+static void contact_pair(ymir_particles* p, void* ctx, int32_t i, int32_t j)
+{
+    v3 d;
+    float r2, md, wsum;
+    if (!touching(p, i, j, P(p, p->pp_x, p->pp_y, p->pp_z, i), &d, &r2, &md, &wsum))
+    {
+        return;
+    }
+    if (*(int*)ctx == 0)
+    {
+        p->contacts[i]++;
+        p->contacts[j]++;
+        return;
+    }
+    float rr = sqrtf(r2), depth = (md - rr) / rr;
+    float weight = 1.0f / (float)(p->contacts[i] > p->contacts[j] ? p->contacts[i] : p->contacts[j]);
+    v3 di = vmul(d, weight * (p->inv_mass[i] / wsum) * depth);
+    v3 dj = vmul(d, weight * (p->inv_mass[j] / wsum) * depth);
+    p->dp_x[i] += di.x; p->dp_y[i] += di.y; p->dp_z[i] += di.z;
+    p->dp_x[j] -= dj.x; p->dp_y[j] -= dj.y; p->dp_z[j] -= dj.z;
+}
+
 // Overlapping pairs push each other apart, split by inverse mass (Macklin 2014). Each pair is found once, by walking
-// half the 27-cell neighbourhood: a particle's own cell (partners of higher index) and the 13 cells that follow it
-// in lexicographic offset order. Two walks: the first counts every particle's overlaps, the second moves both ends
+// half the 27-cell neighbourhood. Two walks: the first counts every particle's overlaps, the second moves both ends
 // of each pair by one displacement weighted 1 / max(n_i, n_j). The pair's two corrections then hold equal and
 // opposite momentum, so contact conserves it; a per-particle average would not. Pairs apply in walk order, so every
 // sum is the same on every run. No pair list is kept: its size is not bounded by the particle count.
@@ -1226,43 +1322,7 @@ static void particle_contacts(ymir_particles* p)
     }
     for (int pass = 0; pass < 2; ++pass)
     {
-        for (int32_t i = 0; i < p->particle_count; ++i)
-        {
-            if (!p->particle_live[i])
-            {
-                continue;
-            }
-            v3 xi = P(p, p->pp_x, p->pp_y, p->pp_z, i);
-            for (int32_t cell = 0; cell < 14; ++cell) // 0 is the own cell; 1..13 are offsets 14..26 of the 27
-            {
-                int32_t o = cell == 0 ? 13 : 13 + cell, da = o / 9 - 1, db = o / 3 % 3 - 1, dc = o % 3 - 1;
-                int32_t ca = p->cell_x[i] + da, cb = p->cell_y[i] + db, cc = p->cell_z[i] + dc;
-                uint32_t bucket = cell_hash(ca, cb, cc, p->table_mask);
-                for (int32_t q = p->cell_start[bucket]; q < p->cell_start[bucket + 1]; ++q)
-                {
-                    int32_t j = p->sorted[q];
-                    v3 d;
-                    float r2, md, wsum;
-                    if ((cell == 0 && j <= i) || p->cell_x[j] != ca || p->cell_y[j] != cb || p->cell_z[j] != cc ||
-                        !touching(p, i, j, xi, &d, &r2, &md, &wsum))
-                    {
-                        continue; // the other end of a pair, another cell sharing the bucket, or no touch
-                    }
-                    if (pass == 0)
-                    {
-                        p->contacts[i]++;
-                        p->contacts[j]++;
-                        continue;
-                    }
-                    float rr = sqrtf(r2), depth = (md - rr) / rr;
-                    float weight = 1.0f / (float)(p->contacts[i] > p->contacts[j] ? p->contacts[i] : p->contacts[j]);
-                    v3 di = vmul(d, weight * (p->inv_mass[i] / wsum) * depth);
-                    v3 dj = vmul(d, weight * (p->inv_mass[j] / wsum) * depth);
-                    p->dp_x[i] += di.x; p->dp_y[i] += di.y; p->dp_z[i] += di.z;
-                    p->dp_x[j] -= dj.x; p->dp_y[j] -= dj.y; p->dp_z[j] -= dj.z;
-                }
-            }
-        }
+        walk_half(p, contact_pair, &pass);
     }
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
@@ -1271,6 +1331,165 @@ static void particle_contacts(ymir_particles* p)
             p->pp_x[i] += p->dp_x[i];
             p->pp_y[i] += p->dp_y[i];
             p->pp_z[i] += p->dp_z[i];
+        }
+    }
+}
+
+// ---- fluid: number density (Macklin and Mueller 2013, unilateral as Macklin et al. 2014 sec. 7) and XSPH ---------------
+
+// The kernel reach of a pair: 4 r at equal radii. A kernel pair lies in the 27 cells (build_grid's cell rule).
+static float kernel_h(const ymir_particles* p, int32_t i, int32_t j)
+{
+    return 2.0f * (p->radius[i] + p->radius[j]);
+}
+
+static float n0_of(const ymir_particles* p, float h)
+{
+    return p->fluid_k / (h * h * h);
+}
+
+static float poly6(float r2, float h)
+{
+    float d = h * h - r2, h3 = h * h * h;
+    return d > 0.0f ? YMIR_POLY6 / (h3 * h3 * h3) * d * d * d : 0.0f;
+}
+
+// Gradient of W at displacement d (|d| = r) for reach h: Spiky, along d.
+static v3 spiky(v3 d, float r, float h)
+{
+    float h3 = h * h * h, t = h - r;
+    return vmul(d, YMIR_SPIKY / (h3 * h3) * t * t / r);
+}
+
+// Does the pair (i, j) share the density? Fluid with fluid, or fluid with a solid it would touch by contact. The kernel
+// overlap decides the rest.
+static int density_pair(const ymir_particles* p, int32_t i, int32_t j)
+{
+    uint32_t fi = p->phase[i] & YMIR_PHASE_FLUID, fj = p->phase[j] & YMIR_PHASE_FLUID;
+    return (fi | fj) != 0 && (fi != 0 && fj != 0 ? 1 : collides(p, i, j));
+}
+
+// Pass B: the pair's correction, (lambda_i + lambda_j) grad W / n0, split by inverse mass: each end moves 2 w / (wi + wj) of it,
+// so the pair carries equal and opposite momentum at any mass ratio and a solid end is the reaction.
+static void density_scatter(ymir_particles* p, void* ctx, int32_t i, int32_t j)
+{
+    (void)ctx;
+    float wsum = p->inv_mass[i] + p->inv_mass[j];
+    if (wsum == 0.0f || !density_pair(p, i, j))
+    {
+        return;
+    }
+    v3 d = vsub(P(p, p->pp_x, p->pp_y, p->pp_z, i), P(p, p->pp_x, p->pp_y, p->pp_z, j));
+    float h = kernel_h(p, i, j), r2 = vdot(d, d), l = p->lambda[i] + p->lambda[j];
+    if (r2 >= h * h || r2 < 1e-12f || l == 0.0f)
+    {
+        return;
+    }
+    v3 corr = vmul(spiky(d, sqrtf(r2), h), l / n0_of(p, h));
+    v3 di = vmul(corr, 2.0f * p->inv_mass[i] / wsum), dj = vmul(corr, 2.0f * p->inv_mass[j] / wsum);
+    p->dp_x[i] += di.x; p->dp_y[i] += di.y; p->dp_z[i] += di.z;
+    p->dp_x[j] -= dj.x; p->dp_y[j] -= dj.y; p->dp_z[j] -= dj.z;
+}
+
+// Density constraint of every fluid particle, once per substep, after contact. Pass A gathers (fluid i over the full 27
+// cells, in cell then index order): n_i = sum W (self included; the solids that touch i count too), C_i = max(n_i / n0 - 1, 0),
+// lambda_i = -C_i / (sum |grad C_i|^2 + eps); a solid's lambda is 0. Pass B scatters the pair corrections over the contact
+// pass's half-walk and applies them after it (Jacobi), so the sums are the same on every run.
+static void fluid_density(ymir_particles* p)
+{
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        p->lambda[i] = 0.0f;
+        p->dp_x[i] = p->dp_y[i] = p->dp_z[i] = 0.0f;
+    }
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        if (!p->particle_live[i] || !(p->phase[i] & YMIR_PHASE_FLUID))
+        {
+            continue;
+        }
+        v3 xi = P(p, p->pp_x, p->pp_y, p->pp_z, i), gsum = {0.0f, 0.0f, 0.0f};
+        float h0 = 4.0f * p->radius[i], n0 = n0_of(p, h0), n = poly6(0.0f, h0), ssum = 0.0f;
+        for (int32_t o = 0; o < 27; ++o)
+        {
+            int32_t ca = p->cell_x[i] + o / 9 - 1, cb = p->cell_y[i] + o / 3 % 3 - 1, cc = p->cell_z[i] + o % 3 - 1;
+            uint32_t bucket = cell_hash(ca, cb, cc, p->table_mask);
+            for (int32_t q = p->cell_start[bucket]; q < p->cell_start[bucket + 1]; ++q)
+            {
+                int32_t j = p->sorted[q];
+                if (j == i || p->cell_x[j] != ca || p->cell_y[j] != cb || p->cell_z[j] != cc || !density_pair(p, i, j))
+                {
+                    continue;
+                }
+                v3 d = vsub(xi, P(p, p->pp_x, p->pp_y, p->pp_z, j));
+                float h = kernel_h(p, i, j), r2 = vdot(d, d);
+                if (r2 >= h * h)
+                {
+                    continue;
+                }
+                n += poly6(r2, h);
+                if (r2 >= 1e-12f)
+                {
+                    v3 g = spiky(d, sqrtf(r2), h);
+                    gsum = vadd(gsum, g);
+                    ssum += vdot(g, g);
+                }
+            }
+        }
+        float c = vmax(n / n0 - 1.0f, 0.0f);
+        p->density[i] = n / n0;
+        p->lambda[i] = c == 0.0f ? 0.0f : -c / ((vdot(gsum, gsum) + ssum) / (n0 * n0) + YMIR_PBF_EPS);
+    }
+    walk_half(p, density_scatter, NULL);
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        if (p->particle_live[i])
+        {
+            p->pp_x[i] += p->dp_x[i];
+            p->pp_y[i] += p->dp_y[i];
+            p->pp_z[i] += p->dp_z[i];
+        }
+    }
+}
+
+// XSPH (Schechter and Bridson 2012, as Macklin and Mueller 2013 sec. 5): a fluid pair's velocities relax toward each other,
+// dv = c (vj - vi) W / n0 with c the mean of the two materials', split by inverse mass like the density correction so the
+// pair keeps its momentum. Applied after the walk.
+static void viscosity_pair(ymir_particles* p, void* ctx, int32_t i, int32_t j)
+{
+    (void)ctx;
+    float wsum = p->inv_mass[i] + p->inv_mass[j];
+    if (wsum == 0.0f || !(p->phase[i] & p->phase[j] & YMIR_PHASE_FLUID))
+    {
+        return;
+    }
+    float c = 0.5f * (p->mat_viscosity[p->material[i]] + p->mat_viscosity[p->material[j]]);
+    v3 d = vsub(P(p, p->pos_x, p->pos_y, p->pos_z, i), P(p, p->pos_x, p->pos_y, p->pos_z, j));
+    float h = kernel_h(p, i, j), r2 = vdot(d, d);
+    if (c == 0.0f || r2 >= h * h)
+    {
+        return;
+    }
+    v3 dv = vmul(vsub(P(p, p->vel_x, p->vel_y, p->vel_z, j), P(p, p->vel_x, p->vel_y, p->vel_z, i)), c * poly6(r2, h) / n0_of(p, h));
+    v3 di = vmul(dv, 2.0f * p->inv_mass[i] / wsum), dj = vmul(dv, 2.0f * p->inv_mass[j] / wsum);
+    p->dp_x[i] += di.x; p->dp_y[i] += di.y; p->dp_z[i] += di.z;
+    p->dp_x[j] -= dj.x; p->dp_y[j] -= dj.y; p->dp_z[j] -= dj.z;
+}
+
+static void fluid_viscosity(ymir_particles* p)
+{
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        p->dp_x[i] = p->dp_y[i] = p->dp_z[i] = 0.0f;
+    }
+    walk_half(p, viscosity_pair, NULL);
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        if (p->particle_live[i])
+        {
+            p->vel_x[i] += p->dp_x[i];
+            p->vel_y[i] += p->dp_y[i];
+            p->vel_z[i] += p->dp_z[i];
         }
     }
 }
@@ -1706,6 +1925,10 @@ void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, floa
     }
     build_grid(p);
     particle_contacts(p);
+    if (p->live_fluid > 0)
+    {
+        fluid_density(p);
+    }
     solve_attachments(&f);
     solve_distances(&f);
     solve_bends(&f);
@@ -1723,6 +1946,10 @@ void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, floa
             put(p->vel_x, p->vel_y, p->vel_z, i, vmul(vsub(y, x), f.inv_h));
         }
         put(p->pos_x, p->pos_y, p->pos_z, i, y);
+    }
+    if (p->live_fluid > 0)
+    {
+        fluid_viscosity(p);
     }
     for (int32_t k = 0; k < p->body_count; ++k)
     {

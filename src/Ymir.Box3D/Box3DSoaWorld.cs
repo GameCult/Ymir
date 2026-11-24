@@ -181,7 +181,7 @@ internal struct Box3DSoaAttachmentDesc
 internal struct Box3DSoaMaterialDesc
 {
     public float Friction;
-    public uint Reserved;
+    public float Viscosity;
     public ulong MaterialId;
 }
 
@@ -299,6 +299,7 @@ internal unsafe struct Box3DSoaViewNative
     public uint* ParticleGeneration;
     public ulong* ParticleRemovedAt;
     public int* ParticleComponent;
+    public float* ParticleDensity;
     public int* DistanceA;
     public int* DistanceB;
     public float* DistanceRest;
@@ -339,6 +340,7 @@ internal unsafe struct Box3DSoaViewNative
     public float* TetherBound;
     public float* MaterialFriction;
     public ulong* MaterialTableId;
+    public float* MaterialViscosity;
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_facts</c>: counts, dropped counters, then three pointers.</summary>
@@ -671,6 +673,8 @@ public readonly unsafe struct Box3DSoaView
     public ReadOnlySpan<ulong> ParticleRemovedAt => Lane(_v.ParticleRemovedAt, ParticleCount);
     /// <summary>Derived: the lowest lane of the particle's component of distance-connected particles.</summary>
     public ReadOnlySpan<int> ParticleComponent => Lane(_v.ParticleComponent, ParticleCount);
+    /// <summary>A fluid particle's number density over its rest density in the last substep it ran (1 is at rest), 0 for a solid: a sensor.</summary>
+    public ReadOnlySpan<float> ParticleDensity => Lane(_v.ParticleDensity, ParticleCount);
 
     public int DistanceCount => _v.DistanceCount;
     public ReadOnlySpan<int> DistanceA => Lane(_v.DistanceA, DistanceCount);
@@ -728,6 +732,8 @@ public readonly unsafe struct Box3DSoaView
     public int MaterialCapacity => _v.MaterialCapacity;
     public ReadOnlySpan<float> MaterialFriction => Lane(_v.MaterialFriction, MaterialCapacity);
     public ReadOnlySpan<ulong> MaterialTableId => Lane(_v.MaterialTableId, MaterialCapacity);
+    /// <summary>The XSPH coefficient of each material (a fluid pair relaxes its velocities by the mean of the two).</summary>
+    public ReadOnlySpan<float> MaterialViscosity => Lane(_v.MaterialViscosity, MaterialCapacity);
 
     /// <summary>N s, world: the impulse the particle phase delivered to each body over the last step (0 for a body it did not touch). Box3D has already applied it; this is notification only.</summary>
     public ReadOnlySpan<float> ParticleImpulseX => Lane(_v.ParticleImpulseX, Count);
@@ -746,7 +752,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 10;
+    private const uint ExpectedAbi = 11;
     private nint _handle;
 
     /// <summary>
@@ -1101,11 +1107,14 @@ public sealed class Box3DSoaWorld : IDisposable
     /// <summary>Removes one constraint.</summary>
     public void Remove(Box3DSoaConstraintHandle constraint) => Remove([constraint]);
 
-    /// <summary>Sets a material table entry: the friction particles of that material have against bodies and the caller's id for it.</summary>
-    public void SetMaterial(int index, float friction, ulong materialId = 0)
+    /// <summary>
+    /// Sets a material table entry: the friction particles of that material have against bodies, the caller's id for it and the
+    /// XSPH viscosity coefficient (dimensionless, &gt;= 0) fluid particles of it relax their velocities by.
+    /// </summary>
+    public void SetMaterial(int index, float friction, ulong materialId = 0, float viscosity = 0f)
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
-        Check(Box3DSoaNative.ymir_box3d_soa_set_material(_handle, index, new Box3DSoaMaterialDesc { Friction = friction, MaterialId = materialId }));
+        Check(Box3DSoaNative.ymir_box3d_soa_set_material(_handle, index, new Box3DSoaMaterialDesc { Friction = friction, Viscosity = viscosity, MaterialId = materialId }));
     }
 
     /// <summary>Lanes a new particle could take right now (never used, or dead for a step).</summary>

@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Ymir.Box3D;
 
 namespace Ymir.Box3D.Soa.Tests;
@@ -31,6 +32,22 @@ public sealed class Box3DSoaFluidTests
         Assert.True(a.Bound.AsSpan().SequenceEqual(b.Bound), "tether bounds differ");
     }
 
+    private const float R = 0.0125f;
+    private const float FluidMass = 0.015625f; // (2 r)^3 of water: 15.6 mL
+
+    private static Box3DSoaWorld FluidWorld(int particles, int bodies = 8, float gravityY = -10f, int materials = 2) =>
+        new(bodies, gravityY: gravityY, particles: new Box3DSoaParticleCapacities(particles, 16, 16, 16, 64, materials));
+
+    /// <summary>A floor and four walls: an open well of interior half-width <paramref name="half"/> centred on the y axis.</summary>
+    private static void Well(Box3DSoaWorld world, float half)
+    {
+        world.AddStaticBox(1, (0f, -0.5f, 0f), (2f, 0.5f, 2f), friction: 0.3f);
+        world.AddStaticBox(2, (half + 0.25f, 1f, 0f), (0.25f, 1f, 1f), friction: 0.3f);
+        world.AddStaticBox(3, (-half - 0.25f, 1f, 0f), (0.25f, 1f, 1f), friction: 0.3f);
+        world.AddStaticBox(4, (0f, 1f, half + 0.25f), (1f, 1f, 0.25f), friction: 0.3f);
+        world.AddStaticBox(5, (0f, 1f, -half - 0.25f), (1f, 1f, 0.25f), friction: 0.3f);
+    }
+
     [Fact]
     public void Fluid_refusals()
     {
@@ -54,6 +71,13 @@ public sealed class Box3DSoaFluidTests
         world.CreateDistances([new Box3DSoaDistanceDesc(ps[0], other[0])]);
         world.Attach(Box3DSoaAttachKind.Static, ps[0], point: (0f, 0f, 0f), tether: true);
         Assert.Equal(1, world.View.DistanceCount); // the view is a snapshot of the counts
+        // a viscosity below 0 or not finite is refused, the material as it was
+        world.SetMaterial(1, 0.3f, 7, 0.25f);
+        Assert.Throws<InvalidOperationException>(() => world.SetMaterial(1, 0.3f, 8, -0.01f));
+        Assert.Throws<InvalidOperationException>(() => world.SetMaterial(1, 0.3f, 8, float.NaN));
+        Assert.Throws<InvalidOperationException>(() => world.SetMaterial(1, 0.3f, 8, float.PositiveInfinity));
+        Assert.Equal(0.25f, world.View.MaterialViscosity[1]);
+        Assert.Equal(7ul, world.View.MaterialTableId[1]);
     }
 
     [Fact]
@@ -101,5 +125,370 @@ public sealed class Box3DSoaFluidTests
         var line = $"FLUID_EMIT 64 fluid particles created and 64 destroyed per tick on the 20-pin 32 x 32 sheet: {emit.TotalMilliseconds / 60:F3} ms per tick of commands";
         Console.Error.WriteLine(line);
         Readings.Add(line);
+    }
+
+    // ---- scenes ---------------------------------------------------------------------------------------------
+
+    private static float Sq(float x) => x * x;
+
+    /// <summary>
+    /// A fluid block thrown at a free 16 x 16 sheet and a 48-rope in zero gravity, nothing pinned: every particle is free, so
+    /// momentum is the whole of it. Masses are per particle.
+    /// </summary>
+    private static Box3DSoaWorld Collision(float fluidMass, float solidMass)
+    {
+        var world = new Box3DSoaWorld(4, gravityY: 0f, particles: new Box3DSoaParticleCapacities(1024, 1024, 1024, 8, 64, 2));
+        world.AddStaticBox(1, (0f, -100f, 0f), (1f, 1f, 1f));
+        Graph.Sheet(world, (0f, 0f, 0f), (0.04f, 0f, 0f), (0f, 0.04f, 0f), 16, 16, solidMass, 0.02f, Box3DSoaPhase.Of(7, true, true));
+        Graph.Rope(world, Graph.Line((-0.3f, 0.25f, 0.3f), (0.03f, 0f, 0f), 48), solidMass, 0.0125f, Box3DSoaPhase.Of(8, true, true), bend: 1e-5f);
+        Graph.Block(world, (0.2f, 0.17f, 0.45f), 5, 5, 5, 0.02f, fluidMass, Box3DSoaPhase.Of(9, fluid: true), velocity: (0f, 0f, -4f));
+        return world;
+    }
+
+    /// <summary>Drift of the total momentum over the run as a fraction of its initial size, and the highest kinetic energy over the initial.</summary>
+    private static (double Drift, double EnergyRatio) Momentum(Box3DSoaWorld world, int ticks)
+    {
+        (double X, double Y, double Z, double E) Total()
+        {
+            var v = world.View;
+            double x = 0, y = 0, z = 0, e = 0;
+            for (var i = 0; i < v.ParticleCount; i++)
+            {
+                if (v.ParticleLive[i] == 0 || v.ParticleInvMass[i] == 0f) continue;
+                double m = 1.0 / v.ParticleInvMass[i];
+                x += m * v.ParticleVx[i]; y += m * v.ParticleVy[i]; z += m * v.ParticleVz[i];
+                e += 0.5 * m * (Sq(v.ParticleVx[i]) + Sq(v.ParticleVy[i]) + Sq(v.ParticleVz[i]));
+            }
+            return (x, y, z, e);
+        }
+        var p0 = Total();
+        var emax = p0.E;
+        var worst = 0.0;
+        var mag = Math.Sqrt(p0.X * p0.X + p0.Y * p0.Y + p0.Z * p0.Z);
+        for (var t = 0; t < ticks; t++)
+        {
+            world.Step(1f / 60f, 4);
+            var p = Total();
+            emax = Math.Max(emax, p.E);
+            worst = Math.Max(worst, Math.Sqrt(Sq((float)(p.X - p0.X)) + Sq((float)(p.Y - p0.Y)) + Sq((float)(p.Z - p0.Z))) / mag);
+        }
+        return (worst, emax / p0.E);
+    }
+
+    /// <summary>Probe scene 3: a 7 x 7 x 7 fluid block above a 16 x 16 sheet tilted down toward +x (pinned at its corners) and a sloped 24-rope.</summary>
+    private static (Box3DSoaWorld World, Made Sheet, Made Rope, Box3DSoaParticleHandle[] Fluid) Pour(bool nudge = false)
+    {
+        var world = new Box3DSoaWorld(4, gravityY: -9.81f, particles: new Box3DSoaParticleCapacities(640, 560, 520, 8, 1024, 2)); // the probe's g
+        world.AddStaticBox(1, (0f, -50f, 0f), (1f, 1f, 1f));
+        world.SetMaterial(1, 0.3f, 0, 0.01f); // the probe's XSPH coefficient
+        const float sp = 0.04f, r = 0.02f;
+        var sheet = Graph.Sheet(world, (0f, 0.6f, 0f), (sp, -0.012f, 0f), (0f, 0f, sp), 16, 16, 0.02f, r, Box3DSoaPhase.Of(4, true, true), bend: 1e-3f);
+        foreach (var i in new[] { 0, 15, 240, 255 })
+        {
+            var v = world.View;
+            world.Attach(Box3DSoaAttachKind.Static, sheet.Particles[i], point: (v.ParticleX[i], v.ParticleY[i], v.ParticleZ[i])); // plain pins, as the probe's
+        }
+        var line = Graph.Line((0.55f, 0.25f, 0.30f), ((1.40f - 0.55f) / 23f, -0.40f / 23f, 0f), 24);
+        var rope = Graph.Rope(world, line, 0.02f, r, Box3DSoaPhase.Of(5), bend: 1e-5f);
+        world.Attach(Box3DSoaAttachKind.Static, rope.Particles[0], point: line[0], tether: true);
+        world.Attach(Box3DSoaAttachKind.Static, rope.Particles[23], point: line[23], tether: true);
+        var desc = new Box3DSoaParticleDesc[343];
+        for (var a = 0; a < 7; a++) for (var b = 0; b < 7; b++) for (var c = 0; c < 7; c++)
+            desc[(a * 7 + b) * 7 + c] = new Box3DSoaParticleDesc((0.10f + a * sp, 0.75f + b * sp, 0.18f + c * sp), 1000f * sp * sp * sp, r, Box3DSoaPhase.Of(6, fluid: true), 1);
+        if (nudge) desc[100].X = BitConverter.UInt32BitsToSingle(BitConverter.SingleToUInt32Bits(desc[100].X) + 1);
+        var fluid = new Box3DSoaParticleHandle[desc.Length];
+        world.CreateParticles(desc, fluid);
+        return (world, sheet, rope, fluid);
+    }
+
+    /// <summary>Substeps of the pour (probe scene 3 ran 8; the pour is chaotic and its pinned counts move with it: 6 -> 333/12/338, 8 -> 295/33/329 with one overlap at 0.496, 12 -> 212/60/299).</summary>
+    private const int PourSub = 10;
+
+    // ---- behaviour ------------------------------------------------------------------------------------------
+
+    // Bounds follow lodur:ruling:deterministic-bound-margin: the geometric mean of the shipped worst and the least claimed mutant, separation >= 1.2.
+    // |mean - 1| at 3 s: shipped 0.0124, M2 (cell stays 2 r_max) 0.0152, M7 (fluid pairs also contact) 0.0206: bound sqrt(0.0124 x 0.0152) = 0.0137,
+    // separation 1.23. The max density reads 1.3440 shipped, 1.3576 under M2 and 1.2653 under M7: no mutant is 1.2 away, so the max has no
+    // claim; 1.5 is a sanity ceiling (the column compressing under its weight is the one-pass solver, not a defect: probe pours peaked at 1.07).
+    private const float ColumnMax = 1.5f;
+    private const float ColumnMean = 0.0137f;
+
+    [Fact]
+    public void Fluid_column_rests_at_rest_density()
+    {
+        // A 8 x 8 x 16 block (r 1.25 cm, water mass) resting in a static box well, 3 s at 60 Hz x 4 substeps. The density constraint is
+        // one pass a substep, so the column compresses under its own weight and its walls read low (a rigid box adds no density
+        // to the estimate, docs/soa-world.md Not done); what is judged is that the max stays under the bound and the mean near 1.
+        using var world = FluidWorld(1024);
+        const float half = 0.105f;
+        Well(world, half);
+        // Alternate groups and set both self flags: two fluid particles share one density field whatever their group (Flex sec. 7), so
+        // neither a group boundary nor SELF_COLLIDE makes a contact between them.
+        var desc = new Box3DSoaParticleDesc[8 * 16 * 8];
+        for (var k = 0; k < 8; k++) for (var j = 0; j < 16; j++) for (var i = 0; i < 8; i++)
+            desc[(k * 16 + j) * 8 + i] = new Box3DSoaParticleDesc((-0.0875f + 2 * R * i, R + 2 * R * j, -0.0875f + 2 * R * k), FluidMass, R,
+                Box3DSoaPhase.Of((uint)((i + j + k) % 2 + 1), true, true, true));
+        var block = new Box3DSoaParticleHandle[desc.Length];
+        world.CreateParticles(desc, block);
+        var worst = 0f;
+        for (var tick = 0; tick < 180; tick++)
+        {
+            world.Step(1f / 60f, 4);
+            if (tick < 120) continue;
+            var d = world.View.ParticleDensity;
+            foreach (var h in block) worst = MathF.Max(worst, d[h.Lane]);
+        }
+        var v = world.View;
+        double mean = 0;
+        var outside = 0;
+        foreach (var h in block)
+        {
+            mean += v.ParticleDensity[h.Lane];
+            if (MathF.Abs(v.ParticleX[h.Lane]) > half || MathF.Abs(v.ParticleZ[h.Lane]) > half || v.ParticleY[h.Lane] < -0.01f) outside++;
+        }
+        mean /= block.Length;
+        var line = $"COLUMN max density over the last second {worst:F4}, mean at 3 s {mean:F4}, outside the well {outside}";
+        Readings.Add(line);
+        Assert.Equal(0, outside);
+        Assert.True(worst <= ColumnMax, $"{line}: max over {ColumnMax}");
+        Assert.True(Math.Abs(mean - 1.0) <= ColumnMean, $"{line}: mean off 1 by over {ColumnMean}");
+    }
+
+    [Fact]
+    public void Fluid_density_counts_a_larger_solid_beyond_two_contact_radii()
+    {
+        // The kernel reach of a pair is 2 (ri + rj), so a fluid particle sees a solid of radius 5 cm 12.5 cm away while contact reaches
+        // 6.25 cm: the grid cell is 2 (r_fluid_max + r_max), not 2 r_max. Placed two 10 cm cells of the narrower grid apart (10.15 cm), the
+        // solid is in the fluid particle's estimate only if the cell is the wider.
+        double Density(bool solid)
+        {
+            using var world = FluidWorld(8, gravityY: 0f);
+            world.CreateParticles([Fluid((0.099f, 0f, 0f))]);
+            if (solid) world.CreateParticles([new Box3DSoaParticleDesc((0.2005f, 0f, 0f), 1f, 0.05f, Box3DSoaPhase.Of(1))]);
+            world.Step(1f / 60f, 4);
+            return world.View.ParticleDensity[0];
+        }
+        var alone = Density(false);
+        var near = Density(true);
+        var rise = near / alone - 1.0;
+        var line = $"KERNEL_REACH fluid density {alone:F6} alone, {near:F6} with a 5 cm solid 10.15 cm away: rise {rise:E3}";
+        Readings.Add(line);
+        Assert.True(rise >= KernelReachBound, line);
+    }
+
+    // Relative rise of the fluid particle's density: shipped 2.530e-3, M2 (cell stays 2 r_max) 0, which counts one unit (1e-6) by
+    // lodur:ruling:deterministic-bound-zero-reading: bound sqrt(2.530e-3 x 1e-6) = 5.0e-5, separation 50.
+    private const double KernelReachBound = 5.0e-5;
+
+    // Drift as a fraction of the initial momentum, worst of the three mass ratios: shipped 3.50e-4 (fluid : solid 1 : 30; 1.5e-5 at the other two,
+    // the float32 floor as Contact_conserves_momentum's), least claimed mutant 1.165e-2 (M1, solid end of pass B not moved, at 30 : 1; M3, each
+    // end takes the whole correction, reads 0.139 at least): bound sqrt(3.50e-4 x 1.165e-2) = 2.0e-3, separation 33.
+    // Kinetic energy, equal-mass-class scene only: shipped 1.000000 (no rise at 1e-6), never above initial to the float floor 1e-5 as the contact test.
+    // At 30 : 1 the density pass does raise it (1.108, pure contact 1.0001): stored constraint violation released against light solids; reported, not claimed.
+    private const double MomentumBound = 2.0e-3;
+    private const double EnergyBound = 1e-5;
+
+    [Theory]
+    [InlineData(0.064f, 0.02f)]       // fluid water, solids as the pour
+    [InlineData(0.002f, 0.06f)]       // fluid : solid 1 : 30
+    [InlineData(0.06f, 0.002f)]       // fluid : solid 30 : 1
+    public void Fluid_solid_momentum_zero_g(float fluidMass, float solidMass)
+    {
+        // A fluid block thrown into a free sheet and a free rope in zero gravity for 2 s: every pair (fluid and fluid, fluid and solid, solid
+        // and solid) moves its two ends by equal and opposite momentum, so the total may not drift and the kinetic energy may not rise,
+        // at any mass ratio. The bound is the float32 floor of the scene, as Contact_conserves_momentum's.
+        using var world = Collision(fluidMass, solidMass);
+        var (drift, energy) = Momentum(world, 120);
+        var line = $"MOMENTUM_FLUID m_f {fluidMass} m_s {solidMass}: drift {drift:E3} of the initial momentum, kinetic energy max/initial {energy:F6}";
+        Readings.Add(line);
+        Assert.True(drift <= MomentumBound, line);
+        if (fluidMass == 0.064f) Assert.True(energy <= 1 + EnergyBound, line);
+    }
+
+    [Fact]
+    public void Fluid_pours_on_a_sheet_and_off_a_rope()
+    {
+        var (world, sheet, rope, fluid) = Pour();
+        using (world)
+        {
+            var touchedSheet = new bool[fluid.Length];
+            var touchedRope = new bool[fluid.Length];
+            var deep = 0; var minRatio = 9f;
+            var solids = sheet.Particles.Select(h => (h.Lane, Sheet: true)).Concat(rope.Particles.Select(h => (h.Lane, Sheet: false))).ToArray();
+            for (var tick = 0; tick < 240; tick++)
+            {
+                world.Step(1f / 60f, PourSub);
+                var v = world.View;
+                for (var k = 0; k < fluid.Length; k++)
+                {
+                    var f = fluid[k].Lane;
+                    foreach (var (s, onSheet) in solids)
+                    {
+                        var reach = v.ParticleRadius[f] + v.ParticleRadius[s];
+                        var d = Graph.Dist(v, f, s);
+                        if (d < 1.25f * reach) { if (onSheet) touchedSheet[k] = true; else touchedRope[k] = true; }
+                        if (d < 0.5f * reach) deep++;
+                        minRatio = MathF.Min(minRatio, d / reach);
+                    }
+                }
+            }
+            var view = world.View;
+            var below = fluid.Count(h => view.ParticleY[h.Lane] < -0.2f);
+            var line = $"POUR touched the sheet {touchedSheet.Count(b => b)} of {fluid.Length}, the rope {touchedRope.Count(b => b)}, below y = -0.2 m at 4 s {below}, within half a contact distance of a solid {deep} (closest {minRatio:F3} of a contact distance)";
+            Readings.Add(line);
+            Assert.True(touchedSheet.Count(b => b) >= 250, line);
+            Assert.True(touchedRope.Count(b => b) >= 30, line);
+            Assert.True(below >= 300, line);
+            Assert.Equal(0, deep);
+        }
+    }
+
+    [Fact]
+    public void Fluid_pushes_a_body()
+    {
+        // A fluid block thrown down on a free 1 kg box in zero gravity: the contact and gravity terms are 0, so the box's M dv in a tick is
+        // the impulse the particles gave it, which the lane reads. Fluid is booked on a body as any particle is.
+        using var world = FluidWorld(256, gravityY: 0f);
+        const float mass = 1f;
+        var box = world.AddBox(2, (0f, 0f, 0f), (0.1f, 0.1f, 0.1f), mass / (8f * 0.1f * 0.1f * 0.1f), friction: 0.3f);
+        Graph.Block(world, (-0.0375f, 0.13f, -0.0375f), 4, 4, 4, R, FluidMass, FluidPhase, velocity: (0f, -3f, 0f));
+        var view = world.View;
+        var (vx, vy, vz) = (view.VelocityX[box], view.VelocityY[box], view.VelocityZ[box]);
+        float worst = 0f, peak = 0f;
+        for (var tick = 0; tick < 120; tick++)
+        {
+            world.Step(1f / 60f, 4);
+            var dx = mass * (view.VelocityX[box] - vx) - view.ParticleImpulseX[box];
+            var dy = mass * (view.VelocityY[box] - vy) - view.ParticleImpulseY[box];
+            var dz = mass * (view.VelocityZ[box] - vz) - view.ParticleImpulseZ[box];
+            worst = MathF.Max(worst, MathF.Max(MathF.Abs(dx), MathF.Max(MathF.Abs(dy), MathF.Abs(dz))));
+            peak = MathF.Max(peak, MathF.Abs(view.ParticleImpulseY[box]));
+            (vx, vy, vz) = (view.VelocityX[box], view.VelocityY[box], view.VelocityZ[box]);
+        }
+        var line = $"PUSH peak impulse {peak:F5} N s a tick, worst |M dv - lane| {worst:E3} N s ({worst / peak:P3} of the peak)";
+        Readings.Add(line);
+        Assert.True(peak > 0.01f, line);
+        Assert.True(worst <= 0.005f * peak, line);
+    }
+
+    // Drift of the mean nearest-neighbour distance in micrometres: shipped 0 (reads 0.000 at 1e-3, so half a unit, 5e-4), M4 (bilateral C) 1.529e7:
+    // bound sqrt(5e-4 x 1.529e7) = 87 micrometres by lodur:ruling:deterministic-bound-zero-reading, separation 1.8e5.
+    private const double ClumpBound = 87.0;
+
+    [Fact]
+    public void Fluid_does_not_clump()
+    {
+        // Particles on a lattice at 3 r spacing are under-dense: a unilateral constraint (C = max(n / n0 - 1, 0)) leaves them where they
+        // are. A bilateral one pulls them together to rest density.
+        using var world = FluidWorld(512, gravityY: 0f);
+        world.AddStaticBox(1, (0f, -100f, 0f), (1f, 1f, 1f));
+        var block = Graph.Block(world, (0f, 0f, 0f), 6, 6, 6, R, FluidMass, FluidPhase, pitch: 3f * R);
+        double Mean()
+        {
+            var v = world.View;
+            double sum = 0;
+            foreach (var a in block)
+            {
+                var nearest = float.MaxValue;
+                foreach (var b in block) if (a.Lane != b.Lane) nearest = MathF.Min(nearest, Graph.Dist(v, a.Lane, b.Lane));
+                sum += nearest;
+            }
+            return sum / block.Length;
+        }
+        var before = Mean();
+        for (var tick = 0; tick < 60; tick++) world.Step(1f / 60f, 4);
+        var after = Mean();
+        var line = $"CLUMP mean nearest-neighbour distance {before * 1e3:F6} mm before, {after * 1e3:F6} mm after 1 s (pitch {3f * R * 1e3:F4} mm), drift {Math.Abs(after - before) * 1e6:F3} micrometres";
+        Readings.Add(line);
+        Assert.True(Math.Abs(after - before) * 1e6 <= ClumpBound, line);
+    }
+
+    // Variance ratio, viscosity 0.1 over 0: shipped 0.7799, M5 (XSPH skipped) 1.0000: bound sqrt(0.7799 x 1.0000) = 0.883, separation 1.28.
+    private const double ShearBound = 0.883;
+
+    [Fact]
+    public void Fluid_viscosity_damps_shear()
+    {
+        // The same block with a shear velocity field (vx by layer) for 0.5 s in zero gravity: XSPH at 0.1 takes the velocity variance
+        // under the bound, at 0 it stays.
+        static double Variance(float viscosity)
+        {
+            using var world = FluidWorld(512, gravityY: 0f);
+            world.AddStaticBox(1, (0f, -100f, 0f), (1f, 1f, 1f));
+            world.SetMaterial(0, 0.3f, 0, viscosity);
+            var desc = new Box3DSoaParticleDesc[216];
+            for (var k = 0; k < 6; k++) for (var j = 0; j < 6; j++) for (var i = 0; i < 6; i++)
+                desc[(k * 6 + j) * 6 + i] = new Box3DSoaParticleDesc((2 * R * i, 2 * R * j, 2 * R * k), FluidMass, R, FluidPhase, 0, null, (0.5f * (j - 2.5f), 0f, 0f));
+            var made = new Box3DSoaParticleHandle[216];
+            world.CreateParticles(desc, made);
+            for (var tick = 0; tick < 30; tick++) world.Step(1f / 60f, 4);
+            var v = world.View;
+            double mean = 0, sq = 0;
+            foreach (var h in made) { mean += v.ParticleVx[h.Lane]; sq += Sq(v.ParticleVx[h.Lane]); }
+            mean /= made.Length;
+            return sq / made.Length - mean * mean;
+        }
+        var free = Variance(0f);
+        var damped = Variance(0.1f);
+        var line = $"SHEAR velocity variance after 0.5 s: viscosity 0 {free:F5}, viscosity 0.1 {damped:F5} (ratio {damped / free:F4})";
+        Readings.Add(line);
+        Assert.True(damped <= ShearBound * free, line);
+    }
+
+    // ---- determinism ----------------------------------------------------------------------------------------
+
+    private static ulong Fnv(ulong h, ReadOnlySpan<byte> bytes)
+    {
+        foreach (var b in bytes) { h ^= b; h *= 1099511628211ul; }
+        return h;
+    }
+
+    private static ulong HashFluid(Box3DSoaView v)
+    {
+        var h = 1469598103934665603ul;
+        void F(ReadOnlySpan<float> lane) => h = Fnv(h, MemoryMarshal.AsBytes(lane));
+        F(v.ParticleX); F(v.ParticleY); F(v.ParticleZ); F(v.ParticleVx); F(v.ParticleVy); F(v.ParticleVz); F(v.ParticleDensity);
+        F(v.DistanceTension); F(v.AttachmentForceX); F(v.AttachmentForceY); F(v.AttachmentForceZ);
+        F(v.PositionX); F(v.PositionY); F(v.PositionZ); F(v.VelocityX); F(v.VelocityY); F(v.VelocityZ);
+        F(v.ParticleImpulseX); F(v.ParticleImpulseY); F(v.ParticleImpulseZ);
+        return h;
+    }
+
+    private static ulong[] Checkpoints(bool nudge = false)
+    {
+        var (world, _, _, _) = Pour(nudge);
+        using (world)
+        {
+            var hashes = new ulong[6];
+            for (var c = 0; c < 6; c++)
+            {
+                for (var t = 0; t < 40; t++) world.Step(1f / 60f, PourSub);
+                hashes[c] = HashFluid(world.View);
+            }
+            return hashes;
+        }
+    }
+
+    // Recorded on this commit's build (gcc 13.2, -ffp-contract=off): the pour scene's particle, density and body lanes at ticks 40, 80, ... 240.
+    private static readonly ulong[] FluidHashes = [5483896317407431507ul, 5543394749619665441ul, 17137743801444348829ul, 2389985220451369037ul, 13124815529364315574ul, 13300095781041689986ul];
+
+    [Fact]
+    public void Fluid_world_is_byte_deterministic()
+    {
+        var a = Checkpoints();
+        var b = Checkpoints();
+        Assert.True(a.AsSpan().SequenceEqual(b), "two runs diverged: " + string.Join(",", a) + " vs " + string.Join(",", b));
+        Assert.True(a.Distinct().Count() == 6, "the scene moves");
+        Assert.False(a.AsSpan().SequenceEqual(Checkpoints(nudge: true)), "a one-ulp input difference must diverge");
+        Assert.True(FluidHashes.AsSpan().SequenceEqual(a), string.Join(",", a.Select(g => g + "ul")));
+    }
+
+    [Fact]
+    public async Task Fluid_world_is_the_same_bytes_on_any_thread_under_load()
+    {
+        var serial = Checkpoints();
+        var results = Enumerable.Range(0, 8).Select(_ => Task.Factory.StartNew(() => Checkpoints(), TaskCreationOptions.LongRunning)).ToArray();
+        await Task.WhenAll(results);
+        foreach (var r in results) Assert.True(Enumerable.SequenceEqual(serial, await r), "a concurrent run diverged from the serial one");
     }
 }

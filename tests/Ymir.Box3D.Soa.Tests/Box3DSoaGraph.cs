@@ -72,6 +72,25 @@ internal static class Graph
         return new Made(p, e, bends);
     }
 
+    /// <summary>
+    /// An <paramref name="nx"/> x <paramref name="ny"/> x <paramref name="nz"/> block of particles on a simple-cubic lattice at spacing
+    /// 2 <paramref name="radius"/> (or <paramref name="pitch"/>), the first particle's centre at <paramref name="origin"/>, x fastest. No constraint: pass the fluid phase for a liquid.
+    /// </summary>
+    public static Box3DSoaParticleHandle[] Block(
+        Box3DSoaWorld world, Pos origin, int nx, int ny, int nz, float radius, float mass, uint phase, uint material = 0, Pos velocity = default, float pitch = 0f)
+    {
+        var desc = new Box3DSoaParticleDesc[nx * ny * nz];
+        var s = pitch > 0f ? pitch : 2f * radius;
+        for (var k = 0; k < nz; k++)
+            for (var j = 0; j < ny; j++)
+                for (var i = 0; i < nx; i++)
+                    desc[(k * ny + j) * nx + i] = new Box3DSoaParticleDesc(
+                        (origin.X + s * i, origin.Y + s * j, origin.Z + s * k), mass, radius, phase, material, null, velocity);
+        var p = new Box3DSoaParticleHandle[desc.Length];
+        world.CreateParticles(desc, p);
+        return p;
+    }
+
     public static float Dist(Box3DSoaView v, int a, int b) =>
         MathF.Sqrt(Sq(v.ParticleX[a] - v.ParticleX[b]) + Sq(v.ParticleY[a] - v.ParticleY[b]) + Sq(v.ParticleZ[a] - v.ParticleZ[b]));
 

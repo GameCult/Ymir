@@ -58,7 +58,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a destroyed joint's lane: never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 10u
+#define YMIR_SOA_ABI_VERSION 11u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -223,6 +223,8 @@ typedef struct ymir_box3d_soa_view
     const uint64_t* particle_removed_at;
     // Derived by rederive_topology: the lowest lane of the particle's component of distance-connected particles.
     const int32_t* particle_component;
+    // A fluid particle's number density over its rest density in the last substep it ran (1 is at rest), 0 for a solid: a sensor.
+    const float* particle_density;
     // Distance lanes. tension (N) is the load the constraint carries, mean over the substeps: a sensor, Ymir never
     // removes a constraint on it.
     const int32_t* distance_a;
@@ -271,6 +273,7 @@ typedef struct ymir_box3d_soa_view
     // Material table, indexed up to material_capacity.
     const float* material_friction;
     const uint64_t* material_id_lane;
+    const float* material_viscosity;
 } ymir_box3d_soa_view;
 
 // A begin or end of touch between two bodies: their lane indices and the shapes' stable ids.
@@ -1524,6 +1527,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         view->particle_generation = pt->particle_generation;
         view->particle_removed_at = pt->particle_removed_at;
         view->particle_component = pt->component;
+        view->particle_density = pt->density;
         view->distance_a = pt->dist_a;
         view->distance_b = pt->dist_b;
         view->distance_rest = pt->dist_rest;
@@ -1564,6 +1568,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         view->tether_bound = pt->tether_bound;
         view->material_friction = pt->mat_friction;
         view->material_id_lane = pt->mat_id;
+        view->material_viscosity = pt->mat_viscosity;
     }
     return YMIR_SOA_OK;
 }

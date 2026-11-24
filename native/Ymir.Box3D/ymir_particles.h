@@ -129,8 +129,8 @@ typedef struct ymir_attachment_desc
 
 typedef struct ymir_material_desc
 {
-    float friction; // >= 0
-    uint32_t reserved;
+    float friction;  // >= 0
+    float viscosity; // >= 0, XSPH c (dimensionless): a fluid pair's velocities relax toward each other by c W / n0 per substep; mean of the pair's two
     uint64_t material_id;
 } ymir_material_desc;
 
@@ -169,6 +169,7 @@ typedef struct ymir_particles
     uint32_t *phase, *material, *particle_live, *particle_generation;
     uint64_t* particle_removed_at;
     int32_t* component; // derived: the lowest lane of the particle's distance-connected component
+    float* density;     // sensor: a fluid particle's number density over its rest density n_i / n0 in the last substep it ran, else 0
 
     // distance lanes
     int32_t *dist_a, *dist_b;
@@ -199,11 +200,12 @@ typedef struct ymir_particles
     float* tether_bound;
 
     // material table
-    float* mat_friction;
+    float *mat_friction, *mat_viscosity;
     uint64_t* mat_id;
 
     // solver scratch, allocated once at create
-    float *pp_x, *pp_y, *pp_z, *dp_x, *dp_y, *dp_z, *dist_acc, *tacc_x, *tacc_y, *tacc_z;
+    float *pp_x, *pp_y, *pp_z, *dp_x, *dp_y, *dp_z, *dist_acc, *tacc_x, *tacc_y, *tacc_z, *lambda;
+    float fluid_k; // n0(h) = fluid_k / h^3: the Poly6 sum over the simple-cubic lattice of spacing h / 2, a create-time constant
     int32_t *lane_list, *cell_x, *cell_y, *cell_z, *cell_start, *cell_fill, *sorted, *contacts;
     int32_t *adj_start, *adj_edge, *heap_node, *heap_edge, *via, *owner, *tether_of, *queue, *comp_size, *isle, *near_isle;
     float *heap_key, *path, *near_path;
