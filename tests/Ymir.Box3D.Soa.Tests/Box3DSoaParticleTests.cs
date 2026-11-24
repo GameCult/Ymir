@@ -622,6 +622,50 @@ public sealed class Box3DSoaParticleTests
     }
 
     [Fact]
+    public void Every_tether_has_its_parent_on_a_32_by_32_sheet_pinned_at_20_points()
+    {
+        // The ranked islands of a particle are closed along each island's path tree in exact arithmetic only: float32 path sums
+        // break the tie of two equal paths, so a particle can keep an island its parent dropped. The derivation then writes no
+        // tether for it, and every tether's parent is the tether of the particle one edge nearer or that particle is a point.
+        using var world = World(particles: 1024, distances: 2048, bends: 2048, attachments: 32, tethers: 4096);
+        const float sp = 0.04f;
+        var sheet = Graph.Sheet(world, (0f, 2f, 0f), (sp, 0f, 0f), (0f, -sp, 0f), 32, 32, ParticleMass, 0.02f);
+        var held = new HashSet<int>();
+        var checkedTethers = 0;
+        void Check() // the invariant after each derivation: the ties fall where the pins stand at that command
+        {
+            var view = world.View;
+            var pinned = new HashSet<int>(view.AttachmentParticle.ToArray());
+            checkedTethers = 0;
+            for (var t = 0; t < view.TetherCount; t++)
+            {
+                if (view.TetherAttachment[t] < 0 || view.TetherOther[t] >= 0) continue;
+                var e = view.TetherEdge[t];
+                var u = view.TetherParticle[t];
+                var near = view.DistanceA[e] == u ? view.DistanceB[e] : view.DistanceA[e];
+                var parent = view.TetherParent[t];
+                if (parent < 0) Assert.True(pinned.Contains(near), $"tether {t} of particle {u} has no parent but its nearer particle {near} holds no point");
+                else
+                {
+                    Assert.True(parent < t, $"tether {t} routes through a later lane");
+                    Assert.Equal(near, view.TetherParticle[parent]);
+                }
+                checkedTethers++;
+            }
+        }
+        for (var a = 0; a < 20; a++)
+        {
+            var i = a == 0 ? 0 : a == 1 ? 31 : a * 37 % 1024;
+            if (!held.Add(i)) continue;
+            world.Attach(Box3DSoaAttachKind.Static, sheet.Particles[i], point: (i % 32 * sp, 2f - i / 32 * sp, 0f), tether: true);
+            Check();
+        }
+        var view = world.View;
+        Readings.Add($"PINNED_32 tethers {view.TetherCount}, particle tethers {checkedTethers}");
+        Assert.True(checkedTethers > 1900, $"{checkedTethers} particle tethers");
+    }
+
+    [Fact]
     public void Sheet_hung_by_two_corner_groups()
     {
         // 16 x 16 hung by pins on top-row particles 0, 1, 14 and 15: two corners of two adjacent pins each. Ranking pins instead
