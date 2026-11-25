@@ -481,4 +481,176 @@ public sealed class Box3DSoaCouplingTests
             Assert.True(withs[pairs / 2] > 0);
         }
     }
+
+    // ---- flesh of a limb tree (YMIR_ATTACH_FLAG_LIMB) --------------------------------------------------------
+
+    private static Pos BodyPoint(Box3DSoaView v, int lane, Pos local)
+    {
+        float qx = v.RotationX[lane], qy = v.RotationY[lane], qz = v.RotationZ[lane], qw = v.RotationW[lane];
+        var tx = 2f * (qy * local.Z - qz * local.Y); var ty = 2f * (qz * local.X - qx * local.Z); var tz = 2f * (qx * local.Y - qy * local.X);
+        return (v.PositionX[lane] + local.X + qw * tx + (qy * tz - qz * ty),
+                v.PositionY[lane] + local.Y + qw * ty + (qz * tx - qx * tz),
+                v.PositionZ[lane] + local.Z + qw * tz + (qx * ty - qy * tx));
+    }
+
+    private static float Gap(Box3DSoaView v, int particle, Pos point) =>
+        MathF.Sqrt(Sq(v.ParticleX[particle] - point.X) + Sq(v.ParticleY[particle] - point.Y) + Sq(v.ParticleZ[particle] - point.Z));
+
+    // Two capsules of one limb tree, side by side with a gap between them (no overlap, no gravity): the upper arm's top cap centre
+    // U = (0, 0.4, 0) and the forearm's bottom cap centre (0.2, 0.5, 0), both of radius 0.1. One particle sits 0.106 m from U toward
+    // the forearm, inside the upper arm's contact reach (0.1 + 0.0125 = 0.1125) and attached to the forearm at its own place.
+    private const float ArmRadius = 0.1f;
+    private static readonly Pos ArmTop = (0f, 0.4f, 0f);
+    private static readonly Pos FlankPoint = (0.0948f, 0.4474f, 0f);
+
+    private static (Box3DSoaWorld World, int Upper, int Fore, Box3DSoaParticleHandle Flesh, Box3DSoaConstraintHandle Attachment, Pos Local) Arm(bool limb)
+    {
+        var world = Box3DSoaParticleTests.World(gravityY: 0f);
+        var upper = world.AddCapsule(1, (0f, 0f, 0f), ArmRadius, 0.4f, 1000f);
+        var fore = world.AddCapsule(2, (0.2f, 0.9f, 0f), ArmRadius, 0.4f, 1000f, parent: upper);
+        var flesh = new Box3DSoaParticleHandle[1];
+        world.CreateParticles([new Box3DSoaParticleDesc(FlankPoint, ParticleMass, ParticleRadius)], flesh);
+        Pos local = (FlankPoint.X - 0.2f, FlankPoint.Y - 0.9f, FlankPoint.Z);
+        var attachment = world.Attach(Box3DSoaAttachKind.Body, flesh[0], fore, local, limb: limb);
+        return (world, upper, fore, flesh[0], attachment, local);
+    }
+
+    private static float ArmDeviation(bool limb)
+    {
+        var (world, _, fore, flesh, _, local) = Arm(limb);
+        using (world)
+        {
+            var worst = 0f;
+            for (var i = 0; i < 120; i++)
+            {
+                world.Step(Dt, Sub);
+                worst = MathF.Max(worst, Gap(world.View, flesh.Lane, BodyPoint(world.View, fore, local)));
+            }
+            return worst;
+        }
+    }
+
+    [Fact]
+    public void Limb_flesh_ignores_the_bones_of_its_own_limb()
+    {
+        // The flesh particle is attached to the forearm and lies inside the upper arm's reach. With LIMB the contact skips the whole tree
+        // (the upper arm is the forearm's parent: one root) and the particle stays on its attachment point; without it the upper arm
+        // shoves the particle. Readings are the worst distance of the particle from its attachment point over 120 ticks.
+        var withLimb = ArmDeviation(true);
+        var without = ArmDeviation(false);
+        Reading($"LIMB_FLESH worst deviation from the attachment point with LIMB {F(withLimb)} m, without {F(without)} m");
+        Assert.True(withLimb < LimbBound, $"LIMB flesh sat {withLimb} m off its point");
+        Assert.True(without > PushedFloor, $"the same particle without LIMB sat only {without} m off its point");
+    }
+
+    [Fact]
+    public void Plain_attachment_skips_only_its_own_body_and_a_neighbour_still_collides()
+    {
+        // A two-particle rope at a sphere: the end A is tied inside the sphere without LIMB and stays on its point; B, one link out and
+        // not attached, starts inside the sphere's reach and is pushed out of it. The held list names A's own body and nothing else.
+        using var world = Box3DSoaParticleTests.World(gravityY: 0f);
+        const float radius = 0.3f;
+        var sphere = world.AddSphere(1, (0f, 0f, 0f), radius, 1000f);
+        Pos a = (0f, 0.29f, 0f), b = (Spacing, 0.29f, 0f);
+        var rope = Graph.Rope(world, [a, b], ParticleMass, ParticleRadius, bend: -1f);
+        world.Attach(Box3DSoaAttachKind.Body, rope.Particles[0], sphere, a);
+        var view = world.View;
+        var worstA = 0f;
+        for (var i = 0; i < 120; i++)
+        {
+            world.Step(Dt, Sub);
+            worstA = MathF.Max(worstA, Gap(view, rope.Particles[0].Lane, BodyPoint(view, sphere, a)));
+        }
+        var lb = rope.Particles[1].Lane;
+        var bFromCentre = MathF.Sqrt(Sq(view.ParticleX[lb] - view.PositionX[sphere]) + Sq(view.ParticleY[lb] - view.PositionY[sphere]) + Sq(view.ParticleZ[lb] - view.PositionZ[sphere]));
+        Reading($"HELD_PLAIN attached end worst gap {F(worstA)} m; neighbour at {F(bFromCentre)} m from the sphere centre (surface plus radius {F(radius + ParticleRadius)})");
+        Assert.True(worstA < HeldGap, $"the attached end sat {worstA} m off its point");
+        var penetration = MathF.Max(0f, radius + ParticleRadius - bFromCentre);
+        Assert.True(penetration < NeighbourDepth, $"the neighbour stayed {penetration} m inside the body's reach");
+    }
+
+    [Fact]
+    public void Removing_the_limb_attachment_restores_contact_with_the_tree()
+    {
+        // The held list and limb body are derived at every attachment command: after Remove the particle meets the upper arm again.
+        var (world, upper, _, flesh, attachment, _) = Arm(true);
+        using (world)
+        {
+            Run(world, 30);
+            var view = world.View;
+            var cap = BodyPoint(view, upper, ArmTop);
+            var before = Gap(view, flesh.Lane, cap);
+            world.Remove([attachment]);
+            Run(world, 30);
+            cap = BodyPoint(view, upper, ArmTop);
+            var after = Gap(view, flesh.Lane, cap);
+            Reading($"LIMB_REMOVED distance from the upper arm's cap centre while attached {F(before)} m, 30 ticks after Remove {F(after)} m (surface plus radius {F(ArmRadius + ParticleRadius)})");
+            Assert.True(before < ArmRadius + ParticleRadius, "the LIMB particle was not inside the upper arm's reach to begin with");
+            var depth = MathF.Max(0f, ArmRadius + ParticleRadius - after);
+            Assert.True(depth < RemovedDepth, $"after Remove the particle sat {depth} m inside the upper arm's reach");
+        }
+    }
+
+    [Fact]
+    public void Limb_attachment_to_a_world_point_is_refused()
+    {
+        using var world = Box3DSoaParticleTests.World(gravityY: 0f);
+        var flesh = new Box3DSoaParticleHandle[1];
+        world.CreateParticles([new Box3DSoaParticleDesc((0f, 1f, 0f), ParticleMass, ParticleRadius)], flesh);
+        Assert.ThrowsAny<Exception>(() => world.Attach(Box3DSoaAttachKind.Static, flesh[0], point: (0f, 1f, 0f), limb: true));
+    }
+
+    [Fact]
+    public void Held_body_contact_cost_reading()
+    {
+        // 600 particles, each attached (plain) to one of 19 capsules in a row and so skipping that body, every particle in reach of its
+        // neighbours' bodies: the tick's cost, median of repeated runs of one scene. Printed, no bound.
+        const int bodies = 19, count = 600, reps = 7;
+        static double OneRun()
+        {
+            using var world = Box3DSoaParticleTests.World(bodies: bodies + 1, particles: count, distances: 1, bends: 1, attachments: count, tethers: 1, gravityY: 0f);
+            var lanes = new int[bodies];
+            for (var k = 0; k < bodies; k++) lanes[k] = world.AddCapsule((ulong)(k + 1), (0.12f * k, 0f, 0f), 0.05f, 0.15f, 1000f);
+            var desc = new Box3DSoaParticleDesc[count];
+            for (var i = 0; i < count; i++)
+            {
+                var k = i % bodies;
+                var ang = 6.2831853f * (i / bodies) / (count / bodies + 1);
+                desc[i] = new Box3DSoaParticleDesc((0.12f * k + 0.04f * MathF.Cos(ang), 0.2f * MathF.Sin(ang), 0.04f * MathF.Sin(ang)), ParticleMass, ParticleRadius);
+            }
+            var handles = new Box3DSoaParticleHandle[count];
+            world.CreateParticles(desc, handles);
+            for (var i = 0; i < count; i++)
+                world.Attach(Box3DSoaAttachKind.Body, handles[i], lanes[i % bodies], (desc[i].X - 0.12f * (i % bodies), desc[i].Y, desc[i].Z));
+            Run(world, 10);
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            Run(world, 60);
+            return sw.Elapsed.TotalMilliseconds / 60.0;
+        }
+        var runs = new double[reps];
+        for (var k = 0; k < reps; k++) runs[k] = OneRun();
+        Array.Sort(runs);
+        var line = $"HELD_COST {count} particles attached to {bodies} capsules, 4 substeps: median {F(runs[reps / 2])} ms per tick (min {F(runs[0])}, max {F(runs[reps - 1])})";
+        Console.Error.WriteLine(line);
+        Reading(line);
+        Assert.True(runs[reps / 2] > 0);
+    }
+
+    // Bounds, by lodur:ruling:deterministic-bound-margin and deterministic-bound-zero-reading: the geometric mean of the shipped worst and the
+    // least claimed mutant (a shipped zero counts as half a unit, a mutant zero as one unit; the unit is 1 um). The mutants, each a one-line
+    // change to ymir_particles.c, and their readings (metres):
+    //   Ml  the LIMB root compare deleted            Mr  the compare against the attached body's lane instead of its root
+    //   Mx  the root skip applied to every particle  Mb  held_by true for any particle with a list
+    //   Mh  the held list read as empty              Mp  limb_body not reset when the list is rederived
+    // LimbBound: shipped worst 0 (-> 5e-7), least claimed mutant Ml = Mr 6.2855e-3, separation 12571; bound sqrt(5e-7 x 6.2855e-3).
+    private const float LimbBound = 5.6e-5f;
+    // PushedFloor: shipped (no LIMB) 6.2855e-3, least claimed mutant Mx = Mb 0 (-> 1e-6), separation 6285; floor sqrt(6.2855e-3 x 1e-6).
+    private const float PushedFloor = 7.9e-5f;
+    // The attached end's worst gap while its neighbour is pushed: shipped 4.66652e-3 (the rope link pulls it), least claimed mutant Mh 2.26468e-2,
+    // separation 4.85; bound sqrt(4.66652e-3 x 2.26468e-2) = 1.028e-2. Held tests (b) sit in Plain_attachment_skips_only_its_own_body_*.
+    private const float HeldGap = 1.028e-2f;
+    // The neighbour's depth inside the sphere's reach at the end: shipped 0 (-> 5e-7), least claimed mutant Mx 2.0952e-2; bound sqrt(5e-7 x 2.0952e-2).
+    private const float NeighbourDepth = 1.02e-4f;
+    // The particle's depth inside the upper arm's reach 30 ticks after Remove: shipped 0 (-> 5e-7), least claimed mutant Mp 6.51e-3; bound sqrt(5e-7 x 6.51e-3).
+    private const float RemovedDepth = 5.7e-5f;
 }
