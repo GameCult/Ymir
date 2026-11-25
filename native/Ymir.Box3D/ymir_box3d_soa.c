@@ -58,7 +58,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a destroyed joint's lane: never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 11u
+#define YMIR_SOA_ABI_VERSION 12u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -127,6 +127,8 @@ typedef struct ymir_box3d_soa_view
     // Particle and constraint high-water counts and capacities (all 0 for a world created without capacities).
     int32_t particle_count;
     int32_t particle_capacity;
+    // Kernel neighbours past a fluid particle's list (96) in the last step, summed over substeps: 0 means the correction and XSPH saw every pair.
+    int32_t fluid_neighbour_overflow;
     int32_t distance_count;
     int32_t distance_capacity;
     int32_t bend_count;
@@ -1447,6 +1449,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         .step_count = world->step_count,
         .particle_count = pt != NULL ? pt->particle_count : 0,
         .particle_capacity = pt != NULL ? pt->particle_capacity : 0,
+        .fluid_neighbour_overflow = pt != NULL ? pt->fluid_overflow : 0,
         .distance_count = pt != NULL ? pt->distance_count : 0,
         .distance_capacity = pt != NULL ? pt->distance_capacity : 0,
         .bend_count = pt != NULL ? pt->bend_count : 0,

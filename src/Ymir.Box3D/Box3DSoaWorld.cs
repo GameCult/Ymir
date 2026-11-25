@@ -221,6 +221,7 @@ internal unsafe struct Box3DSoaViewNative
     public ulong StepCount;
     public int ParticleCount;
     public int ParticleCapacity;
+    public int FluidNeighbourOverflow;
     public int DistanceCount;
     public int DistanceCapacity;
     public int BendCount;
@@ -655,6 +656,8 @@ public readonly unsafe struct Box3DSoaView
     // it is reused once a step has passed since its removal.
     public int ParticleCount => _v.ParticleCount;
     public int ParticleCapacity => _v.ParticleCapacity;
+    /// <summary>Kernel neighbours past a fluid particle's list of 96 in the last step, summed over substeps; 0 means the density correction and XSPH saw every pair.</summary>
+    public int FluidNeighbourOverflow => _v.FluidNeighbourOverflow;
     public ReadOnlySpan<float> ParticleX => Lane(_v.ParticleX, ParticleCount);
     public ReadOnlySpan<float> ParticleY => Lane(_v.ParticleY, ParticleCount);
     public ReadOnlySpan<float> ParticleZ => Lane(_v.ParticleZ, ParticleCount);
@@ -752,7 +755,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 11;
+    private const uint ExpectedAbi = 12;
     private nint _handle;
 
     /// <summary>

@@ -224,9 +224,14 @@ public sealed class Box3DSoaFluidTests
     // ---- behaviour ------------------------------------------------------------------------------------------
 
     // Bounds follow lodur:ruling:deterministic-bound-margin: the geometric mean of the shipped worst and the least claimed mutant, separation >= 1.2.
-    // |mean - 1| at 3 s: shipped 0.0124, M2 (cell stays 2 r_max) 0.0152, M7 (fluid pairs also contact) 0.0206: bound sqrt(0.0124 x 0.0152) = 0.0137,
-    // separation 1.23. The max density reads 1.3440 shipped, 1.3576 under M2 and 1.2653 under M7: no mutant is 1.2 away, so the max has no
-    // claim (Mc1, lambda halved, reads 1.2116, 1.11 under shipped; Mc2, pass A without the self term, 1.3340, 1.01: unclaimed, a follow-up); 1.5 is a sanity ceiling (the column compressing under its weight is the one-pass solver, not a defect: probe pours peaked at 1.07).
+    // |mean - 1| at 3 s: shipped 0.0133, Md (fluid-fluid pairs done from both rows) 0.467, Mr (rings forced to 1) 0.0138. Md is 35 away; the midpoint
+    // sqrt(0.0133 x 0.467) = 0.0788 would rise, so the standing 0.0137 stays (never loosened); shipped is 1.03 under it and Mr, 1.01 over it, is
+    // not separated (unclaimed here: KERNEL_REACH and the floor claim it, a follow-up for this metric). The max density reads 1.3278 shipped,
+    // 1.3331 under Mr and 1.867 under Md: Md is 1.41 away, the midpoint 1.575 would rise, so the sanity ceiling 1.5 stays and also claims Md (the
+    // column compressing under its weight is the one-pass solver, not a defect: probe pours peaked at 1.07). Mo (capacity 8) overflows the lists
+    // 597364 times in the column against 0 shipped (half a unit by lodur:ruling:deterministic-bound-zero-reading): the overflow assert is exact
+    // zero, below the rule's midpoint, because the count is exact and any overflow means pairs were lost.
+    // Unclaimed since the fix cut, readings of its build, a follow-up: Mc1 (lambda halved) max 1.2116, Mc2 (pass A without the self term) max 1.3340.
     private const float ColumnMax = 1.5f;
     private const float ColumnMean = 0.0137f;
     private const float FloorPenetration = 0.233f;
@@ -250,9 +255,11 @@ public sealed class Box3DSoaFluidTests
         var block = new Box3DSoaParticleHandle[desc.Length];
         world.CreateParticles(desc, block);
         var worst = 0f;
+        var overflow = 0;
         for (var tick = 0; tick < 180; tick++)
         {
             world.Step(1f / 60f, 4);
+            overflow = Math.Max(overflow, world.View.FluidNeighbourOverflow);
             if (tick < 120) continue;
             var d = world.View.ParticleDensity;
             foreach (var h in block) worst = MathF.Max(worst, d[h.Lane]);
@@ -266,9 +273,10 @@ public sealed class Box3DSoaFluidTests
             if (MathF.Abs(v.ParticleX[h.Lane]) > half || MathF.Abs(v.ParticleZ[h.Lane]) > half || v.ParticleY[h.Lane] < -0.01f) outside++;
         }
         mean /= block.Length;
-        var line = $"COLUMN max density over the last second {worst:F4}, mean at 3 s {mean:F4}, outside the well {outside}";
+        var line = $"COLUMN max density over the last second {worst:F4}, mean at 3 s {mean:F4}, outside the well {outside}, neighbour overflow {overflow}";
         Readings.Add(line);
         Assert.Equal(0, outside);
+        Assert.Equal(0, overflow);
         Assert.True(worst <= ColumnMax, $"{line}: max over {ColumnMax}");
         Assert.True(Math.Abs(mean - 1.0) <= ColumnMean, $"{line}: mean off 1 by over {ColumnMean}");
     }
@@ -277,8 +285,8 @@ public sealed class Box3DSoaFluidTests
     public void Fluid_density_counts_a_larger_solid_beyond_two_contact_radii()
     {
         // The kernel reach of a pair is 2 (ri + rj), so a fluid particle sees a solid of radius 5 cm 12.5 cm away while contact reaches
-        // 6.25 cm: the grid cell is 2 (r_fluid_max + r_max), not 2 r_max. Placed two 10 cm cells of the narrower grid apart (10.15 cm), the
-        // solid is in the fluid particle's estimate only if the cell is the wider.
+        // 6.25 cm: the grid cell is 2 r_max (10 cm) and the fluid pass walks 2 rings of them. Placed two cells apart (10.15 cm), the solid is in
+        // the fluid particle's estimate only if the rings are derived from the kernel reach (Mr forces 1).
         double Density(bool solid)
         {
             using var world = FluidWorld(8, gravityY: 0f);
@@ -295,11 +303,11 @@ public sealed class Box3DSoaFluidTests
         Assert.True(rise >= KernelReachBound, line);
     }
 
-    // Relative rise of the fluid particle's density: shipped 2.530e-3, M2 (cell stays 2 r_max) 0, which counts one unit (1e-6) by
+    // Relative rise of the fluid particle's density: shipped 2.530e-3, Mr (rings forced to 1) 0, which counts one unit (1e-6) by
     // lodur:ruling:deterministic-bound-zero-reading: bound sqrt(2.530e-3 x 1e-6) = 5.0e-5, separation 50.
     private const double KernelReachBound = 5.0e-5;
 
-    // Drift as a fraction of the initial momentum, worst of the four mass ratios: shipped 5.72e-4 (fluid : solid 1 : 30; 6e-6 to 1e-5, the float32
+    // Drift as a fraction of the initial momentum, worst of the four mass ratios: shipped 7.71e-4 (fluid : solid 1 : 30; 6e-6 to 1e-5, the float32
     // floor as Contact_conserves_momentum's, at the other three). Mutants, worst row / least row: M1 (solid end of pass B not moved) 0.20 / 2.5e-2;
     // M3 (each end takes the whole correction) 0.148 / 2.06e-3. The midpoint sqrt(5.72e-4 x 2.5e-2) = 3.8e-3 would rise, so the bound keeps
     // its 2.0e-3 (never loosened); shipped is 3.5 under it and M1 and M3 fail it on every row but M3's 100 : 1.
@@ -330,19 +338,20 @@ public sealed class Box3DSoaFluidTests
     // The pour is read, not judged: at the scene's own 4 substeps its sheet stretches under the block's weight until a particle the sheet's own size
     // passes between the pins (the sieve, lodur:question:ymir-sheet-sieve-at-budget-substeps), and the same block flagged solid tunnels worse, so no count of it
     // claims a mutant of the fluid. What fluid owns is pinned by Fluid_holds_on_a_solid_floor; this test runs the scene and prints both readings.
-    private static string PourReading(bool solid)
+    private static (string Line, int Overflow) PourReading(bool solid)
     {
         var (world, sheet, rope, fluid) = Pour(solid: solid);
         using (world)
         {
             var touchedSheet = new bool[fluid.Length];
             var touchedRope = new bool[fluid.Length];
-            var deep = 0; var minRatio = 9f; var maxStretch = 0f;
+            var deep = 0; var minRatio = 9f; var maxStretch = 0f; var overflow = 0;
             var solids = sheet.Particles.Select(h => (h.Lane, Sheet: true)).Concat(rope.Particles.Select(h => (h.Lane, Sheet: false))).ToArray();
             for (var tick = 0; tick < 240; tick++)
             {
                 world.Step(1f / 60f, Sub);
                 var v = world.View;
+                overflow = Math.Max(overflow, v.FluidNeighbourOverflow);
                 foreach (var e in sheet.Edges)
                     maxStretch = MathF.Max(maxStretch, Graph.Dist(v, v.DistanceA[e.Lane], v.DistanceB[e.Lane]) / v.DistanceRest[e.Lane] - 1f);
                 for (var k = 0; k < fluid.Length; k++)
@@ -360,8 +369,8 @@ public sealed class Box3DSoaFluidTests
             }
             var view = world.View;
             var below = fluid.Count(h => view.ParticleY[h.Lane] < -0.2f);
-            return $"POUR_{(solid ? "SOLID" : "FLUID")} at {Sub} substeps: touched the sheet {touchedSheet.Count(b => b)} of {fluid.Length}, the rope {touchedRope.Count(b => b)}, below y = -0.2 m at 4 s {below}, " +
-                   $"within half a contact distance of a solid (tick x particle pairs) {deep} (closest {minRatio:F3} of a contact distance), worst sheet edge stretch {maxStretch:F3}";
+            return ($"POUR_{(solid ? "SOLID" : "FLUID")} at {Sub} substeps: touched the sheet {touchedSheet.Count(b => b)} of {fluid.Length}, the rope {touchedRope.Count(b => b)}, below y = -0.2 m at 4 s {below}, " +
+                   $"within half a contact distance of a solid (tick x particle pairs) {deep} (closest {minRatio:F3} of a contact distance), worst sheet edge stretch {maxStretch:F3}, neighbour overflow {overflow}", overflow);
         }
     }
 
@@ -370,20 +379,22 @@ public sealed class Box3DSoaFluidTests
     {
         foreach (var solid in new[] { false, true })
         {
-            var line = PourReading(solid);
+            var (line, overflow) = PourReading(solid);
             Console.Error.WriteLine(line);
             Readings.Add(line);
+            Assert.Equal(0, overflow);
         }
     }
 
     // A fluid block dropped 15 cm onto a floor of immovable solid particles (mass 0). Two readings, both over the 4 s at 4 substeps:
     // penetration = 1 - closest fluid-floor distance / contact distance (sampled at tick ends), and the fluid particles that went below the floor plane
     // while over the floor's interior (a pitch in from every edge: a flat floor has no walls, so the rest spill off its edge, 210 of 343 by 4 s).
-    // Penetration: shipped 0.187, Mt1 (collides returns 0 for any fluid-solid pair) 0.292, Mt2 (density_pair counts fluid-fluid only) 0.291: bound
-    // sqrt(0.187 x 0.291) = 0.233, separation 1.56. Through: shipped 1, Mt1 343, Mt2 1: bound sqrt(1 x 343) = 18, separation 343. The shipped 1 is the
+    // Penetration: shipped 0.186, Mt1 (collides returns 0 for any fluid-solid pair) 0.292, Mt2 (density_pair counts fluid-fluid only) 0.291: bound
+    // sqrt(0.187 x 0.291) = 0.233, separation 1.56 (set at the fix cut's 0.187; the midpoint with 0.186 is 0.233 too). Mr (rings forced to 1) reads 0.258 and
+    // Md (fluid-fluid pairs done from both rows) 0.401 with 22 through: both fail the bounds. Mo (capacity 8) reads 0.629 and 25823 overflows. Through: shipped 1, Mt1 343, Mt2 1: bound sqrt(1 x 343) = 18, separation 343. The shipped 1 is the
     // block's centre column, exactly over a hole of the floor lattice: by the lattice symmetry the contacts push it sideways at the hole's plane and the
     // column's weight takes it through. Nowhere near half a contact distance deep, so not the fluid defect the spec stops on; reported.
-    private static (float Penetration, int Below) Floor(out string line)
+    private static (float Penetration, int Below, int Overflow) Floor(out string line)
     {
         using var world = FluidWorld(640, gravityY: -9.81f);
         world.SetMaterial(1, 0.3f, 0, 0.01f);
@@ -391,11 +402,13 @@ public sealed class Box3DSoaFluidTests
         var floor = Graph.Block(world, (0f, 0f, 0f), 16, 1, 16, r, 0f, Box3DSoaPhase.Of(4), pitch: pitch);
         var fluid = Graph.Block(world, (0.18f, 0.15f, 0.18f), 7, 7, 7, r, 1000f * pitch * pitch * pitch, Box3DSoaPhase.Of(6, fluid: true), material: 1, pitch: pitch);
         var closest = 9f;
+        var overflow = 0;
         var through = new bool[fluid.Length];
         for (var tick = 0; tick < 240; tick++)
         {
             world.Step(1f / 60f, Sub);
             var v = world.View;
+            overflow = Math.Max(overflow, v.FluidNeighbourOverflow);
             for (var k = 0; k < fluid.Length; k++) // a particle that spills off the floor's edge is not below it: only one over the floor's interior (a pitch in from every edge) counts
             {
                 var l = fluid[k].Lane;
@@ -409,15 +422,16 @@ public sealed class Box3DSoaFluidTests
         var below = through.Count(b => b);
         var spilled = fluid.Count(h => view.ParticleY[h.Lane] < 0f);
         var penetration = MathF.Max(0f, 1f - closest);
-        line = $"FLOOR a 7 x 7 x 7 fluid block dropped 15 cm onto a 16 x 16 immovable floor at {Sub} substeps: penetration {penetration:F3} of a contact distance, fluid that went below the floor plane over its interior {below} of {fluid.Length} ({spilled} below it at 4 s, the rest of them over the edge)";
+        line = $"FLOOR a 7 x 7 x 7 fluid block dropped 15 cm onto a 16 x 16 immovable floor at {Sub} substeps: penetration {penetration:F3} of a contact distance, fluid that went below the floor plane over its interior {below} of {fluid.Length} ({spilled} below it at 4 s, the rest of them over the edge), neighbour overflow {overflow}";
         Readings.Add(line);
-        return (penetration, below);
+        return (penetration, below, overflow);
     }
 
     [Fact]
     public void Fluid_holds_on_a_solid_floor()
     {
-        var (penetration, below) = Floor(out var line);
+        var (penetration, below, overflow) = Floor(out var line);
+        Assert.Equal(0, overflow);
         Assert.True(penetration <= FloorPenetration, line + $": penetration over {FloorPenetration}");
         Assert.True(below <= FloorThrough, line + $": more than {FloorThrough} through");
     }
