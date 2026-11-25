@@ -1259,11 +1259,12 @@ static int touching(const ymir_particles* p, int32_t i, int32_t j, v3 xi, v3* d,
 
 typedef void (*pair_fn)(ymir_particles* p, void* ctx, int32_t i, int32_t j);
 
-YMIR_INLINE void walk_half(ymir_particles* p, pair_fn fn, void* ctx)
+// Rows are the walked particles; `rows` is a phase bit every walked row must carry (0 walks all of them).
+YMIR_INLINE void walk_half(ymir_particles* p, pair_fn fn, void* ctx, uint32_t rows)
 {
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (!p->particle_live[i])
+        if (!p->particle_live[i] || (p->phase[i] & rows) != rows)
         {
             continue;
         }
@@ -1322,7 +1323,7 @@ static void particle_contacts(ymir_particles* p)
     }
     for (int pass = 0; pass < 2; ++pass)
     {
-        walk_half(p, contact_pair, &pass);
+        walk_half(p, contact_pair, &pass, 0);
     }
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
@@ -1441,7 +1442,7 @@ static void fluid_density(ymir_particles* p)
         float den = (wi * vdot(gsum, gsum) + ssum) / (n0 * n0) + YMIR_PBF_EPS * wi;
         p->lambda[i] = c == 0.0f || den == 0.0f ? 0.0f : -c / den;
     }
-    walk_half(p, density_scatter, NULL);
+    walk_half(p, density_scatter, NULL, 0);
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
         if (p->particle_live[i])
@@ -1477,13 +1478,26 @@ static void viscosity_pair(ymir_particles* p, void* ctx, int32_t i, int32_t j)
     p->dp_x[j] -= dj.x; p->dp_y[j] -= dj.y; p->dp_z[j] -= dj.z;
 }
 
+// Does any material have a viscosity? XSPH is a no-op when none does (a pair's coefficient is the mean of its two), so the walk is skipped.
+static int viscous_material(const ymir_particles* p)
+{
+    for (int32_t m = 0; m < p->material_capacity; ++m)
+    {
+        if (p->mat_viscosity[m] > 0.0f)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void fluid_viscosity(ymir_particles* p)
 {
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
         p->dp_x[i] = p->dp_y[i] = p->dp_z[i] = 0.0f;
     }
-    walk_half(p, viscosity_pair, NULL);
+    walk_half(p, viscosity_pair, NULL, YMIR_PHASE_FLUID); // a pair needs two fluid ends, so a solid row has no pair to give
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
         if (p->particle_live[i])
@@ -1948,7 +1962,7 @@ void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, floa
         }
         put(p->pos_x, p->pos_y, p->pos_z, i, y);
     }
-    if (p->live_fluid > 0)
+    if (p->live_fluid > 0 && viscous_material(p))
     {
         fluid_viscosity(p);
     }

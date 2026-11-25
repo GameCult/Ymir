@@ -406,7 +406,7 @@ public sealed class Box3DSoaFluidTests
         Assert.True(Math.Abs(after - before) * 1e6 <= ClumpBound, line);
     }
 
-    // Variance ratio, viscosity 0.1 over 0: shipped 0.7799, M5 (XSPH skipped) 1.0000: bound sqrt(0.7799 x 1.0000) = 0.883, separation 1.28.
+    // Variance ratio, viscosity 0.1 over 0: shipped 0.7799, M5 (XSPH skipped) and Mv (the viscous-material scan finds none, so the skip flag ignores the materials) 1.0000: bound sqrt(0.7799 x 1.0000) = 0.883, separation 1.28.
     private const double ShearBound = 0.883;
 
     [Fact]
