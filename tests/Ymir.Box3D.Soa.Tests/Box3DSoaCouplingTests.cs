@@ -396,7 +396,7 @@ public sealed class Box3DSoaCouplingTests
     /// <summary>The 16 x 16 sheet cost scene with one body, plus <paramref name="fluid"/> fluid particles (r 1.25 cm) of XSPH viscosity <paramref name="viscosity"/> poured on the sheet; ms per tick at 4 substeps.</summary>
     private static double PourCost(int fluid, float viscosity = 0f)
     {
-        using var world = new Box3DSoaWorld(64, gravityY: -G, particles: new Box3DSoaParticleCapacities(16 * 48 + 256 + fluid, 16 * 47 + 480, 16 * 46 + 448, 16, 600, 2));
+        using var world = new Box3DSoaWorld(64, gravityY: -G, particles: new Box3DSoaParticleCapacities(16 * 48 + 256 + fluid, 16 * 47 + 480, 16 * 46 + 448, 16, 600, 2, fluid));
         world.AddStaticBox(1, (0f, -0.5f, 0f), (20f, 0.5f, 20f));
         world.SetMaterial(0, 0f, 0, viscosity);
         for (var c = 0; c < 16; c++)

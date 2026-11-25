@@ -81,7 +81,7 @@ typedef struct ymir_handle
 
 typedef struct ymir_particle_capacities
 {
-    int32_t particles, distances, bends, attachments, tethers, materials;
+    int32_t particles, distances, bends, attachments, tethers, materials, fluid; // fluid: the most live particles with the FLUID phase
 } ymir_particle_capacities;
 
 // A particle to create. `mass` kg (0 = immovable); `velocity` m/s; `rest` is its place in the rest pose (rest lengths, bends and
@@ -155,7 +155,7 @@ typedef struct ymir_particle_proxy
 typedef struct ymir_particles
 {
     int32_t particle_capacity, distance_capacity, bend_capacity, attachment_capacity, tether_capacity, material_capacity;
-    int32_t body_capacity;
+    int32_t body_capacity, fluid_capacity; // fluid_capacity: the most live fluid particles; it sizes the neighbour arena
     int32_t particle_count, distance_count, bend_count, attachment_count; // high-water marks
     int32_t tether_count;                                                 // derived: the live tethers
     int32_t body_count;                                                   // bodies filled in `proxies` this step
@@ -171,7 +171,7 @@ typedef struct ymir_particles
     uint32_t *phase, *material, *particle_live, *particle_generation;
     uint64_t* particle_removed_at;
     int32_t* component; // derived: the lowest lane of the particle's distance-connected component
-    int32_t *nbr, *nbr_count; // scratch: a fluid particle's kernel neighbours in walk order (YMIR_FLUID_NEIGHBOURS each), this substep's
+    int32_t *nbr, *nbr_start, *nbr_count; // scratch: the fluid rows' kernel neighbours in walk order, packed (CSR) in an arena of fluid_capacity * YMIR_FLUID_NEIGHBOURS; row i holds nbr_count[i] from nbr_start[i], this substep's
     float* density;     // sensor: a fluid particle's number density over its rest density n_i / n0 in the last substep it ran, else 0
 
     // distance lanes

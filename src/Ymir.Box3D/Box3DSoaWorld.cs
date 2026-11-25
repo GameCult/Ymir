@@ -109,7 +109,7 @@ public static class Box3DSoaPhase
 
 /// <summary>Capacities of the particle state; <c>null</c> or all zero is a world without particles (ABI 8 behaviour).</summary>
 [StructLayout(LayoutKind.Sequential)]
-public readonly record struct Box3DSoaParticleCapacities(int Particles, int Distances, int Bends, int Attachments, int Tethers, int Materials);
+public readonly record struct Box3DSoaParticleCapacities(int Particles, int Distances, int Bends, int Attachments, int Tethers, int Materials, int Fluid = 0);
 
 /// <summary>Native layout of <c>ymir_particle_desc</c>: a particle to create. Mass kg (0 = immovable); rest is its place in the rest pose.</summary>
 [StructLayout(LayoutKind.Sequential)]

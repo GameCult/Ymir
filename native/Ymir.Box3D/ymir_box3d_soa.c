@@ -550,7 +550,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
         !ymir_soa_finite(gravity_y) || !ymir_soa_finite(gravity_z) || !ymir_soa_finite(hit_threshold) ||
         hit_threshold < 0.0f || (particle_capacities != NULL && (particle_capacities->particles < 0 || particle_capacities->distances < 0 ||
                                  particle_capacities->bends < 0 || particle_capacities->attachments < 0 || particle_capacities->tethers < 0 ||
-                                 particle_capacities->materials < 0)))
+                                 particle_capacities->materials < 0 || particle_capacities->fluid < 0)))
     {
         return YMIR_SOA_INVALID_ARGUMENT;
     }
@@ -590,7 +590,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     world->contact_scratch = (b3ContactData*)calloc(n, sizeof(b3ContactData));
     world->gravity = (b3Vec3){gravity_x, gravity_y, gravity_z};
     if (particle_capacities != NULL && (particle_capacities->particles > 0 || particle_capacities->distances > 0 || particle_capacities->bends > 0 ||
-                                       particle_capacities->attachments > 0 || particle_capacities->tethers > 0 || particle_capacities->materials > 0))
+                                       particle_capacities->attachments > 0 || particle_capacities->tethers > 0 || particle_capacities->materials > 0 || particle_capacities->fluid > 0))
     {
         world->particles = ymir_particles_create(particle_capacities, capacity);
         if (world->particles == NULL)

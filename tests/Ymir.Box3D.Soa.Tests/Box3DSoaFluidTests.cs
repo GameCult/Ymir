@@ -36,7 +36,7 @@ public sealed class Box3DSoaFluidTests
     private const float FluidMass = 0.015625f; // (2 r)^3 of water: 15.6 mL
 
     private static Box3DSoaWorld FluidWorld(int particles, int bodies = 8, float gravityY = -10f, int materials = 2) =>
-        new(bodies, gravityY: gravityY, particles: new Box3DSoaParticleCapacities(particles, 16, 16, 16, 64, materials));
+        new(bodies, gravityY: gravityY, particles: new Box3DSoaParticleCapacities(particles, 16, 16, 16, 64, materials, particles));
 
     /// <summary>A floor and four walls: an open well of interior half-width <paramref name="half"/> centred on the y axis.</summary>
     private static void Well(Box3DSoaWorld world, float half)
@@ -49,9 +49,27 @@ public sealed class Box3DSoaFluidTests
     }
 
     [Fact]
+    public void Fluid_capacity_refuses_a_batch_whole()
+    {
+        // The fluid capacity sizes the neighbour arena: fluid past it is refused before any lane is taken, solids still go in, and a
+        // destroyed fluid particle frees its place at once.
+        using var world = Box3DSoaParticleTests.World(particles: 16, distances: 16, bends: 16, attachments: 4, tethers: 64, fluid: 3);
+        var ps = new Box3DSoaParticleHandle[2];
+        world.CreateParticles([Fluid((0f, 0f, 0f)), Fluid((0.05f, 0f, 0f))], ps);
+        Assert.Throws<InvalidOperationException>(() => world.CreateParticles([Fluid((0.1f, 0f, 0f)), Fluid((0.15f, 0f, 0f))]));
+        Assert.Equal(2, world.View.ParticleCount);
+        Assert.Equal(14, world.FreeParticleSlots);
+        world.CreateParticles([new((0f, 0.1f, 0f), 0.02f, 0.0125f), Fluid((0.1f, 0f, 0f))]);
+        Assert.Equal(4, world.View.ParticleCount);
+        Assert.Throws<InvalidOperationException>(() => world.CreateParticles([Fluid((0.15f, 0f, 0f))]));
+        world.DestroyParticles([ps[0]]);
+        world.CreateParticles([Fluid((0.15f, 0f, 0f))]);
+    }
+
+    [Fact]
     public void Fluid_refusals()
     {
-        using var world = Box3DSoaParticleTests.World(particles: 16, distances: 16, bends: 16, attachments: 4, tethers: 64);
+        using var world = Box3DSoaParticleTests.World(particles: 16, distances: 16, bends: 16, attachments: 4, tethers: 64, fluid: 16);
         var ps = new Box3DSoaParticleHandle[3];
         world.CreateParticles([new((0f, 0f, 0f), 0.02f, 0.0125f), Fluid((0.05f, 0f, 0f)), Fluid((0.1f, 0f, 0f))], ps);
         var view = world.View;
@@ -86,7 +104,7 @@ public sealed class Box3DSoaFluidTests
         // A 32 x 32 sheet at 20 pins, then 64 fluid particles created every tick for 60 ticks and destroyed the tick after: creating a
         // particle changes no constraint and destroying fluid touches none, so the tether lanes never change and the full derivation
         // (3.6 to 4.0 ms on the 20th pin) is never run for them.
-        using var world = Box3DSoaParticleTests.World(particles: 1024 + 256, distances: 2048, bends: 2048, attachments: 32, tethers: 4096);
+        using var world = Box3DSoaParticleTests.World(particles: 1024 + 256, distances: 2048, bends: 2048, attachments: 32, tethers: 4096, fluid: 1024);
         const float sp = 0.04f;
         var sheet = Graph.Sheet(world, (0f, 2f, 0f), (sp, 0f, 0f), (0f, -sp, 0f), 32, 32, 0.02f, 0.02f);
         var held = new HashSet<int>();
@@ -131,7 +149,7 @@ public sealed class Box3DSoaFluidTests
     public void Destroying_a_lone_attached_particle_leaves_the_tether_lanes_as_before_the_attach()
     {
         // A particle with a tether attachment and no distance: does it make a tether lane, and does destroying it leave one behind?
-        using var world = Box3DSoaParticleTests.World(particles: 16, distances: 16, bends: 16, attachments: 4, tethers: 64);
+        using var world = Box3DSoaParticleTests.World(particles: 16, distances: 16, bends: 16, attachments: 4, tethers: 64, fluid: 16);
         var ps = new Box3DSoaParticleHandle[2];
         world.CreateParticles([new((0f, 0f, 0f), 0.02f, 0.0125f), new((1f, 0f, 0f), 0.02f, 0.0125f)], ps);
         var before = Snapshot(world.View);
@@ -154,7 +172,7 @@ public sealed class Box3DSoaFluidTests
     /// </summary>
     private static Box3DSoaWorld Collision(float fluidMass, float solidMass)
     {
-        var world = new Box3DSoaWorld(4, gravityY: 0f, particles: new Box3DSoaParticleCapacities(1024, 1024, 1024, 8, 64, 2));
+        var world = new Box3DSoaWorld(4, gravityY: 0f, particles: new Box3DSoaParticleCapacities(1024, 1024, 1024, 8, 64, 2, 1024));
         world.AddStaticBox(1, (0f, -100f, 0f), (1f, 1f, 1f));
         Graph.Sheet(world, (0f, 0f, 0f), (0.04f, 0f, 0f), (0f, 0.04f, 0f), 16, 16, solidMass, 0.02f, Box3DSoaPhase.Of(7, true, true));
         Graph.Rope(world, Graph.Line((-0.3f, 0.25f, 0.3f), (0.03f, 0f, 0f), 48), solidMass, 0.0125f, Box3DSoaPhase.Of(8, true, true), bend: 1e-5f);
@@ -198,7 +216,7 @@ public sealed class Box3DSoaFluidTests
     /// </summary>
     private static (Box3DSoaWorld World, Made Sheet, Made Rope, Box3DSoaParticleHandle[] Fluid) Pour(bool nudge = false, bool solid = false)
     {
-        var world = new Box3DSoaWorld(4, gravityY: -9.81f, particles: new Box3DSoaParticleCapacities(640, 560, 520, 8, 1024, 2)); // the probe's g
+        var world = new Box3DSoaWorld(4, gravityY: -9.81f, particles: new Box3DSoaParticleCapacities(640, 560, 520, 8, 1024, 2, 640)); // the probe's g
         world.AddStaticBox(1, (0f, -50f, 0f), (1f, 1f, 1f));
         world.SetMaterial(1, 0.3f, 0, 0.01f); // the probe's XSPH coefficient
         const float sp = 0.04f, r = 0.02f;

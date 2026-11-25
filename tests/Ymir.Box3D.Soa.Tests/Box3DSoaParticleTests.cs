@@ -67,9 +67,9 @@ public sealed class Box3DSoaParticleTests
 
     internal static Box3DSoaWorld World(
         int bodies = 8, int particles = 256, int distances = 600, int bends = 600, int attachments = 8, int tethers = 600, int joints = 2,
-        float gravityX = 0f, float gravityY = -10f, float gravityZ = 0f) =>
+        float gravityX = 0f, float gravityY = -10f, float gravityZ = 0f, int fluid = 0) =>
         new(bodies, gravityX: gravityX, gravityY: gravityY, gravityZ: gravityZ, jointCapacity: joints,
-            particles: new Box3DSoaParticleCapacities(particles, distances, bends, attachments, tethers, 2));
+            particles: new Box3DSoaParticleCapacities(particles, distances, bends, attachments, tethers, 2, fluid));
 
     internal static void Run(Box3DSoaWorld world, int steps)
     {

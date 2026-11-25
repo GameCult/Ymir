@@ -75,7 +75,7 @@ static void put(float* x, float* y, float* z, int i, v3 v)
 // in 1/m^2.
 #define YMIR_PBF_EPS 1.0e-4f
 
-// Capacity of a fluid particle's neighbour list: about 33 kernel neighbours at rest (4 r reach), about 45 at the column's 1.34 compression.
+// Neighbour-list entries a fluid lane adds to the arena (CSR, packed): about 33 kernel neighbours at rest (4 r reach), about 45 at the column's 1.34 compression.
 #define YMIR_FLUID_NEIGHBOURS 96
 
 // Capacity of the stack buffer a fluid row gathers its candidates into before the pair arithmetic; hits past it count in fluid_overflow.
@@ -106,7 +106,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(phase, uint32_t, np); CARVE(material, uint32_t, np); CARVE(particle_live, uint32_t, np);
     CARVE(particle_generation, uint32_t, np); CARVE(particle_removed_at, uint64_t, np); CARVE(component, int32_t, np);
     CARVE(density, float, np);
-    CARVE(nbr, int32_t, np * YMIR_FLUID_NEIGHBOURS); CARVE(nbr_count, int32_t, np);
+    CARVE(nbr, int32_t, (int64_t)p->fluid_capacity * YMIR_FLUID_NEIGHBOURS); CARVE(nbr_start, int32_t, np); CARVE(nbr_count, int32_t, np);
     CARVE(dist_a, int32_t, nd); CARVE(dist_b, int32_t, nd); CARVE(dist_rest, float, nd); CARVE(dist_compliance, float, nd);
     CARVE(dist_tension, float, nd); CARVE(dist_live, uint32_t, nd); CARVE(dist_generation, uint32_t, nd);
     CARVE(dist_removed_at, uint64_t, nd);
@@ -142,7 +142,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
 ymir_particles* ymir_particles_create(const ymir_particle_capacities* c, int32_t body_capacity)
 {
     if (c == NULL || c->particles < 0 || c->distances < 0 || c->bends < 0 || c->attachments < 0 || c->tethers < 0 ||
-        c->materials < 0 || body_capacity < 0)
+        c->materials < 0 || c->fluid < 0 || body_capacity < 0)
     {
         return NULL;
     }
@@ -158,6 +158,7 @@ ymir_particles* ymir_particles_create(const ymir_particle_capacities* c, int32_t
     p->tether_capacity = c->tethers;
     p->material_capacity = c->materials;
     p->body_capacity = body_capacity;
+    p->fluid_capacity = c->fluid;
     uint32_t table = 16;
     while (table < 2u * (uint32_t)c->particles)
     {
@@ -751,6 +752,15 @@ int32_t ymir_particles_create_particles(ymir_particles* p, int32_t n, const ymir
         {
             return YMIR_PARTICLES_INVALID_ARGUMENT;
         }
+    }
+    int32_t fluid = 0; // the fluid capacity sizes the neighbour arena: a batch past it is refused whole
+    for (int32_t k = 0; k < n; ++k)
+    {
+        fluid += (d[k].phase & YMIR_PHASE_FLUID) != 0;
+    }
+    if (p->live_fluid + fluid > p->fluid_capacity)
+    {
+        return YMIR_PARTICLES_FULL;
     }
     if (free_count(p->particle_live, 0, p->particle_removed_at, p->particle_count, p->particle_capacity, step_count) < n)
     {
@@ -1435,7 +1445,7 @@ static void fluid_density(ymir_particles* p)
         p->dp_x[i] = p->dp_y[i] = p->dp_z[i] = 0.0f;
     }
     float rmax = fluid_grid(p);
-    int32_t rings = p->fluid_rings;
+    int32_t rings = p->fluid_rings, used = 0, arena = p->fluid_capacity * YMIR_FLUID_NEIGHBOURS;
     for (int32_t qi = 0; qi < p->live_particles; ++qi)
     {
         if (!(p->sphase[qi] & YMIR_PHASE_FLUID))
@@ -1467,7 +1477,8 @@ static void fluid_density(ymir_particles* p)
             }
         }
         p->fluid_overflow += hits - m;
-        int32_t* list = p->nbr + (size_t)i * YMIR_FLUID_NEIGHBOURS;
+        int32_t* list = p->nbr + used;
+        p->nbr_start[i] = used;
         int32_t count = 0;
         for (int32_t k = 0; k < m; ++k)
         {
@@ -1482,7 +1493,7 @@ static void fluid_density(ymir_particles* p)
             {
                 continue;
             }
-            if (count < YMIR_FLUID_NEIGHBOURS)
+            if (used + count < arena)
             {
                 list[count++] = j;
             }
@@ -1499,6 +1510,7 @@ static void fluid_density(ymir_particles* p)
             }
         }
         p->nbr_count[i] = count;
+        used += count;
         float c = vmax(n / n0 - 1.0f, 0.0f);
         p->density[i] = n / n0;
         float den = (wi * vdot(gsum, gsum) + ssum) / (n0 * n0) + YMIR_PBF_EPS * wi;
@@ -1510,7 +1522,7 @@ static void fluid_density(ymir_particles* p)
         {
             continue;
         }
-        const int32_t* list = p->nbr + (size_t)i * YMIR_FLUID_NEIGHBOURS;
+        const int32_t* list = p->nbr + p->nbr_start[i];
         for (int32_t k = 0; k < p->nbr_count[i]; ++k)
         {
             int32_t j = list[k];
@@ -1545,7 +1557,7 @@ static void fluid_density(ymir_particles* p)
             {
                 continue;
             }
-            const int32_t* list = p->nbr + (size_t)i * YMIR_FLUID_NEIGHBOURS;
+            const int32_t* list = p->nbr + p->nbr_start[i];
             for (int32_t k = 0; k < p->nbr_count[i]; ++k)
             {
                 if (!(p->phase[list[k]] & YMIR_PHASE_FLUID))
@@ -1615,7 +1627,7 @@ static void fluid_viscosity(ymir_particles* p)
         {
             continue;
         }
-        const int32_t* list = p->nbr + (size_t)i * YMIR_FLUID_NEIGHBOURS;
+        const int32_t* list = p->nbr + p->nbr_start[i];
         for (int32_t k = 0; k < p->nbr_count[i]; ++k)
         {
             int32_t j = list[k];
