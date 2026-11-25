@@ -242,12 +242,15 @@ public sealed class Box3DSoaFluidTests
     // ---- behaviour ------------------------------------------------------------------------------------------
 
     // Bounds follow lodur:ruling:deterministic-bound-margin: the geometric mean of the shipped worst and the least claimed mutant, separation >= 1.2.
-    // |mean - 1| at 3 s: shipped 0.0133, Md (fluid-fluid pairs done from both rows) 0.467, Mr (rings forced to 1) 0.0138. Md is 35 away; the midpoint
-    // sqrt(0.0133 x 0.467) = 0.0788 would rise, so the standing 0.0137 stays (never loosened); shipped is 1.03 under it and Mr, 1.01 over it, is
-    // not separated (unclaimed here: KERNEL_REACH and the floor claim it, a follow-up for this metric). The max density reads 1.3278 shipped,
-    // 1.3331 under Mr and 1.867 under Md: Md is 1.41 away, the midpoint 1.575 would rise, so the sanity ceiling 1.5 stays and also claims Md (the
+    // |mean - 1| at 3 s, by lodur:ruling:ymir-column-mean-bound-order-noise: summation order is not behaviour, so the shipped worst is taken over twelve orders
+    // of the fluid pass's bucket offsets (the six axis permutations, each ascending and descending): 0.0178 worst (0.0027 to 0.0178). Md (fluid-fluid pairs done
+    // from both rows) reads 0.4625 to 0.4865: bound sqrt(0.0178 x 0.4625) = 0.0907, separation 5.1 each side (it was 0.0137 against one order's reading, and one order broke it).
+    // The mean no longer separates the others: Mk (fluid cell 2 rmax, 1 ring) 0.0142 to 0.0182, Mx (fluid pairs also contact; the column sets SELF_COLLIDE) 0.0038 to 0.0154,
+    // Mu (bucket dedupe deleted) 0.0013 to 0.0058, Mf (fluid-solid contact deleted; the column holds no solid particle) unchanged: Mk is claimed by KERNEL_REACH, Mf by the floor
+    // penetration and the through count, Mu and Mx are unclaimed (Mu only moves the FluidHashes pin). The max density reads 1.2992 to 1.3795 shipped over the twelve orders and
+    // 1.7133 to 1.7550 under Md: Md is 1.14 away, the midpoint 1.537 would rise, so the sanity ceiling 1.5 stays and also claims Md (the
     // column compressing under its weight is the one-pass solver, not a defect: probe pours peaked at 1.07). Mo (capacity 8) overflows the lists
-    // 597364 times in the column against 0 shipped (half a unit by lodur:ruling:deterministic-bound-zero-reading): the overflow assert is exact
+    // 377700 times in the column against 0 shipped (half a unit by lodur:ruling:deterministic-bound-zero-reading): the overflow assert is exact
     // zero, below the rule's midpoint, because the count is exact and any overflow means pairs were lost.
     // Unclaimed since the fix cut, readings of its build, a follow-up: Mc1 (lambda halved) max 1.2116, Mc2 (pass A without the self term) max 1.3340.
     private const float ColumnMax = 1.5f;
@@ -303,11 +306,11 @@ public sealed class Box3DSoaFluidTests
     public void Fluid_density_counts_a_larger_solid_beyond_two_contact_radii()
     {
         // The kernel reach of a pair is 2 (ri + rj), so a fluid particle sees a solid of radius 5 cm 12.5 cm away while contact reaches
-        // 6.25 cm: the grid cell is 2 r_max (10 cm) and the fluid pass walks 2 rings of them. Placed two cells apart (10.15 cm), the solid is in
-        // the fluid particle's estimate only if the rings are derived from the kernel reach (Mr forces 1).
+        // 6.25 cm: the fluid grid cell is 4 r_fluid (5 cm) and the fluid pass walks 3 rings of them. Placed three cells apart (10.15 cm), the solid is in
+        // the fluid particle's estimate only if the rings are derived from the kernel reach (Mk forces the cell to 2 r_max and 1 ring: the solid is then two cells away).
         double Density(bool solid)
         {
-            using var world = FluidWorld(8, gravityY: 0f);
+            using var world = FluidWorld(256, gravityY: 0f); // a table of 512 buckets: a bucket two cells share could hide the miss
             world.CreateParticles([Fluid((0.099f, 0f, 0f))]);
             if (solid) world.CreateParticles([new Box3DSoaParticleDesc((0.2005f, 0f, 0f), 1f, 0.05f, Box3DSoaPhase.Of(1))]);
             world.Step(1f / 60f, 4);
@@ -321,7 +324,7 @@ public sealed class Box3DSoaFluidTests
         Assert.True(rise >= KernelReachBound, line);
     }
 
-    // Relative rise of the fluid particle's density: shipped 2.530e-3, Mr (rings forced to 1) 0, which counts one unit (1e-6) by
+    // Relative rise of the fluid particle's density: shipped 2.530e-3, Mk (cell 2 r_max, 1 ring) 0 (a table of 512 buckets, as 16 would hide the miss; Mu, dedupe deleted, 5.06e-2), which counts one unit (1e-6) by
     // lodur:ruling:deterministic-bound-zero-reading: bound sqrt(2.530e-3 x 1e-6) = 5.0e-5, separation 50.
     private const double KernelReachBound = 5.0e-5;
 
@@ -412,6 +415,7 @@ public sealed class Box3DSoaFluidTests
     // Md (fluid-fluid pairs done from both rows) 0.401 with 22 through: both fail the bounds. Mo (capacity 8) reads 0.629 and 25823 overflows. Through: shipped 1, Mt1 343, Mt2 1: bound sqrt(1 x 343) = 18, separation 343. The shipped 1 is the
     // block's centre column, exactly over a hole of the floor lattice: by the lattice symmetry the contacts push it sideways at the hole's plane and the
     // column's weight takes it through. Nowhere near half a contact distance deep, so not the fluid defect the spec stops on; reported.
+    // At the kernel-cell cut (lodur:cut_spec:cut-ymir-fluid-cost.r2): shipped 0.134 and 0 through; Mk (fluid cell 2 r_max, 1 ring) 0.171 and 0 (unclaimed here, KERNEL_REACH claims it); Md 0.435 and 10 through; Mf (fluid-solid contact deleted) 0.945 and 259 through, claimed by both; Mo (arena 8 a fluid lane) 0.843 and 13650 overflows.
     private static (float Penetration, int Below, int Overflow) Floor(out string line)
     {
         using var world = FluidWorld(640, gravityY: -9.81f);

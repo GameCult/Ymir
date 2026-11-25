@@ -415,12 +415,28 @@ public sealed class Box3DSoaCouplingTests
         return watch.Elapsed.TotalMilliseconds / 240;
     }
 
+    /// <summary>Private bytes the world takes for <paramref name="particles"/> particle lanes and a fluid capacity, as the process counts them (the native block is one calloc).</summary>
+    private static long WorldBytes(int particles, int fluid)
+    {
+        GC.Collect();
+        var before = System.Diagnostics.Process.GetCurrentProcess().PrivateMemorySize64;
+        using var world = new Box3DSoaWorld(4, particles: new Box3DSoaParticleCapacities(particles, 0, 0, 0, 0, 1, fluid));
+        GC.Collect();
+        return System.Diagnostics.Process.GetCurrentProcess().PrivateMemorySize64 - before;
+    }
+
     [Theory]
     [InlineData(512)]
     [InlineData(2000)]
     public void Fluid_cost_line(int fluid)
     {
         // Printed, not asserted. Target at 512: an increment of at most 1.0 ms per tick over the same scene without fluid, at XSPH viscosity 0 and 0.01.
+        const int lanes = 200000;
+        var perLane = (double)WorldBytes(lanes, 0) / lanes;
+        var perFluid = (double)(WorldBytes(lanes, lanes) - WorldBytes(lanes, 0)) / lanes;
+        var memory = $"PARTICLE_COST bytes: {perLane:F0} per particle lane at fluid capacity 0 (the whole block; the fluid copies, nbr_start and nbr_count are 7 x 4 = 28 of it, where h1 carved 388 in every world), {perFluid:F0} more per fluid capacity (the neighbour arena, 96 entries)";
+        Console.Error.WriteLine(memory);
+        Reading(memory);
         var without = PourCost(0);
         foreach (var viscosity in new[] { 0f, 0.01f })
         {
