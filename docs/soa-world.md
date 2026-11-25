@@ -8,11 +8,11 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 12) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 13) so the Aetheria session's contract is untouched.
 
 ## Contract
 
-- Native (ABI 12): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
+- Native (ABI 13): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
   create_particles / destroy_particles / create_distances / create_bends / attach / remove / set_material / free_slots /
   add_body / add_joint / step / get_view / get_facts / set_anchor_target / destroy_joint / free_joint_slots / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
@@ -197,10 +197,17 @@ separate native object (`ymir_box3d_soa.c`, ABI 12) so the Aetheria session's co
     materials' `viscosity`, split by inverse mass the same way, and only when some material has a viscosity above 0 (one scan of the material lanes a substep). A pair that
     entered reach since pass A is missed by XSPH (smoothing, not a constraint). Lists, copies and the fluid grid are per-substep scratch, carved once at create: 28 bytes a particle lane
     (`nbr_start`, `nbr_count`, `sx sy sz sw sphase`; h1's per-lane lists were 388) and 384 a unit of fluid capacity. A world with no live fluid steps byte-identically to
-    one before fluid (no pass runs: `live_fluid` counts the live fluid particles, written by create and destroy only). Cost on the 16 x 16 sheet scene at 4 substeps, increment over the same scene without fluid (Release, three runs):
+    one before fluid (no pass runs: `live_fluid` counts the live fluid particles, written by create and destroy only). Cost on the 16 x 16 sheet scene at 4 substeps, increment over the same scene without fluid (Release, three runs; the cost line in `Box3DSoaCouplingTests` now prints the median of nine interleaved with-and-without pairs and its interquartile range):
     512 fluid +0.76 to +0.84 ms a tick at viscosity 0 and +0.86 to +1.01 at 0.01; 2000 fluid +4.1 to +4.4 at both, against a target of 1.0 ms at 512 (h1: +3.0 to +3.4 and +13.1 to +13.9). The probe behind the design
     (a standalone replica of the pass) read 7 ns a cell visit in the 125-cell walk: the cost was per cell, not arithmetic, so the cell is now the kernel reach and the copies and the branchless filter keep the 27 buckets cheap. Two counting sorts a substep run with fluid live.
     sensor lane `particle_density` reads `n_i / n0` (1 at rest, 0 for a solid) in the last substep the particle ran.
+    Support lanes `particle_support_body` and `particle_support_particle` (ABI 13; `SupportBody`, `SupportParticle` in the binding) name what a fluid particle touched in the
+    last substep it ran. Both are cleared to -1 for each live fluid lane at the start of the substep, after prediction, and written by the substep's contacts: body contact
+    sets `support_body` to the lane of each shaped body whose surface comes within the particle's radius, bodies ascending, so the highest lane touched wins; the fluid-solid
+    contact pass sets `support_particle` to the first solid listed in the particle's row that touches it (pass 1 of the walk, the solid's lane). A fluid particle resting only
+    on fluid reads -1 on both, so the bottom of a deep pool is supported and the interior is not; a solid lane, a free lane and a lane after create or destroy read -1 too.
+    The lanes name contact, not rest: the caller judges speed. They are notification only, written by the step and read by no pass; a world with no settled liquid
+    steps byte-identically to ABI 12.
     Fluid holds no constraint: `create_distances` and `attach` refuse a fluid particle, so `create_bends` (over distances) can
     never name one; a thing that holds liquid is cloth around free fluid (a balloon), as in Flex sec. 8. Every `create_particles`
     and every `destroy_particles` of particles that held no distance derives only the isolated lanes

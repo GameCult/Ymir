@@ -458,6 +458,116 @@ public sealed class Box3DSoaFluidTests
         Assert.True(below <= FloorThrough, line + $": more than {FloorThrough} through");
     }
 
+    // The support lanes name contact in the last substep, not rest: the step writes them and nothing reads them, so these tests read them.
+    private static void ReadSupport(string scene, Box3DSoaView v, Box3DSoaParticleHandle[] fluid)
+    {
+        var body = fluid.Count(h => v.SupportBody[h.Lane] >= 0);
+        var particle = fluid.Count(h => v.SupportParticle[h.Lane] >= 0);
+        Readings.Add($"SUPPORT {scene}: {fluid.Length} fluid particles, {body} read a body, {particle} read a solid particle");
+    }
+
+    [Fact]
+    public void Support_lanes_name_what_fluid_rests_on()
+    {
+        // Static floor and walls: a 4 x 4 x 4 pool in a well. Whoever touches the floor or a wall (the highest lane wins) reads that body; a particle
+        // resting only on other fluid reads -1 on both lanes, as does a drop in flight. A drop pinched between the floor (lane 0) and a slab 1.9 r above
+        // it (lane 5) touches both: the slab, the higher lane.
+        {
+            using var world = FluidWorld(128, gravityY: -9.81f);
+            Well(world, 0.05f);
+            var slab = world.AddStaticBox(6, (1f, 1.9f * R + 0.05f, 0f), (0.1f, 0.05f, 0.1f));
+            var pool = Graph.Block(world, (-0.0375f, R + 0.005f, -0.0375f), 4, 4, 4, R, FluidMass, FluidPhase);
+            var pinched = new Box3DSoaParticleHandle[1];
+            world.CreateParticles([Fluid((1f, R, 0f))], pinched);
+            var flight = new Box3DSoaParticleHandle[1];
+            world.CreateParticles([Fluid((-1f, 40f, 0f))], flight);
+            var thrown = new Box3DSoaParticleHandle[1];
+            world.CreateParticles([Fluid((-1f, 0.5f * R, 1f), velocity: (0f, 1f, 0f))], thrown); // inside the floor, moving up
+            Assert.Equal(5, slab);
+            var view = world.View;
+            Assert.Equal(-1, view.SupportBody[pool[0].Lane]);
+            world.Step(1f / 240f, 1); // one substep: the thrown drop touches the floor in it
+            Assert.Equal(0, world.View.SupportBody[thrown[0].Lane]);
+            world.Step(1f / 60f, Sub); // four more: it is in flight in each, so a lane the step did not clear would still read the floor
+            Assert.Equal(-1, world.View.SupportBody[thrown[0].Lane]);
+            for (var tick = 0; tick < 119; tick++) world.Step(1f / 60f, Sub);
+            view = world.View;
+            var floor = 0; var resting = 0;
+            foreach (var h in pool)
+            {
+                // A particle a contact pushed out ends at distance r from the face, as one that never touched may: only gravity presses the floor layer every
+                // substep, so that layer must read; a particle clear of every face by 5% must read -1; one within 5% of a wall may read either.
+                var (x, y, z) = (view.ParticleX[h.Lane], view.ParticleY[h.Lane], view.ParticleZ[h.Lane]);
+                var nearWall = MathF.Abs(x) >= 0.05f - 1.05f * R || MathF.Abs(z) >= 0.05f - 1.05f * R;
+                var body = view.SupportBody[h.Lane];
+                if (y <= 1.001f * R) { floor++; Assert.True(body >= 0 && body <= 4, $"x {x:F5} y {y:F5} z {z:F5} body {body}"); }
+                else if (y > 1.05f * R && !nearWall) { resting++; Assert.Equal(-1, body); }
+                else if (body >= 0) Assert.True(nearWall || y <= 1.05f * R, $"x {x:F5} y {y:F5} z {z:F5} body {body}");
+                Assert.Equal(-1, view.SupportParticle[h.Lane]);
+            }
+            Assert.True(floor >= 8 && resting >= 2, $"{floor} on the floor, {resting} resting on fluid");
+            Assert.Equal(5, view.SupportBody[pinched[0].Lane]);
+            Assert.Equal(-1, view.SupportParticle[pinched[0].Lane]);
+            Assert.Equal(-1, view.SupportBody[flight[0].Lane]);
+            Assert.Equal(-1, view.SupportParticle[flight[0].Lane]);
+            ReadSupport("well", view, pool);
+        }
+        // A free box on the floor, a pool on the box: the box's lane for the layer that touches it, -1 above, never the floor's.
+        {
+            using var world = FluidWorld(128, gravityY: -9.81f);
+            world.AddStaticBox(1, (0f, -0.5f, 0f), (2f, 0.5f, 2f), friction: 0.3f);
+            var box = world.AddBox(2, (0f, 0.1f, 0f), (0.1f, 0.1f, 0.1f), 5000f, friction: 0.3f);
+            var pool = Graph.Block(world, (-0.025f, 0.2f + R + 0.005f, -0.025f), 3, 7, 3, R, FluidMass, FluidPhase);
+            for (var tick = 0; tick < 12; tick++) world.Step(1f / 60f, Sub);
+            var view = world.View;
+            var top = view.PositionY[box] + 0.1f;
+            var touching = 0; var resting = 0;
+            foreach (var h in pool)
+            {
+                var y = view.ParticleY[h.Lane];
+                if (MathF.Abs(view.ParticleX[h.Lane] - view.PositionX[box]) > 0.1f - R || MathF.Abs(view.ParticleZ[h.Lane] - view.PositionZ[box]) > 0.1f - R) continue; // spilled over the edge
+                if (y <= top + 1.001f * R) { touching++; Assert.Equal(box, view.SupportBody[h.Lane]); }
+                else if (y > top + 1.5f * R) { resting++; Assert.Equal(-1, view.SupportBody[h.Lane]); }
+                Assert.Equal(-1, view.SupportParticle[h.Lane]);
+            }
+            Assert.True(touching >= 4 && resting >= 4, $"{touching} touch the box, {resting} above them");
+            ReadSupport("free box", view, pool);
+        }
+        // A sheet pinned along two opposite edges (one edge alone swings down like a curtain; a corner-pinned tarp sieves, lodur:ruling:ymir-sheet-sieve-at-budget-substeps) under a few drops: each reads a
+        // sheet particle that touches it; a drop high above reads -1 on both.
+        {
+            using var world = new Box3DSoaWorld(4, gravityY: -9.81f, particles: new Box3DSoaParticleCapacities(256, 160, 140, 16, 1024, 2, 16));
+            world.AddStaticBox(1, (0f, -50f, 0f), (1f, 1f, 1f));
+            var sheet = Graph.Sheet(world, (0f, 0.6f, 0f), (0.04f, 0f, 0f), (0f, 0f, 0.04f), 8, 8, 0.02f, 0.02f, Box3DSoaPhase.Of(4, true, true));
+            for (var j = 0; j < 8; j++)
+                for (var i = 0; i < 8; i += 7)
+                    world.Attach(Box3DSoaAttachKind.Static, sheet.Particles[j * 8 + i], point: (0.04f * i, 0.6f, 0.04f * j));
+            var drops = new Box3DSoaParticleHandle[4];
+            world.CreateParticles([Fluid((0.12f, 0.64f, 0.12f)), Fluid((0.16f, 0.64f, 0.16f)), Fluid((0.13f, 0.7f, 0.14f)), Fluid((0.15f, 60f, 0.14f))], drops);
+            world.Step(1f / 60f, Sub);
+            // a drop 4 cm above a sheet particle sits inside the kernel reach and so in its row's list, and does not touch (4 cm against 3.25): no support
+            Assert.Equal(-1, world.View.SupportParticle[drops[0].Lane]);
+            Assert.Equal(-1, world.View.SupportParticle[drops[1].Lane]);
+            for (var tick = 1; tick < 20; tick++) world.Step(1f / 60f, Sub);
+            var view = world.View;
+            var onSheet = new HashSet<int>(sheet.Particles.Select(h => h.Lane));
+            var read = 0;
+            foreach (var h in drops.Take(3))
+            {
+                var s = view.SupportParticle[h.Lane];
+                Assert.Equal(-1, view.SupportBody[h.Lane]);
+                if (s < 0) continue;
+                read++;
+                Assert.Contains(s, onSheet);
+                Assert.True(Graph.Dist(view, h.Lane, s) <= 1.05f * (view.ParticleRadius[h.Lane] + view.ParticleRadius[s]), "the named particle does not touch");
+            }
+            Assert.True(read >= 2, $"{read} of 3 drops read a sheet particle");
+            Assert.Equal(-1, view.SupportParticle[drops[3].Lane]);
+            Assert.Equal(-1, view.SupportBody[drops[3].Lane]);
+            ReadSupport("sheet", view, drops);
+        }
+    }
+
     [Fact]
     public void Fluid_pushes_a_body()
     {

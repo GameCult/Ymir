@@ -342,6 +342,8 @@ internal unsafe struct Box3DSoaViewNative
     public float* MaterialFriction;
     public ulong* MaterialTableId;
     public float* MaterialViscosity;
+    public int* SupportBody;
+    public int* SupportParticle;
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_facts</c>: counts, dropped counters, then three pointers.</summary>
@@ -737,6 +739,10 @@ public readonly unsafe struct Box3DSoaView
     public ReadOnlySpan<ulong> MaterialTableId => Lane(_v.MaterialTableId, MaterialCapacity);
     /// <summary>The XSPH coefficient of each material (a fluid pair relaxes its velocities by the mean of the two).</summary>
     public ReadOnlySpan<float> MaterialViscosity => Lane(_v.MaterialViscosity, MaterialCapacity);
+    /// <summary>A fluid particle's support in the last substep it ran: the highest body lane it touched, else -1; -1 for a solid or free lane. Contact, not rest: the caller judges speed. Notification only.</summary>
+    public ReadOnlySpan<int> SupportBody => Lane(_v.SupportBody, ParticleCount);
+    /// <summary>A fluid particle's support in the last substep it ran: the first solid particle lane its row listed touching it, else -1 (resting on fluid alone reads -1); -1 for a solid or free lane.</summary>
+    public ReadOnlySpan<int> SupportParticle => Lane(_v.SupportParticle, ParticleCount);
 
     /// <summary>N s, world: the impulse the particle phase delivered to each body over the last step (0 for a body it did not touch). Box3D has already applied it; this is notification only.</summary>
     public ReadOnlySpan<float> ParticleImpulseX => Lane(_v.ParticleImpulseX, Count);
@@ -755,7 +761,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 12;
+    private const uint ExpectedAbi = 13;
     private nint _handle;
 
     /// <summary>

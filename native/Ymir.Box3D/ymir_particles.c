@@ -105,7 +105,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(rest_x, float, np); CARVE(rest_y, float, np); CARVE(rest_z, float, np);
     CARVE(phase, uint32_t, np); CARVE(material, uint32_t, np); CARVE(particle_live, uint32_t, np);
     CARVE(particle_generation, uint32_t, np); CARVE(particle_removed_at, uint64_t, np); CARVE(component, int32_t, np);
-    CARVE(density, float, np);
+    CARVE(density, float, np); CARVE(support_body, int32_t, np); CARVE(support_particle, int32_t, np);
     CARVE(nbr, int32_t, (int64_t)p->fluid_capacity * YMIR_FLUID_NEIGHBOURS); CARVE(nbr_start, int32_t, np); CARVE(nbr_count, int32_t, np);
     CARVE(dist_a, int32_t, nd); CARVE(dist_b, int32_t, nd); CARVE(dist_rest, float, nd); CARVE(dist_compliance, float, nd);
     CARVE(dist_tension, float, nd); CARVE(dist_live, uint32_t, nd); CARVE(dist_generation, uint32_t, nd);
@@ -779,6 +779,7 @@ int32_t ymir_particles_create_particles(ymir_particles* p, int32_t n, const ymir
         p->inv_mass[i] = d[k].mass > 0.0f ? 1.0f / d[k].mass : 0.0f;
         p->phase[i] = d[k].phase;
         p->material[i] = d[k].material;
+        p->support_body[i] = p->support_particle[i] = -1;
         p->particle_live[i] = 1;
         p->live_particles++;
         p->live_fluid += (d[k].phase & YMIR_PHASE_FLUID) != 0;
@@ -843,6 +844,7 @@ int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymi
         p->radius[i] = p->inv_mass[i] = 0.0f;
         p->phase[i] = p->material[i] = 0;
         p->density[i] = p->lambda[i] = 0.0f;
+        p->support_body[i] = p->support_particle[i] = -1;
         p->particle_live[i] = 0;
         p->particle_generation[i] += 1;
         p->particle_removed_at[i] = step_count;
@@ -1271,7 +1273,7 @@ static int touching(const ymir_particles* p, int32_t i, int32_t j, v3 xi, v3* d,
 #define YMIR_INLINE static inline __attribute__((always_inline))
 #endif
 
-typedef void (*pair_fn)(ymir_particles* p, void* ctx, int32_t i, int32_t j);
+typedef int (*pair_fn)(ymir_particles* p, void* ctx, int32_t i, int32_t j);
 
 YMIR_INLINE void walk_half(ymir_particles* p, pair_fn fn, void* ctx)
 {
@@ -1300,19 +1302,19 @@ YMIR_INLINE void walk_half(ymir_particles* p, pair_fn fn, void* ctx)
 }
 
 // One pass of the contact walk: pass 0 counts every particle's overlaps, pass 1 moves both ends of each pair.
-static void contact_pair(ymir_particles* p, void* ctx, int32_t i, int32_t j)
+static int contact_pair(ymir_particles* p, void* ctx, int32_t i, int32_t j) // 1 when the pair touches
 {
     v3 d;
     float r2, md, wsum;
     if (!touching(p, i, j, P(p, p->pp_x, p->pp_y, p->pp_z, i), &d, &r2, &md, &wsum))
     {
-        return;
+        return 0;
     }
     if (*(int*)ctx == 0)
     {
         p->contacts[i]++;
         p->contacts[j]++;
-        return;
+        return 1;
     }
     float rr = sqrtf(r2), depth = (md - rr) / rr;
     float weight = 1.0f / (float)(p->contacts[i] > p->contacts[j] ? p->contacts[i] : p->contacts[j]);
@@ -1320,6 +1322,7 @@ static void contact_pair(ymir_particles* p, void* ctx, int32_t i, int32_t j)
     v3 dj = vmul(d, weight * (p->inv_mass[j] / wsum) * depth);
     p->dp_x[i] += di.x; p->dp_y[i] += di.y; p->dp_z[i] += di.z;
     p->dp_x[j] -= dj.x; p->dp_y[j] -= dj.y; p->dp_z[j] -= dj.z;
+    return 1;
 }
 
 // Overlapping pairs push each other apart, split by inverse mass (Macklin 2014). Each pair is found once, by walking
@@ -1560,9 +1563,9 @@ static void fluid_density(ymir_particles* p)
             const int32_t* list = p->nbr + p->nbr_start[i];
             for (int32_t k = 0; k < p->nbr_count[i]; ++k)
             {
-                if (!(p->phase[list[k]] & YMIR_PHASE_FLUID))
+                if (!(p->phase[list[k]] & YMIR_PHASE_FLUID) && contact_pair(p, &pass, i, list[k]) && pass == 1 && p->support_particle[i] < 0)
                 {
-                    contact_pair(p, &pass, i, list[k]);
+                    p->support_particle[i] = list[k]; // the first listed solid that touches: what the particle rests on
                 }
             }
         }
@@ -1761,6 +1764,10 @@ static void body_contacts(phase* f)
             if (d >= r)
             {
                 continue;
+            }
+            if (p->phase[i] & YMIR_PHASE_FLUID)
+            {
+                p->support_body[i] = k; // bodies ascend: the highest lane touched wins
             }
             float depth = r - d;
             float wb = proxy_w(b, s, n);
@@ -2068,6 +2075,10 @@ void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, floa
         if (!p->particle_live[i])
         {
             continue;
+        }
+        if (p->phase[i] & YMIR_PHASE_FLUID)
+        {
+            p->support_body[i] = p->support_particle[i] = -1; // this substep's contacts write them again
         }
         v3 x = P(p, p->pos_x, p->pos_y, p->pos_z, i);
         if (p->inv_mass[i] > 0.0f)

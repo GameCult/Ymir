@@ -172,6 +172,7 @@ typedef struct ymir_particles
     uint64_t* particle_removed_at;
     int32_t* component; // derived: the lowest lane of the particle's distance-connected component
     int32_t *nbr, *nbr_start, *nbr_count; // scratch: the fluid rows' kernel neighbours in walk order, packed (CSR) in an arena of fluid_capacity * YMIR_FLUID_NEIGHBOURS; row i holds nbr_count[i] from nbr_start[i], this substep's
+    int32_t *support_body, *support_particle; // sensor: what a fluid particle touched in the last substep, the highest body lane / the first solid lane its row listed touching it; -1 for none, and always -1 for a solid or free lane
     float* density;     // sensor: a fluid particle's number density over its rest density n_i / n0 in the last substep it ran, else 0
 
     // distance lanes

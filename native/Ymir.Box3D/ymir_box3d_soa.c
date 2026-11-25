@@ -58,7 +58,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a destroyed joint's lane: never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 12u
+#define YMIR_SOA_ABI_VERSION 13u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -205,7 +205,7 @@ typedef struct ymir_box3d_soa_view
     const float* particle_impulse_y;
     const float* particle_impulse_z;
     // Particle lanes (read-only; only `step` and the particle and constraint commands change them), indexed by lane
-    // up to the set's count (a high-water mark). A dead lane reads live 0 and every other lane 0 except generation
+    // up to the set's count (a high-water mark). A dead lane reads live 0 and every other lane 0 (the support lanes -1) except generation
     // and removed_at. Handles are (lane, generation); a lane is reused once a step has passed since its removal.
     const float* particle_x;
     const float* particle_y;
@@ -276,6 +276,10 @@ typedef struct ymir_box3d_soa_view
     const float* material_friction;
     const uint64_t* material_id_lane;
     const float* material_viscosity;
+    // A fluid particle's support in the last substep it ran: the highest body lane it touched, and the first solid particle lane its
+    // row listed touching it; -1 for none, and -1 for a solid or free lane. Contact, not rest: the caller judges speed. Notification only.
+    const int32_t* particle_support_body;
+    const int32_t* particle_support_particle;
 } ymir_box3d_soa_view;
 
 // A begin or end of touch between two bodies: their lane indices and the shapes' stable ids.
@@ -1572,6 +1576,8 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         view->material_friction = pt->mat_friction;
         view->material_id_lane = pt->mat_id;
         view->material_viscosity = pt->mat_viscosity;
+        view->particle_support_body = pt->support_body;
+        view->particle_support_particle = pt->support_particle;
     }
     return YMIR_SOA_OK;
 }
