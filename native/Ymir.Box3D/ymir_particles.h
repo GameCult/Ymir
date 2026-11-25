@@ -160,7 +160,7 @@ typedef struct ymir_particles
     int32_t tether_count;                                                 // derived: the live tethers
     int32_t body_count;                                                   // bodies filled in `proxies` this step
     int32_t live_particles;
-    int32_t fluid_rings;    // derived by build_grid: rings of 2 rmax cells that hold a kernel pair, 0 without fluid
+    int32_t fluid_rings;    // derived by fluid_density: rings of kernel cells (4 rfmax) that hold a kernel pair, 0 without fluid
     int32_t fluid_overflow; // kernel neighbours past a fluid particle's list in the last step, summed over substeps: a sensor
     int32_t live_fluid; // derived: the live particles with the FLUID phase bit; the create and destroy commands are its only writers
     ymir_particle_proxy* proxies;
@@ -210,6 +210,8 @@ typedef struct ymir_particles
     float *pp_x, *pp_y, *pp_z, *dp_x, *dp_y, *dp_z, *dist_acc, *tacc_x, *tacc_y, *tacc_z, *lambda;
     float fluid_k; // n0(h) = fluid_k / h^3: the Poly6 sum over the simple-cubic lattice of spacing h / 2, a create-time constant
     int32_t *lane_list, *cell_x, *cell_y, *cell_z, *cell_start, *cell_fill, *sorted, *contacts;
+    float *sx, *sy, *sz, *sw; // the fluid grid's lanes in sorted order (predicted position, inverse mass): scratch, only fluid_density reads them
+    uint32_t* sphase;         // the sorted lanes' phase
     int32_t *adj_start, *adj_edge, *heap_node, *heap_edge, *via, *owner, *tether_of, *queue, *comp_size, *isle, *near_isle;
     float *heap_key, *path, *near_path;
     uint8_t* done;

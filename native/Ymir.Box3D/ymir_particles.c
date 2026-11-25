@@ -78,6 +78,9 @@ static void put(float* x, float* y, float* z, int i, v3 v)
 // Capacity of a fluid particle's neighbour list: about 33 kernel neighbours at rest (4 r reach), about 45 at the column's 1.34 compression.
 #define YMIR_FLUID_NEIGHBOURS 96
 
+// Capacity of the stack buffer a fluid row gathers its candidates into before the pair arithmetic; hits past it count in fluid_overflow.
+#define YMIR_FLUID_CANDIDATES 128
+
 // ---- memory: one block, laid out once at create -------------------------------------------------------------
 
 static size_t layout(ymir_particles* p, unsigned char* base)
@@ -126,6 +129,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(lane_list, int32_t, nd); CARVE(cell_x, int32_t, np); CARVE(cell_y, int32_t, np); CARVE(cell_z, int32_t, np);
     CARVE(cell_start, int32_t, table + 1); CARVE(cell_fill, int32_t, table); CARVE(sorted, int32_t, np);
     CARVE(contacts, int32_t, np);
+    CARVE(sx, float, np); CARVE(sy, float, np); CARVE(sz, float, np); CARVE(sw, float, np); CARVE(sphase, uint32_t, np);
     CARVE(adj_start, int32_t, np + 1); CARVE(adj_edge, int32_t, 2 * nd);
     CARVE(heap_key, float, heap); CARVE(heap_node, int32_t, heap); CARVE(heap_edge, int32_t, heap);
     CARVE(path, float, np); CARVE(via, int32_t, np); CARVE(owner, int32_t, np); CARVE(tether_of, int32_t, np);
@@ -1158,31 +1162,15 @@ static int32_t cell_of(float v, float inv_cell)
     return (int32_t)vclamp(floorf(v * inv_cell), -1.0e6f, 1.0e6f);
 }
 
-// Counting sort of the live particles' predicted positions into a hash grid. Within a bucket particles keep
-// index order, so every neighbour walk is the same on every run.
-static float build_grid(ymir_particles* p)
+// Counting sort into a hash grid of cell 1 / inv_cell: the live particles' predicted positions, fluid lanes left out when
+// `solids` is set. Within a bucket particles keep index order, so every neighbour walk is the same on every run.
+static void grid_sort(ymir_particles* p, float inv_cell, int solids)
 {
-    float rmax = 0.0f, rfmax = 0.0f;
-    for (int32_t i = 0; i < p->particle_count; ++i)
-    {
-        if (p->particle_live[i])
-        {
-            rmax = vmax(rmax, p->radius[i]);
-            if (p->phase[i] & YMIR_PHASE_FLUID)
-            {
-                rfmax = vmax(rfmax, p->radius[i]);
-            }
-        }
-    }
-    // A cell holds every contact pair (reach 2 rmax), solids and fluid alike. A kernel pair reaches h = 2 (ri + rj), at most
-    // 2 (rfmax + rmax): the fluid passes walk that many rings of cells (2 at equal radii).
-    float inv_cell = 1.0f / (2.0f * rmax);
-    p->fluid_rings = p->live_fluid > 0 ? (int32_t)ceilf(2.0f * (rfmax + rmax) * inv_cell) : 0;
     int32_t buckets = (int32_t)p->table_mask + 1;
     memset(p->cell_start, 0, sizeof(int32_t) * (size_t)(buckets + 1));
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (!p->particle_live[i])
+        if (!p->particle_live[i] || (solids && (p->phase[i] & YMIR_PHASE_FLUID)))
         {
             continue;
         }
@@ -1198,13 +1186,27 @@ static float build_grid(ymir_particles* p)
     }
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (p->particle_live[i])
+        if (p->particle_live[i] && !(solids && (p->phase[i] & YMIR_PHASE_FLUID)))
         {
             uint32_t c = cell_hash(p->cell_x[i], p->cell_y[i], p->cell_z[i], p->table_mask);
             p->sorted[p->cell_start[c] + p->cell_fill[c]++] = i;
         }
     }
-    return rmax;
+}
+
+// The contact grid: the non-fluid lanes at a cell of 2 rmax, which holds every contact pair (reach 2 rmax). Fluid lanes meet
+// the others in fluid_density, on a grid of their own.
+static void build_grid(ymir_particles* p)
+{
+    float rmax = 0.0f;
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        if (p->particle_live[i] && !(p->phase[i] & YMIR_PHASE_FLUID))
+        {
+            rmax = vmax(rmax, p->radius[i]);
+        }
+    }
+    grid_sort(p, rmax > 0.0f ? 1.0f / (2.0f * rmax) : 0.0f, 1);
 }
 
 
@@ -1265,7 +1267,7 @@ YMIR_INLINE void walk_half(ymir_particles* p, pair_fn fn, void* ctx)
 {
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (!p->particle_live[i])
+        if (!p->particle_live[i] || (p->phase[i] & YMIR_PHASE_FLUID)) // the grid holds no fluid lane
         {
             continue;
         }
@@ -1339,7 +1341,7 @@ static void particle_contacts(ymir_particles* p)
 
 // ---- fluid: number density (Macklin and Mueller 2013, unilateral as Macklin et al. 2014 sec. 7) and XSPH ---------------
 
-// The kernel reach of a pair: 4 r at equal radii. A kernel pair lies in the rings of cells build_grid sets.
+// The kernel reach of a pair: 4 r at equal radii. A kernel pair lies in the rings of cells fluid_grid sets.
 static float kernel_h(const ymir_particles* p, int32_t i, int32_t j)
 {
     return 2.0f * (p->radius[i] + p->radius[j]);
@@ -1363,14 +1365,6 @@ static v3 spiky(v3 d, float r, float h)
     return vmul(d, YMIR_SPIKY / (h3 * h3) * t * t / r);
 }
 
-// Does the pair (i, j) share the density? Fluid with fluid, or fluid with a solid it would touch by contact. The kernel
-// overlap decides the rest.
-static int density_pair(const ymir_particles* p, int32_t i, int32_t j)
-{
-    uint32_t fi = p->phase[i] & YMIR_PHASE_FLUID, fj = p->phase[j] & YMIR_PHASE_FLUID;
-    return (fi | fj) != 0 && (fi != 0 && fj != 0 ? 1 : collides(p, i, j));
-}
-
 // Pass B: the pair's correction, (lambda_i + lambda_j) grad W / n0, with each end moving its own inverse mass times it (XPBD,
 // Macklin et al. 2016): equal and opposite momentum at any mass ratio, equal masses unchanged, a static end takes nothing.
 static void density_correct(ymir_particles* p, int32_t i, int32_t j)
@@ -1392,13 +1386,47 @@ static void density_correct(ymir_particles* p, int32_t i, int32_t j)
     p->dp_x[j] -= dj.x; p->dp_y[j] -= dj.y; p->dp_z[j] -= dj.z;
 }
 
-// Density constraint of every fluid particle, once per substep, after contact. Pass A gathers (fluid i over the rings of cells,
-// in cell offset then index order): n_i = sum W (self included; the solids that touch i count too), C_i = max(n_i / n0 - 1, 0),
-// lambda_i = -C_i / (sum_k w_k |grad_k C_i|^2 + eps w_i), 0 when that is 0; a solid's lambda is 0. Pass A also writes i's neighbour
-// list: every kernel neighbour in walk order until YMIR_FLUID_NEIGHBOURS, each past that counted in fluid_overflow (n and lambda
-// stay exact; the correction and XSPH lose those pairs). Pass B reads the lists: each fluid row i in index order, each listed j
-// in list order, a fluid j below i skipped (its row does the pair), a solid always done from i; corrections apply after (Jacobi),
-// so the sums are the same on every run.
+// The fluid grid: every live lane (a kernel pair can hold a solid) in the tables build_grid left, rebuilt at the kernel cell 4 rfmax.
+// A kernel pair reaches h = 2 (ri + rj), at most 2 (rfmax + rmax): fluid_rings cells hold it (1 at equal radii). Then the lanes'
+// predicted position, inverse mass and phase are copied into sorted order, so a bucket's candidates read contiguously; sorted[q] is
+// the lane of sorted index q. Nothing after the fluid pass reads this grid. Returns rmax over the live lanes.
+static float fluid_grid(ymir_particles* p)
+{
+    float rmax = 0.0f, rfmax = 0.0f;
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        if (p->particle_live[i])
+        {
+            rmax = vmax(rmax, p->radius[i]);
+            rfmax = (p->phase[i] & YMIR_PHASE_FLUID) ? vmax(rfmax, p->radius[i]) : rfmax;
+        }
+    }
+    float inv_cell = 1.0f / (4.0f * rfmax);
+    p->fluid_rings = (int32_t)ceilf(2.0f * (rfmax + rmax) * inv_cell);
+    grid_sort(p, inv_cell, 0);
+    for (int32_t q = 0; q < p->live_particles; ++q)
+    {
+        int32_t j = p->sorted[q];
+        p->sx[q] = p->pp_x[j];
+        p->sy[q] = p->pp_y[j];
+        p->sz[q] = p->pp_z[j];
+        p->sw[q] = p->inv_mass[j];
+        p->sphase[q] = p->phase[j];
+    }
+    memset(p->cell_fill, 0, sizeof(int32_t) * ((size_t)p->table_mask + 1)); // the buckets' visit stamps, pass A
+    return rmax;
+}
+
+// Density constraint of every fluid particle, once per substep, after contact. Pass A gathers, fluid rows in sorted order: row i
+// takes the buckets of the (2 rings + 1)^3 cells around its own, each bucket once (a bucket two offsets hash to is skipped the
+// second time; a particle of a cell outside the rings is out of reach, so the distance test needs no cell compare), and
+// compacts without a branch the candidates within 2 (ri + rmax) into a row buffer. Over the buffer: n_i = sum W (self included; the
+// solids that touch i count too), C_i = max(n_i / n0 - 1, 0), lambda_i = -C_i / (sum_k w_k |grad_k C_i|^2 + eps w_i), 0 when that
+// is 0; a solid's lambda is 0. Pass A also writes i's neighbour list: every kernel neighbour in walk order until
+// YMIR_FLUID_NEIGHBOURS, each past that counted in fluid_overflow, as are candidates past the row buffer (n and lambda stay exact
+// until the buffer overflows; the correction and XSPH lose the pairs past the list). Pass B reads the lists: each fluid row i in index
+// order, each listed j in list order, a fluid j below i skipped (its row does the pair), a solid always done from i; corrections
+// apply after (Jacobi), so the sums are the same on every run. Then the fluid-solid contacts, on the same lists.
 static void fluid_density(ymir_particles* p)
 {
     for (int32_t i = 0; i < p->particle_count; ++i)
@@ -1406,51 +1434,68 @@ static void fluid_density(ymir_particles* p)
         p->lambda[i] = 0.0f;
         p->dp_x[i] = p->dp_y[i] = p->dp_z[i] = 0.0f;
     }
+    float rmax = fluid_grid(p);
     int32_t rings = p->fluid_rings;
-    for (int32_t i = 0; i < p->particle_count; ++i)
+    for (int32_t qi = 0; qi < p->live_particles; ++qi)
     {
-        if (!p->particle_live[i] || !(p->phase[i] & YMIR_PHASE_FLUID))
+        if (!(p->sphase[qi] & YMIR_PHASE_FLUID))
         {
             continue;
         }
-        v3 xi = P(p, p->pp_x, p->pp_y, p->pp_z, i), gsum = {0.0f, 0.0f, 0.0f};
+        int32_t i = p->sorted[qi];
+        v3 xi = {p->sx[qi], p->sy[qi], p->sz[qi]}, gsum = {0.0f, 0.0f, 0.0f};
         float h0 = 4.0f * p->radius[i], n0 = n0_of(p, h0), n = poly6(0.0f, h0), ssum = 0.0f, wi = p->inv_mass[i];
-        int32_t* list = p->nbr + (size_t)i * YMIR_FLUID_NEIGHBOURS;
-        int32_t count = 0;
+        float reach = 2.0f * (p->radius[i] + rmax), reach2 = reach * reach;
+        int32_t buf[YMIR_FLUID_CANDIDATES], m = 0, hits = 0, stamp = qi + 1;
         for (int32_t da = -rings; da <= rings; ++da)
         for (int32_t db = -rings; db <= rings; ++db)
         for (int32_t dc = -rings; dc <= rings; ++dc)
         {
-            int32_t ca = p->cell_x[i] + da, cb = p->cell_y[i] + db, cc = p->cell_z[i] + dc;
-            uint32_t bucket = cell_hash(ca, cb, cc, p->table_mask);
+            uint32_t bucket = cell_hash(p->cell_x[i] + da, p->cell_y[i] + db, p->cell_z[i] + dc, p->table_mask);
+            if (p->cell_fill[bucket] == stamp)
+            {
+                continue;
+            }
+            p->cell_fill[bucket] = stamp;
             for (int32_t q = p->cell_start[bucket]; q < p->cell_start[bucket + 1]; ++q)
             {
-                int32_t j = p->sorted[q];
-                if (j == i || p->cell_x[j] != ca || p->cell_y[j] != cb || p->cell_z[j] != cc || !density_pair(p, i, j))
-                {
-                    continue;
-                }
-                v3 d = vsub(xi, P(p, p->pp_x, p->pp_y, p->pp_z, j));
-                float h = kernel_h(p, i, j), r2 = vdot(d, d);
-                if (r2 >= h * h)
-                {
-                    continue;
-                }
-                if (count < YMIR_FLUID_NEIGHBOURS)
-                {
-                    list[count++] = j;
-                }
-                else
-                {
-                    p->fluid_overflow++;
-                }
-                n += poly6(r2, h);
-                if (r2 >= 1e-12f)
-                {
-                    v3 g = spiky(d, sqrtf(r2), h);
-                    gsum = vadd(gsum, g);
-                    ssum += p->inv_mass[j] * vdot(g, g);
-                }
+                float dx = xi.x - p->sx[q], dy = xi.y - p->sy[q], dz = xi.z - p->sz[q];
+                int32_t hit = (dx * dx + dy * dy + dz * dz < reach2) & (q != qi);
+                buf[m] = q;
+                m += hit & (m < YMIR_FLUID_CANDIDATES - 1);
+                hits += hit;
+            }
+        }
+        p->fluid_overflow += hits - m;
+        int32_t* list = p->nbr + (size_t)i * YMIR_FLUID_NEIGHBOURS;
+        int32_t count = 0;
+        for (int32_t k = 0; k < m; ++k)
+        {
+            int32_t q = buf[k], j = p->sorted[q];
+            if (!(p->sphase[q] & YMIR_PHASE_FLUID) && !collides(p, i, j)) // fluid shares the density with fluid, and with the solids it would touch by contact
+            {
+                continue;
+            }
+            v3 d = vsub(xi, (v3){p->sx[q], p->sy[q], p->sz[q]});
+            float h = kernel_h(p, i, j), r2 = vdot(d, d);
+            if (r2 >= h * h)
+            {
+                continue;
+            }
+            if (count < YMIR_FLUID_NEIGHBOURS)
+            {
+                list[count++] = j;
+            }
+            else
+            {
+                p->fluid_overflow++;
+            }
+            n += poly6(r2, h);
+            if (r2 >= 1e-12f)
+            {
+                v3 g = spiky(d, sqrtf(r2), h);
+                gsum = vadd(gsum, g);
+                ssum += p->sw[q] * vdot(g, g);
             }
         }
         p->nbr_count[i] = count;
@@ -1474,6 +1519,40 @@ static void fluid_density(ymir_particles* p)
                 continue;
             }
             density_correct(p, i, j);
+        }
+    }
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        if (p->particle_live[i])
+        {
+            p->pp_x[i] += p->dp_x[i];
+            p->pp_y[i] += p->dp_y[i];
+            p->pp_z[i] += p->dp_z[i];
+        }
+    }
+    // Fluid-solid contact (the contact pass never sees a fluid lane): the listed solids of each fluid row that still overlap it,
+    // counted then moved as contact_pair does, weight 1 / max(n_i, n_j) over these pairs only; the moves apply after (Jacobi).
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        p->contacts[i] = 0;
+        p->dp_x[i] = p->dp_y[i] = p->dp_z[i] = 0.0f;
+    }
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        for (int32_t i = 0; i < p->particle_count; ++i)
+        {
+            if (!p->particle_live[i] || !(p->phase[i] & YMIR_PHASE_FLUID))
+            {
+                continue;
+            }
+            const int32_t* list = p->nbr + (size_t)i * YMIR_FLUID_NEIGHBOURS;
+            for (int32_t k = 0; k < p->nbr_count[i]; ++k)
+            {
+                if (!(p->phase[list[k]] & YMIR_PHASE_FLUID))
+                {
+                    contact_pair(p, &pass, i, list[k]);
+                }
+            }
         }
     }
     for (int32_t i = 0; i < p->particle_count; ++i)

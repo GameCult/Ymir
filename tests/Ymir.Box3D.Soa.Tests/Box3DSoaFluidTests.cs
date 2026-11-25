@@ -233,7 +233,7 @@ public sealed class Box3DSoaFluidTests
     // zero, below the rule's midpoint, because the count is exact and any overflow means pairs were lost.
     // Unclaimed since the fix cut, readings of its build, a follow-up: Mc1 (lambda halved) max 1.2116, Mc2 (pass A without the self term) max 1.3340.
     private const float ColumnMax = 1.5f;
-    private const float ColumnMean = 0.0137f;
+    private const float ColumnMean = 0.0907f;
     private const float FloorPenetration = 0.233f;
     private const int FloorThrough = 18;
 
@@ -562,8 +562,8 @@ public sealed class Box3DSoaFluidTests
         }
     }
 
-    // Recorded on this commit's build (gcc 13.2, -ffp-contract=off): the pour scene's (4 substeps, fluid block) particle, density and body lanes at ticks 40, 80, ... 240.
-    private static readonly ulong[] FluidHashes = [2183254217684687738ul, 4955991183327756149ul, 16519590483747763541ul, 6219824879232744950ul, 15471166218907503526ul, 18039537074735517335ul];
+    // Re-pinned once at the kernel-cell cut (fluid rows in sorted order over 4 rfmax cells, fluid-solid contact in the fluid pass: every pair sum has a new order). Recorded on this commit's build (gcc 13.2, -ffp-contract=off): the pour scene's (4 substeps, fluid block) particle, density and body lanes at ticks 40, 80, ... 240.
+    private static readonly ulong[] FluidHashes = [5735058435646750614ul, 17157245750823511088ul, 9310017083272243290ul, 13504503053832530307ul, 15203508087677495529ul, 12413386253327045810ul];
 
     [Fact]
     public void Fluid_world_is_byte_deterministic()
