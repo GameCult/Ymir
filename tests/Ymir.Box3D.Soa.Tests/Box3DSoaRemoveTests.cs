@@ -118,6 +118,36 @@ public sealed class Box3DSoaRemoveTests
     }
 
     [Fact]
+    public void An_attachment_alone_refuses_removal_and_an_anchor_is_no_exception()
+    {
+        using var world = World();
+        var box = world.AddBox(2, (0f, 2f, 0f), (0.1f, 0.1f, 0.1f), 500f);
+        var attached = world.AddAnchor(3, (1f, 2f, 0f));
+        var sensed = world.AddAnchor(4, (2f, 2f, 0f));
+        var p = new Box3DSoaParticleHandle[2];
+        world.CreateParticles([new((0f, 2f, 0f), 0.02f, R), new((1f, 2f, 0f), 0.02f, R)], p);
+        var onBox = world.Attach(Box3DSoaAttachKind.Body, p[0], box, (0f, 0f, 0f));
+        var onAnchor = world.Attach(Box3DSoaAttachKind.Body, p[1], attached, (0f, 0f, 0f));
+        var sensors = new Box3DSoaConstraintHandle[1];
+        world.CreateSensors([(sensed, (0f, 0f, 0f), 0.2f)], sensors);
+        Run(world, 3);
+        var before = Snapshot(world);
+
+        Assert.Throws<InvalidOperationException>(() => world.RemoveBody(box)); // an attachment alone names it
+        Assert.Throws<InvalidOperationException>(() => world.RemoveBody(attached)); // an anchor named by an attachment
+        Assert.Throws<InvalidOperationException>(() => world.RemoveBody(sensed)); // an anchor named by a sensor
+        Assert.Equal(before, Snapshot(world));
+
+        world.Remove(onBox);
+        world.Remove(onAnchor);
+        world.Remove(sensors[0]);
+        world.RemoveBody(box);
+        world.RemoveBody(attached);
+        world.RemoveBody(sensed);
+        Assert.All(new[] { box, attached, sensed }, h => Assert.Equal((uint)Box3DSoaKind.Removed, world.View.Kind[h]));
+    }
+
+    [Fact]
     public void A_removed_anchor_ends_its_grab()
     {
         using var world = World();
