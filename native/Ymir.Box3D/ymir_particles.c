@@ -1238,6 +1238,52 @@ int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const
     return rederive_topology(p, TOPO_FULL, NULL, 0);
 }
 
+int32_t ymir_particles_release_body(ymir_particles* p, int32_t body, uint64_t step_count, uint32_t* patches, float* volume)
+{
+    if (p == NULL || body < 0 || body >= p->body_capacity)
+    {
+        return YMIR_PARTICLES_INVALID_ARGUMENT;
+    }
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        if (p->att_kind[a] == YMIR_ATTACH_BODY && p->att_body[a] == body)
+        {
+            return YMIR_PARTICLES_REFERENCED;
+        }
+    }
+    for (int32_t s = 0; s < p->sensor_count; ++s)
+    {
+        if (p->sensor_live[s] && p->sensor_body[s] == body)
+        {
+            return YMIR_PARTICLES_REFERENCED;
+        }
+    }
+    uint32_t count = 0;
+    float total = 0.0f;
+    for (int32_t w = 0; w < p->wet_count; ++w)
+    {
+        if (p->wet_live[w] && p->wet_body[w] == body)
+        {
+            count += 1;
+            total += p->wet_volume[w];
+            kill_wet(p, w, step_count);
+        }
+    }
+    if (count > 0)
+    {
+        rederive_wet(p);
+    }
+    if (patches != NULL)
+    {
+        *patches = count;
+    }
+    if (volume != NULL)
+    {
+        *volume = total;
+    }
+    return YMIR_PARTICLES_OK;
+}
+
 int32_t ymir_particles_set_material(ymir_particles* p, int32_t index, const ymir_material_desc* d)
 {
     if (p == NULL || d == NULL || index < 0 || index >= p->material_capacity || !isfinite(d->friction) || d->friction < 0.0f ||
