@@ -78,6 +78,9 @@ static void put(float* x, float* y, float* z, int i, v3 v)
 // Neighbour-list entries a fluid lane adds to the arena (CSR, packed): about 33 kernel neighbours at rest (4 r reach), about 45 at the column's 1.34 compression.
 #define YMIR_FLUID_NEIGHBOURS 96
 
+// The thickness of a settled film in metres: a patch of volume V is a disc of radius sqrt(V / (pi film)). One constant for every liquid.
+#define YMIR_WET_FILM 1.0e-3f
+
 // Capacity of the stack buffer a fluid row gathers its candidates into before the pair arithmetic; hits past it count in fluid_overflow.
 #define YMIR_FLUID_CANDIDATES 128
 
@@ -87,7 +90,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
 {
     size_t off = 0;
     int64_t np = p->particle_capacity, nd = p->distance_capacity, nb = p->bend_capacity, na = p->attachment_capacity,
-            nt = p->tether_capacity, nm = p->material_capacity, nx = p->body_capacity;
+            nt = p->tether_capacity, nm = p->material_capacity, nx = p->body_capacity, nw = p->wet_capacity, nf = p->fluid_capacity;
     int64_t heap = 2 * nd + na + 1; // every directed edge relaxes once, and every attachment seeds one
     size_t table = (size_t)p->table_mask + 1;
 #define CARVE(field, type, count)                                                                                      \
@@ -107,6 +110,10 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(particle_generation, uint32_t, np); CARVE(particle_removed_at, uint64_t, np); CARVE(component, int32_t, np);
     CARVE(density, float, np); CARVE(support_body, int32_t, np); CARVE(support_particle, int32_t, np);
     CARVE(nbr, int32_t, (int64_t)p->fluid_capacity * YMIR_FLUID_NEIGHBOURS); CARVE(nbr_start, int32_t, np); CARVE(nbr_count, int32_t, np);
+    CARVE(wet_body, int32_t, nw); CARVE(wet_particle, int32_t, nw); CARVE(wet_x, float, nw); CARVE(wet_y, float, nw); CARVE(wet_z, float, nw);
+    CARVE(wet_radius, float, nw); CARVE(wet_volume, float, nw); CARVE(wet_material, uint32_t, nw); CARVE(wet_live, uint32_t, nw);
+    CARVE(wet_generation, uint32_t, nw); CARVE(wet_removed_at, uint64_t, nw); CARVE(wet_volume_body, float, nx);
+    CARVE(wu_code, int32_t, nf); CARVE(wu_x, float, nf); CARVE(wu_y, float, nf); CARVE(wu_z, float, nf); CARVE(wu_volume, float, nf);
     CARVE(dist_a, int32_t, nd); CARVE(dist_b, int32_t, nd); CARVE(dist_rest, float, nd); CARVE(dist_compliance, float, nd);
     CARVE(dist_tension, float, nd); CARVE(dist_live, uint32_t, nd); CARVE(dist_generation, uint32_t, nd);
     CARVE(dist_removed_at, uint64_t, nd);
@@ -121,7 +128,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(att_removed_at, uint64_t, na);
     CARVE(tether_att, int32_t, nt); CARVE(tether_particle, int32_t, nt); CARVE(tether_parent, int32_t, nt);
     CARVE(tether_edge, int32_t, nt); CARVE(tether_other, int32_t, nt); CARVE(tether_bound, float, nt);
-    CARVE(mat_friction, float, nm); CARVE(mat_viscosity, float, nm); CARVE(mat_id, uint64_t, nm);
+    CARVE(mat_friction, float, nm); CARVE(mat_viscosity, float, nm); CARVE(mat_wet_friction, float, nm); CARVE(mat_id, uint64_t, nm);
     CARVE(pp_x, float, np); CARVE(pp_y, float, np); CARVE(pp_z, float, np);
     CARVE(dp_x, float, np); CARVE(dp_y, float, np); CARVE(dp_z, float, np);
     CARVE(dist_acc, float, nd); CARVE(lambda, float, np);
@@ -142,7 +149,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
 ymir_particles* ymir_particles_create(const ymir_particle_capacities* c, int32_t body_capacity)
 {
     if (c == NULL || c->particles < 0 || c->distances < 0 || c->bends < 0 || c->attachments < 0 || c->tethers < 0 ||
-        c->materials < 0 || c->fluid < 0 || body_capacity < 0)
+        c->materials < 0 || c->fluid < 0 || c->wets < 0 || body_capacity < 0)
     {
         return NULL;
     }
@@ -159,6 +166,7 @@ ymir_particles* ymir_particles_create(const ymir_particle_capacities* c, int32_t
     p->material_capacity = c->materials;
     p->body_capacity = body_capacity;
     p->fluid_capacity = c->fluid;
+    p->wet_capacity = c->wets;
     uint32_t table = 16;
     while (table < 2u * (uint32_t)c->particles)
     {
@@ -173,6 +181,10 @@ ymir_particles* ymir_particles_create(const ymir_particle_capacities* c, int32_t
         return NULL;
     }
     layout(p, (unsigned char*)p->arena);
+    for (int32_t w = 0; w < p->wet_capacity; ++w)
+    {
+        p->wet_body[w] = p->wet_particle[w] = -1; // a free patch lane holds -1 on both supports
+    }
     // n0 for h = 1: the Poly6 kernel summed over the simple-cubic lattice of spacing 1/2 within reach (self included); at h it is k / h^3
     float k = 0.0f;
     for (int a = -2; a <= 2; ++a)
@@ -248,6 +260,8 @@ int32_t ymir_particles_free_slots(const ymir_particles* p, uint32_t lane_set, ui
             return free_count(p->bend_live, 0, p->bend_removed_at, p->bend_count, p->bend_capacity, step_count);
         case YMIR_LANES_ATTACHMENT:
             return free_count(p->att_kind, YMIR_ATTACH_REMOVED, p->att_removed_at, p->attachment_count, p->attachment_capacity, step_count);
+        case YMIR_LANES_WET:
+            return free_count(p->wet_live, 0, p->wet_removed_at, p->wet_count, p->wet_capacity, step_count);
         default:
             return 0;
     }
@@ -311,6 +325,43 @@ static void kill_attachment(ymir_particles* p, int32_t a, uint64_t step_count)
     p->att_point_x[a] = p->att_point_y[a] = p->att_point_z[a] = 0.0f;
     p->att_compliance[a] = 0.0f;
     p->att_force_x[a] = p->att_force_y[a] = p->att_force_z[a] = 0.0f;
+}
+
+static int wet_ok(const ymir_particles* p, int32_t lane, uint32_t generation)
+{
+    return lane >= 0 && lane < p->wet_count && p->wet_live[lane] && p->wet_generation[lane] == generation;
+}
+
+static void wet_reset(ymir_particles* p, int32_t w)
+{
+    p->wet_live[w] = 0;
+    p->wet_body[w] = p->wet_particle[w] = -1;
+    p->wet_x[w] = p->wet_y[w] = p->wet_z[w] = 0.0f;
+    p->wet_radius[w] = p->wet_volume[w] = 0.0f;
+    p->wet_material[w] = 0;
+}
+
+static void kill_wet(ymir_particles* p, int32_t w, uint64_t step_count)
+{
+    wet_reset(p, w);
+    p->wet_removed_at[w] = step_count;
+    p->wet_generation[w] += 1;
+}
+
+// wet_volume_body[b] = the sum of the live patches on body b, in wet lane order. The one writer; settle, remove and destroy_particles call it.
+static void rederive_wet(ymir_particles* p)
+{
+    for (int32_t b = 0; b < p->body_capacity; ++b)
+    {
+        p->wet_volume_body[b] = 0.0f;
+    }
+    for (int32_t w = 0; w < p->wet_count; ++w)
+    {
+        if (p->wet_live[w] && p->wet_body[w] >= 0 && p->wet_body[w] < p->body_capacity)
+        {
+            p->wet_volume_body[p->wet_body[w]] += p->wet_volume[w];
+        }
+    }
 }
 
 // ---- derivation: components and tethers ----------------------------------------------------------------------
@@ -857,6 +908,19 @@ int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymi
             p->support_particle[i] = -1; // a drop does not keep resting on a solid destroyed under it until the next step
         }
     }
+    int wet_killed = 0;
+    for (int32_t w = 0; w < p->wet_count; ++w)
+    {
+        if (p->wet_live[w] && p->wet_particle[w] >= 0 && !p->particle_live[p->wet_particle[w]])
+        {
+            kill_wet(p, w, step_count); // the liquid on a destroyed solid goes with it
+            wet_killed = 1;
+        }
+    }
+    if (wet_killed)
+    {
+        rederive_wet(p);
+    }
     return rederive_topology(p, held ? TOPO_FULL : TOPO_ISOLATED, p->queue, killed);
 }
 
@@ -1029,7 +1093,7 @@ int32_t ymir_particles_attach(ymir_particles* p, const ymir_attachment_desc* d, 
 int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const ymir_handle* h, uint64_t step_count)
 {
     if (p == NULL || n < 0 || (n > 0 && h == NULL) ||
-        (type != YMIR_LANES_DISTANCE && type != YMIR_LANES_BEND && type != YMIR_LANES_ATTACHMENT))
+        (type != YMIR_LANES_DISTANCE && type != YMIR_LANES_BEND && type != YMIR_LANES_ATTACHMENT && type != YMIR_LANES_WET))
     {
         return YMIR_PARTICLES_INVALID_ARGUMENT;
     }
@@ -1037,11 +1101,24 @@ int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const
     {
         int ok = type == YMIR_LANES_DISTANCE   ? distance_ok(p, h[k].lane, h[k].generation)
                  : type == YMIR_LANES_BEND     ? bend_ok(p, h[k].lane, h[k].generation)
+                 : type == YMIR_LANES_WET      ? wet_ok(p, h[k].lane, h[k].generation)
                                                : attachment_ok(p, h[k].lane, h[k].generation);
         if (!ok)
         {
             return YMIR_PARTICLES_INVALID_ARGUMENT;
         }
+    }
+    if (type == YMIR_LANES_WET)
+    {
+        for (int32_t k = 0; k < n; ++k)
+        {
+            if (p->wet_live[h[k].lane])
+            {
+                kill_wet(p, h[k].lane, step_count);
+            }
+        }
+        rederive_wet(p); // patches change no graph: never through rederive_topology
+        return YMIR_PARTICLES_OK;
     }
     for (int32_t k = 0; k < n; ++k)
     {
@@ -1065,12 +1142,13 @@ int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const
 int32_t ymir_particles_set_material(ymir_particles* p, int32_t index, const ymir_material_desc* d)
 {
     if (p == NULL || d == NULL || index < 0 || index >= p->material_capacity || !isfinite(d->friction) || d->friction < 0.0f ||
-        !isfinite(d->viscosity) || d->viscosity < 0.0f)
+        !isfinite(d->viscosity) || d->viscosity < 0.0f || !isfinite(d->wet_friction) || d->wet_friction < 0.0f)
     {
         return YMIR_PARTICLES_INVALID_ARGUMENT;
     }
     p->mat_friction[index] = d->friction;
     p->mat_viscosity[index] = d->viscosity;
+    p->mat_wet_friction[index] = d->wet_friction;
     p->mat_id[index] = d->material_id;
     return YMIR_PARTICLES_OK;
 }
@@ -2152,4 +2230,167 @@ void ymir_particles_end(ymir_particles* p, int32_t substeps)
         p->att_force_y[a] *= mean;
         p->att_force_z[a] *= mean;
     }
+}
+
+// ---- settle: liquid becomes data ----------------------------------------------------------------------------
+
+static float wet_disc_radius(float volume)
+{
+    return sqrtf(volume / (3.14159265358979f * YMIR_WET_FILM));
+}
+
+// The contact point of fluid particle i on its support, in the support's frame: the nearest surface point of the body, or 0 on a solid particle.
+// Returns 0 when the particle names no support the proxies can place.
+static int wet_support_point(const ymir_particles* p, int32_t i, int32_t* body, int32_t* particle, v3* point)
+{
+    *body = p->support_body[i];
+    *particle = p->support_particle[i];
+    *point = (v3){0.0f, 0.0f, 0.0f};
+    if (*body >= 0)
+    {
+        if (*body >= p->body_count || p->proxies[*body].shape == YMIR_PROXY_NONE)
+        {
+            return 0;
+        }
+        const ymir_particle_proxy* b = p->proxies + *body;
+        v3 n, s;
+        proxy_distance(b, P(p, p->pos_x, p->pos_y, p->pos_z, i), &n, &s);
+        *point = qrot_inv(b->rotation, vsub(s, (v3){b->position[0], b->position[1], b->position[2]}));
+        *particle = -1;
+        return 1;
+    }
+    return *particle >= 0 && *particle < p->particle_count && p->particle_live[*particle];
+}
+
+int32_t ymir_particles_settle(ymir_particles* p, int32_t n, const ymir_handle* h, uint64_t step_count, ymir_handle* out)
+{
+    if (p == NULL || n < 0 || (n > 0 && h == NULL))
+    {
+        return YMIR_PARTICLES_INVALID_ARGUMENT;
+    }
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t body, particle;
+        v3 pt;
+        if (!particle_ok(p, h[k].lane, h[k].generation) || !(p->phase[h[k].lane] & YMIR_PHASE_FLUID) || p->contacts[h[k].lane] ||
+            !wet_support_point(p, h[k].lane, &body, &particle, &pt))
+        {
+            for (int32_t j = 0; j < k; ++j)
+            {
+                p->contacts[h[j].lane] = 0;
+            }
+            return YMIR_PARTICLES_INVALID_ARGUMENT; // a particle named twice would settle its volume twice
+        }
+        p->contacts[h[k].lane] = 1; // scratch between steps: the step zeroes it again
+    }
+    int32_t saved_count = p->wet_count;
+    int32_t logged = 0;
+    int32_t status = YMIR_PARTICLES_OK;
+    for (int32_t k = 0; k < n && status == YMIR_PARTICLES_OK; ++k)
+    {
+        int32_t i = h[k].lane;
+        int32_t body, particle;
+        v3 pt;
+        wet_support_point(p, i, &body, &particle, &pt);
+        uint32_t material = p->material[i];
+        float r2 = 2.0f * p->radius[i];
+        float volume = r2 * r2 * r2;
+        int32_t into = -1;
+        int32_t nearest = -1;
+        float nearest_d = 0.0f;
+        for (int32_t w = 0; w < p->wet_count; ++w)
+        {
+            if (!p->wet_live[w] || p->wet_body[w] != body || p->wet_particle[w] != particle || p->wet_material[w] != material)
+            {
+                continue;
+            }
+            v3 c = {p->wet_x[w], p->wet_y[w], p->wet_z[w]};
+            float d = vlen(vsub(pt, c));
+            if (d <= p->wet_radius[w] && into < 0)
+            {
+                into = w; // the lowest patch whose disc holds the point
+            }
+            if (nearest < 0 || d < nearest_d)
+            {
+                nearest = w;
+                nearest_d = d;
+            }
+        }
+        int created = 0;
+        if (into < 0)
+        {
+            into = next_lane(p->wet_live, 0, p->wet_removed_at, p->wet_count, p->wet_capacity, 0, step_count);
+            created = into >= 0;
+            if (into < 0)
+            {
+                into = nearest; // no lane left: the nearest patch on this support takes it
+            }
+        }
+        if (into < 0)
+        {
+            status = YMIR_PARTICLES_FULL;
+            break;
+        }
+        p->wu_code[logged] = created ? -(into + 1) : into;
+        p->wu_x[logged] = p->wet_x[into];
+        p->wu_y[logged] = p->wet_y[into];
+        p->wu_z[logged] = p->wet_z[into];
+        p->wu_volume[logged] = p->wet_volume[into];
+        logged++;
+        if (created)
+        {
+            p->wet_live[into] = 1;
+            p->wet_body[into] = body;
+            p->wet_particle[into] = particle;
+            p->wet_material[into] = material;
+            p->wet_x[into] = pt.x;
+            p->wet_y[into] = pt.y;
+            p->wet_z[into] = pt.z;
+            p->wet_volume[into] = volume;
+            if (into >= p->wet_count)
+            {
+                p->wet_count = into + 1;
+            }
+        }
+        else
+        {
+            float total = p->wet_volume[into] + volume;
+            p->wet_x[into] = (p->wet_x[into] * p->wet_volume[into] + pt.x * volume) / total; // centre: volume-weighted
+            p->wet_y[into] = (p->wet_y[into] * p->wet_volume[into] + pt.y * volume) / total;
+            p->wet_z[into] = (p->wet_z[into] * p->wet_volume[into] + pt.z * volume) / total;
+            p->wet_volume[into] = total;
+        }
+        p->wet_radius[into] = wet_disc_radius(p->wet_volume[into]);
+        if (out != NULL)
+        {
+            out[k] = (ymir_handle){into, p->wet_generation[into]};
+        }
+    }
+    for (int32_t k = 0; k < n; ++k)
+    {
+        p->contacts[h[k].lane] = 0;
+    }
+    if (status != YMIR_PARTICLES_OK)
+    {
+        for (int32_t u = logged - 1; u >= 0; --u)
+        {
+            if (p->wu_code[u] < 0)
+            {
+                wet_reset(p, -p->wu_code[u] - 1);
+            }
+            else
+            {
+                int32_t w = p->wu_code[u];
+                p->wet_x[w] = p->wu_x[u];
+                p->wet_y[w] = p->wu_y[u];
+                p->wet_z[w] = p->wu_z[u];
+                p->wet_volume[w] = p->wu_volume[u];
+                p->wet_radius[w] = wet_disc_radius(p->wu_volume[u]);
+            }
+        }
+        p->wet_count = saved_count;
+        return status;
+    }
+    rederive_wet(p);
+    return ymir_particles_destroy_particles(p, n, h, step_count);
 }

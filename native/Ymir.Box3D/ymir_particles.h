@@ -49,7 +49,8 @@ enum
     YMIR_LANES_PARTICLE = 0,
     YMIR_LANES_DISTANCE = 1,
     YMIR_LANES_BEND = 2,
-    YMIR_LANES_ATTACHMENT = 3
+    YMIR_LANES_ATTACHMENT = 3,
+    YMIR_LANES_WET = 4 // a wet patch: settled liquid on a body or a solid particle
 };
 
 enum
@@ -81,7 +82,7 @@ typedef struct ymir_handle
 
 typedef struct ymir_particle_capacities
 {
-    int32_t particles, distances, bends, attachments, tethers, materials, fluid; // fluid: the most live particles with the FLUID phase
+    int32_t particles, distances, bends, attachments, tethers, materials, fluid, wets; // fluid: the most live particles with the FLUID phase; wets: the most wet patches
 } ymir_particle_capacities;
 
 // A particle to create. `mass` kg (0 = immovable); `velocity` m/s; `rest` is its place in the rest pose (rest lengths, bends and
@@ -131,6 +132,8 @@ typedef struct ymir_material_desc
 {
     float friction;  // >= 0
     float viscosity; // >= 0, XSPH c (dimensionless): a fluid pair's velocities relax toward each other by c W / n0 per substep; mean of the pair's two
+    float wet_friction; // >= 0: what settled liquid of this material does to friction where it lands; stored for the friction cut, read by nothing here
+    uint32_t pad;
     uint64_t material_id;
 } ymir_material_desc;
 
@@ -162,6 +165,7 @@ typedef struct ymir_particles
     int32_t live_particles;
     int32_t fluid_rings;    // derived by fluid_density: rings of kernel cells (4 rfmax) that hold a kernel pair, 0 without fluid
     int32_t fluid_overflow; // kernel neighbours past a fluid particle's list in the last step, summed over substeps: a sensor
+    int32_t wet_capacity, wet_count; // wet patches: the capacity and the high-water mark
     int32_t live_fluid; // derived: the live particles with the FLUID phase bit; the create and destroy commands are its only writers
     ymir_particle_proxy* proxies;
 
@@ -174,6 +178,16 @@ typedef struct ymir_particles
     int32_t *nbr, *nbr_start, *nbr_count; // scratch: the fluid rows' kernel neighbours in walk order, packed (CSR) in an arena of fluid_capacity * YMIR_FLUID_NEIGHBOURS; row i holds nbr_count[i] from nbr_start[i], this substep's
     int32_t *support_body, *support_particle; // sensor: what a fluid particle touched in the last substep, the highest body lane / the first solid lane its row listed touching it; -1 for none, and always -1 for a solid or free lane
     float* density;     // sensor: a fluid particle's number density over its rest density n_i / n0 in the last substep it ran, else 0
+
+    // wet lanes: a patch of settled liquid on one support, a body (wet_body, its point in the body frame) or a solid particle (wet_particle, point 0);
+    // one of the two is -1, and a free lane holds -1 in both. Written by settle, remove and destroy_particles only; the step never touches them.
+    int32_t *wet_body, *wet_particle;
+    float *wet_x, *wet_y, *wet_z, *wet_radius, *wet_volume; // wet_volume m^3; wet_radius = sqrt(volume / (pi YMIR_WET_FILM))
+    uint32_t *wet_material, *wet_live, *wet_generation;
+    uint64_t* wet_removed_at;
+    float* wet_volume_body; // derived, per body lane: the sum of the live patches on it in wet lane order (rederive_wet, at command time only)
+    int32_t* wu_code; // settle's undo log, one entry per distinct drop: a patch lane (merged: its old lanes below) or -(lane + 1) (created)
+    float *wu_x, *wu_y, *wu_z, *wu_volume;
 
     // distance lanes
     int32_t *dist_a, *dist_b;
@@ -204,7 +218,7 @@ typedef struct ymir_particles
     float* tether_bound;
 
     // material table
-    float *mat_friction, *mat_viscosity;
+    float *mat_friction, *mat_viscosity, *mat_wet_friction;
     uint64_t* mat_id;
 
     // solver scratch, allocated once at create
@@ -233,6 +247,11 @@ int32_t ymir_particles_create_distances(ymir_particles* p, int32_t n, const ymir
 int32_t ymir_particles_create_bends(ymir_particles* p, int32_t n, const ymir_bend_desc* d, uint64_t step_count, ymir_handle* out);
 int32_t ymir_particles_attach(ymir_particles* p, const ymir_attachment_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out);
 int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const ymir_handle* h, uint64_t step_count);
+// Settles the named fluid particles into wet patches and destroys them. Each reads its support from the last step (support_body, else
+// support_particle) and its contact point from the proxies the caller has just filled; a drop's volume is (2 r)^3. Refuses whole
+// (INVALID_ARGUMENT) a dead or non-fluid particle or one with no support, FULL when a drop finds no lane and no patch to merge into, before any
+// change. `out` (NULL or n handles) receives the patch each drop landed in.
+int32_t ymir_particles_settle(ymir_particles* p, int32_t n, const ymir_handle* h, uint64_t step_count, ymir_handle* out);
 int32_t ymir_particles_set_material(ymir_particles* p, int32_t index, const ymir_material_desc* d);
 int32_t ymir_particles_free_slots(const ymir_particles* p, uint32_t lane_set, uint64_t step_count);
 

@@ -109,7 +109,7 @@ public static class Box3DSoaPhase
 
 /// <summary>Capacities of the particle state; <c>null</c> or all zero is a world without particles (ABI 8 behaviour).</summary>
 [StructLayout(LayoutKind.Sequential)]
-public readonly record struct Box3DSoaParticleCapacities(int Particles, int Distances, int Bends, int Attachments, int Tethers, int Materials, int Fluid = 0);
+public readonly record struct Box3DSoaParticleCapacities(int Particles, int Distances, int Bends, int Attachments, int Tethers, int Materials, int Fluid = 0, int Wets = 0);
 
 /// <summary>Native layout of <c>ymir_particle_desc</c>: a particle to create. Mass kg (0 = immovable); rest is its place in the rest pose.</summary>
 [StructLayout(LayoutKind.Sequential)]
@@ -182,6 +182,8 @@ internal struct Box3DSoaMaterialDesc
 {
     public float Friction;
     public float Viscosity;
+    public float WetFriction;
+    public uint Pad;
     public ulong MaterialId;
 }
 
@@ -231,7 +233,7 @@ internal unsafe struct Box3DSoaViewNative
     public int TetherCount;
     public int TetherCapacity;
     public int MaterialCapacity;
-    public int ReservedParticles;
+    public int WetCount;
     public ulong* StableId;
     public uint* Kind;
     public int* Parent;
@@ -344,6 +346,19 @@ internal unsafe struct Box3DSoaViewNative
     public float* MaterialViscosity;
     public int* SupportBody;
     public int* SupportParticle;
+    public int* WetBody;
+    public int* WetParticle;
+    public float* WetX;
+    public float* WetY;
+    public float* WetZ;
+    public float* WetRadius;
+    public float* WetPatchVolume;
+    public uint* WetMaterial;
+    public uint* WetLive;
+    public uint* WetGeneration;
+    public ulong* WetRemovedAt;
+    public float* BodyWetVolume;
+    public float* MaterialWetFriction;
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_facts</c>: counts, dropped counters, then three pointers.</summary>
@@ -761,7 +776,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 13;
+    private const uint ExpectedAbi = 14;
     private nint _handle;
 
     /// <summary>

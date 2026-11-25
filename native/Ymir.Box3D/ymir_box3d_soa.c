@@ -58,7 +58,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a destroyed joint's lane: never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 13u
+#define YMIR_SOA_ABI_VERSION 14u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -138,7 +138,7 @@ typedef struct ymir_box3d_soa_view
     int32_t tether_count;
     int32_t tether_capacity;
     int32_t material_capacity;
-    int32_t reserved_particles;
+    int32_t wet_count; // wet patch lanes: the high-water mark
     // bodies
     const uint64_t* stable_id;
     const uint32_t* kind;
@@ -280,6 +280,21 @@ typedef struct ymir_box3d_soa_view
     // row listed touching it; -1 for none, and -1 for a solid or free lane. Contact, not rest: the caller judges speed. Notification only.
     const int32_t* particle_support_body;
     const int32_t* particle_support_particle;
+    // Wet patches, indexed up to wet_count: settled liquid on a body (point in the body's frame) or a solid particle (point 0); one support is -1.
+    // Written by settle, remove and destroy only, never by the step. body_wet_volume is per body lane, derived from the live patches at command time.
+    const int32_t* wet_body;
+    const int32_t* wet_particle;
+    const float* wet_x;
+    const float* wet_y;
+    const float* wet_z;
+    const float* wet_radius;
+    const float* wet_patch_volume;
+    const uint32_t* wet_material;
+    const uint32_t* wet_live;
+    const uint32_t* wet_generation;
+    const uint64_t* wet_removed_at;
+    const float* body_wet_volume;
+    const float* material_wet_friction;
 } ymir_box3d_soa_view;
 
 // A begin or end of touch between two bodies: their lane indices and the shapes' stable ids.
@@ -1427,7 +1442,18 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_set_material(ymir_box3d_soa_world* 
     return ymir_particles_set_material(world->particles, index, d);
 }
 
-// Lanes a new particle (0), distance (1), bend (2) or attachment (3) could take right now.
+// Settles fluid particles into wet patches (see ymir_particles_settle): the proxies are refreshed first, so the contact points are the bodies' poses now.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_settle(ymir_box3d_soa_world* world, int32_t n, const ymir_handle* h, ymir_handle* out)
+{
+    if (world == NULL || world->particles == NULL)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    ymir_soa_gather_proxies(world);
+    return ymir_particles_settle(world->particles, n, h, world->step_count, out);
+}
+
+// Lanes a new particle (0), distance (1), bend (2), attachment (3) or wet patch (4) could take right now.
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_free_slots(const ymir_box3d_soa_world* world, uint32_t lane_set)
 {
     return world == NULL || world->particles == NULL ? 0 : ymir_particles_free_slots(world->particles, lane_set, world->step_count);
@@ -1463,6 +1489,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         .tether_count = pt != NULL ? pt->tether_count : 0,
         .tether_capacity = pt != NULL ? pt->tether_capacity : 0,
         .material_capacity = pt != NULL ? pt->material_capacity : 0,
+        .wet_count = pt != NULL ? pt->wet_count : 0,
         .stable_id = world->stable_id,
         .kind = world->kind,
         .parent = world->parent,
@@ -1578,6 +1605,19 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         view->material_viscosity = pt->mat_viscosity;
         view->particle_support_body = pt->support_body;
         view->particle_support_particle = pt->support_particle;
+        view->wet_body = pt->wet_body;
+        view->wet_particle = pt->wet_particle;
+        view->wet_x = pt->wet_x;
+        view->wet_y = pt->wet_y;
+        view->wet_z = pt->wet_z;
+        view->wet_radius = pt->wet_radius;
+        view->wet_patch_volume = pt->wet_volume;
+        view->wet_material = pt->wet_material;
+        view->wet_live = pt->wet_live;
+        view->wet_generation = pt->wet_generation;
+        view->wet_removed_at = pt->wet_removed_at;
+        view->body_wet_volume = pt->wet_volume_body;
+        view->material_wet_friction = pt->mat_wet_friction;
     }
     return YMIR_SOA_OK;
 }
