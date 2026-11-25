@@ -600,6 +600,130 @@ public sealed class Box3DSoaCouplingTests
         Assert.ThrowsAny<Exception>(() => world.Attach(Box3DSoaAttachKind.Static, flesh[0], point: (0f, 1f, 0f), limb: true));
     }
 
+    private static float WorstGap(Box3DSoaWorld world, int body, Pos local, Box3DSoaParticleHandle particle, int steps = 120)
+    {
+        var worst = 0f;
+        for (var i = 0; i < steps; i++)
+        {
+            world.Step(Dt, Sub);
+            worst = MathF.Max(worst, Gap(world.View, particle.Lane, BodyPoint(world.View, body, local)));
+        }
+        return worst;
+    }
+
+    [Fact]
+    public void Limb_flesh_still_meets_a_body_of_another_tree()
+    {
+        // The arm's flesh particle (LIMB, attached to the forearm) has a sphere of no limb tree beside it, inside its contact reach: the
+        // sphere is not skipped and pushes the particle off its point. Readings are the worst distance from the point over 120 ticks.
+        using var world = Box3DSoaParticleTests.World(gravityY: 0f);
+        var upper = world.AddCapsule(1, (0f, 0f, 0f), ArmRadius, 0.4f, 1000f);
+        var fore = world.AddCapsule(2, (0.2f, 0.9f, 0f), ArmRadius, 0.4f, 1000f, parent: upper);
+        world.AddSphere(3, (0.35f, 0.9f, 0f), 0.04f, 1000f);
+        Pos at = (0.306f, 0.9f, 0f);
+        var flesh = new Box3DSoaParticleHandle[1];
+        world.CreateParticles([new Box3DSoaParticleDesc(at, ParticleMass, ParticleRadius)], flesh);
+        Pos local = (at.X - 0.2f, at.Y - 0.9f, at.Z);
+        world.Attach(Box3DSoaAttachKind.Body, flesh[0], fore, local, limb: true);
+        var worst = WorstGap(world, fore, local, flesh[0]);
+        Reading($"LIMB_FOREIGN worst deviation from the attachment point beside a foreign sphere {F(worst)} m");
+        Assert.True(worst > ForeignFloor, $"the LIMB particle sat only {worst} m off its point beside a foreign body");
+    }
+
+    [Fact]
+    public void Limb_flesh_ignores_every_bone_up_its_chain_not_only_the_parent()
+    {
+        // Three capsules chained grandparent -> parent -> child, spaced 0.5 m. The particle is attached to the child and lies inside the
+        // grandparent's reach: the limb-tree root is two hops from the child, and a walk that stopped at the parent would not skip it.
+        using var world = Box3DSoaParticleTests.World(gravityY: 0f);
+        var grand = world.AddCapsule(1, (0f, 0f, 0f), 0.1f, 0.4f, 1000f);
+        var parent = world.AddCapsule(2, (0.5f, 0f, 0f), 0.1f, 0.4f, 1000f, parent: grand);
+        var child = world.AddCapsule(3, (1.0f, 0f, 0f), 0.1f, 0.4f, 1000f, parent: parent);
+        Pos at = (0.106f, 0f, 0f);
+        var flesh = new Box3DSoaParticleHandle[1];
+        world.CreateParticles([new Box3DSoaParticleDesc(at, ParticleMass, ParticleRadius)], flesh);
+        Pos local = (at.X - 1.0f, at.Y, at.Z);
+        world.Attach(Box3DSoaAttachKind.Body, flesh[0], child, local, limb: true);
+        var worst = WorstGap(world, child, local, flesh[0]);
+        Reading($"LIMB_CHAIN worst deviation from the attachment point, grandparent in reach {F(worst)} m");
+        Assert.True(worst < ChainBound, $"the LIMB particle sat {worst} m off its point beside its grandparent");
+    }
+
+    [Fact]
+    public void A_particle_created_after_an_attachment_does_not_skip_the_first_body()
+    {
+        // Creating particles rederives the held lists of the lanes that carry no attachment; a lane left at the zeroed arena's limb_body 0
+        // would skip body 0's whole tree. The late particle sits inside sphere 0's reach and is pushed out of it.
+        using var world = Box3DSoaParticleTests.World(gravityY: 0f);
+        const float radius = 0.3f;
+        var sphere = world.AddSphere(1, (0f, 0f, 0f), radius, 1000f);
+        var first = new Box3DSoaParticleHandle[1];
+        world.CreateParticles([new Box3DSoaParticleDesc((0f, 2f, 0f), ParticleMass, ParticleRadius)], first);
+        world.Attach(Box3DSoaAttachKind.Body, first[0], sphere, (0f, 2f, 0f));
+        var late = new Box3DSoaParticleHandle[1];
+        world.CreateParticles([new Box3DSoaParticleDesc((0.29f, 0f, 0f), ParticleMass, ParticleRadius)], late);
+        Run(world, 60);
+        var view = world.View;
+        var fromCentre = MathF.Sqrt(Sq(view.ParticleX[late[0].Lane] - view.PositionX[sphere]) + Sq(view.ParticleY[late[0].Lane] - view.PositionY[sphere]) + Sq(view.ParticleZ[late[0].Lane] - view.PositionZ[sphere]));
+        var depth = MathF.Max(0f, radius + ParticleRadius - fromCentre);
+        Reading($"LIMB_LATE depth of the late particle inside the sphere's reach after 60 ticks {F(depth)} m");
+        Assert.True(depth < LateDepth, $"the late particle stayed {depth} m inside body 0's reach");
+    }
+
+    [Fact]
+    public void A_refused_attachment_leaves_the_held_lanes_as_they_were()
+    {
+        // A rope end beside the upper arm; the attach to the forearm asks for a tether, which the world has no capacity for, and is
+        // refused. The refused command must leave the particle's held list and limb body untouched: the end then drifts exactly as in the
+        // run that never tried. Readings are the end's distance from its start after 120 ticks, control and after the refusal.
+        float Displacement(bool tryRefused)
+        {
+            using var world = Box3DSoaParticleTests.World(gravityY: 0f, tethers: 1, particles: 16, distances: 16, bends: 16);
+            var upper = world.AddCapsule(1, (0f, 0f, 0f), ArmRadius, 0.4f, 1000f);
+            var fore = world.AddCapsule(2, (0.2f, 0.9f, 0f), ArmRadius, 0.4f, 1000f, parent: upper);
+            var f = FlankPoint;
+            var rope = Graph.Rope(world, [f, (f.X, f.Y, f.Z + 0.03f), (f.X, f.Y, f.Z + 0.06f), (f.X, f.Y, f.Z + 0.09f)], ParticleMass, ParticleRadius, bend: -1f);
+            if (tryRefused)
+                Assert.ThrowsAny<Exception>(() => world.Attach(Box3DSoaAttachKind.Body, rope.Particles[0], fore, (f.X - 0.2f, f.Y - 0.9f, f.Z), limb: true, tether: true));
+            Run(world, 120);
+            var v = world.View;
+            var l = rope.Particles[0].Lane;
+            return MathF.Sqrt(Sq(v.ParticleX[l] - f.X) + Sq(v.ParticleY[l] - f.Y) + Sq(v.ParticleZ[l] - f.Z));
+        }
+        var control = Displacement(false);
+        var refused = Displacement(true);
+        Reading($"LIMB_REFUSED rope end displacement control {F(control)} m, after a refused LIMB+TETHER attach {F(refused)} m");
+        Assert.True(MathF.Abs(refused - control) < RefusedBound, $"a refused attach moved the end {MathF.Abs(refused - control)} m from the control run");
+    }
+
+    [Fact]
+    public void Limb_attachments_across_two_trees_skip_only_the_lowest_attachments_tree()
+    {
+        // The documented limit: a particle's LIMB attachments to bodies of two trees skip only the tree of its lowest live LIMB attachment
+        // (the first made); the other tree's bones collide, except the bodies the particle is attached to. Two limbs, A (a1 -> x) and
+        // B (a2 -> y); one particle per world is attached to x first and then y, and sits at its own place beside a1 or beside a2.
+        static float Worst(bool besideSecondTree)
+        {
+            using var world = Box3DSoaParticleTests.World(gravityY: 0f);
+            world.AddCapsule(1, (0f, 0f, 0f), 0.1f, 0.4f, 1000f);
+            var x = world.AddCapsule(2, (0f, 2f, 0f), 0.1f, 0.4f, 1000f, parent: 0);
+            world.AddCapsule(3, (1f, 0f, 0f), 0.1f, 0.4f, 1000f);
+            var y = world.AddCapsule(4, (1f, 2f, 0f), 0.1f, 0.4f, 1000f, parent: 2);
+            Pos at = besideSecondTree ? (1.106f, 0f, 0f) : (0.106f, 0f, 0f);
+            var flesh = new Box3DSoaParticleHandle[1];
+            world.CreateParticles([new Box3DSoaParticleDesc(at, ParticleMass, ParticleRadius)], flesh);
+            Pos onX = (at.X, at.Y - 2f, at.Z);
+            world.Attach(Box3DSoaAttachKind.Body, flesh[0], x, onX, limb: true);
+            world.Attach(Box3DSoaAttachKind.Body, flesh[0], y, (at.X - 1f, at.Y - 2f, at.Z), limb: true);
+            return WorstGap(world, x, onX, flesh[0]);
+        }
+        var skipped = Worst(false);
+        var other = Worst(true);
+        Reading($"LIMB_TWO_TREES worst deviation beside the skipped tree's bone {F(skipped)} m, beside the other tree's bone {F(other)} m");
+        Assert.True(skipped < TwoTreesBound, $"the skipped tree's bone moved the particle {skipped} m");
+        Assert.True(other > TwoTreesFloor, $"the other tree's bone moved the particle only {other} m");
+    }
+
     [Fact]
     public void Held_body_contact_cost_reading()
     {
@@ -653,4 +777,21 @@ public sealed class Box3DSoaCouplingTests
     private const float NeighbourDepth = 1.02e-4f;
     // The particle's depth inside the upper arm's reach 30 ticks after Remove: shipped 0 (-> 5e-7), least claimed mutant Mp 6.51e-3; bound sqrt(5e-7 x 6.51e-3).
     private const float RemovedDepth = 5.7e-5f;
+    // Bounds of the s1 fix batch, by the same rules (the unit is 1 um; a shipped or mutant zero is half a unit or one unit). The mutants:
+    //   Mg3 every body's limb-tree root set to 0     ML1 the root compare dropped, every body skipped once the particle has a limb body
+    //   Mg2 the root walk stopped after one hop      Mi  the ISOLATED reset of limb_body deleted
+    //   Mx  the held lists written before the tether-capacity check     Ml3 the highest LIMB attachment decides the skipped tree
+    // ForeignFloor: shipped 3.52192e-3, least claimed mutant Mg3 = ML1 0 (-> 1e-6), separation 3522; floor sqrt(3.52192e-3 x 1e-6).
+    private const float ForeignFloor = 5.9e-5f;
+    // ChainBound: shipped 0 (-> 5e-7), Mg2 6.41614e-3, separation 12832; bound sqrt(5e-7 x 6.41614e-3).
+    private const float ChainBound = 5.7e-5f;
+    // LateDepth: shipped 0 (-> 5e-7), Mi 0.0225, separation 45000; bound sqrt(5e-7 x 0.0225).
+    private const float LateDepth = 1.06e-4f;
+    // RefusedBound, on the gap between the run after a refusal and the control run: shipped 0 (-> 5e-7), Mx 0.118058 (0.343645 - 0.225587),
+    // separation 236116; bound sqrt(5e-7 x 0.118058).
+    private const float RefusedBound = 2.43e-4f;
+    // TwoTreesBound: shipped 7.5e-9 (-> 5e-7), least claimed mutant Ml3 6.76838e-3, separation 13537; bound sqrt(5e-7 x 6.76838e-3).
+    private const float TwoTreesBound = 5.8e-5f;
+    // TwoTreesFloor: shipped 5.90668e-3, least claimed mutant Ml3 = Mg3 = ML1 0 (-> 1e-6), separation 5907; floor sqrt(5.90668e-3 x 1e-6).
+    private const float TwoTreesFloor = 7.7e-5f;
 }
