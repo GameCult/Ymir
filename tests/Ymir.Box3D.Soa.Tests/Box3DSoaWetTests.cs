@@ -388,8 +388,9 @@ public sealed partial class Box3DSoaFluidTests
         return hashes;
     }
 
-    // Recorded on this commit's build (gcc 13.2, -ffp-contract=off): the wet pour at ticks 40, 80, ... 240.
-    private static readonly ulong[] WetHashes = [1795683519249061853ul, 16977328850116599834ul, 12459064917284188353ul, 470571818171069221ul, 7502974747124893900ul, 8400504905509365280ul];
+    // Recorded on this commit's build (gcc 13.2, -ffp-contract=off): the wet pour at ticks 40, 80, ... 240. Re-pinned when the Box3D fork ran the friction hook on recycled contacts
+    // (lodur:ruling:wet-friction-on-recycled-contacts): this world settles liquid under a resting box, whose friction now follows it; the fork at 2a43fae reproduces the old values.
+    private static readonly ulong[] WetHashes = [6720483314439625191ul, 15807674163676588943ul, 8969239209631959286ul, 3159003609627402407ul, 16856749248747581653ul, 3168406661706779043ul];
 
     [Fact]
     public void Wet_world_is_byte_deterministic()
