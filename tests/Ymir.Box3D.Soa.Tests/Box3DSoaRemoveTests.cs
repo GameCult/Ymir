@@ -148,6 +148,74 @@ public sealed class Box3DSoaRemoveTests
     }
 
     [Fact]
+    public void A_current_generation_handle_to_a_removed_lane_is_refused()
+    {
+        using var world = World();
+        var pin = world.AddStaticBox(1, (0f, 5f, 0f), (0.1f, 0.1f, 0.1f));
+        var bob = world.AddSphere(2, (0f, 4f, 0f), 0.1f, 1000f);
+        var gone = world.AddSphere(3, (1f, 4f, 0f), 0.1f, 1000f);
+        var joint = world.AddJoint(Box3DSoaJointKind.Weld, pin, bob, (0f, 5f, 0f), (0f, 0f, 1f));
+        world.Step(Dt);
+        world.DestroyJoint(joint);
+        world.RemoveBody(gone);
+        var view = world.View;
+        // The tombstones' own generations: only the removed kind refuses these.
+        var forgedJoint = new Box3DSoaJointHandle(joint.Lane, view.JointGeneration[joint]);
+        var forgedBody = new Box3DSoaBodyHandle(gone.Lane, view.BodyGeneration[gone]);
+        var before = Snapshot(world);
+        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(forgedJoint));
+        Assert.Throws<InvalidOperationException>(() => world.RemoveBody(forgedBody));
+        Assert.Equal(before, Snapshot(world));
+        world.Step(Dt);
+        Assert.Equal(1, world.Facts.JointsRemoved.Length);
+        Assert.Equal(1, world.Facts.BodiesRemoved.Length);
+        world.AddSphere(0, (2f, 4f, 0f), 0.1f, 1000f); // a tombstone's stable id 0 is no live id: the duplicate scan skips it
+    }
+
+    [Fact]
+    public void A_removed_lane_is_skipped_by_the_particle_substeps_and_the_write_lanes()
+    {
+        using var world = World();
+        world.AddStaticBox(1, (0f, -0.5f, 0f), (2f, 0.5f, 2f));
+        var gone = world.AddSphere(2, (1f, 0.1f, 0f), 0.1f, 1000f);
+        var p = new Box3DSoaParticleHandle[1];
+        world.CreateParticles([new((-1f, 0.5f, 0f), 0.02f, R)], p); // live particles: the substep callback runs
+        Run(world, 3);
+        world.RemoveBody(gone);
+        var view = world.View;
+        view.ForceX[gone] = float.NaN; // a removed lane's write lanes are not checked, only cleared
+        view.TorqueZ[gone] = float.PositiveInfinity;
+        Run(world, 30);
+        Assert.Equal(0f, view.ForceX[gone]);
+        Assert.Equal(0f, view.TorqueZ[gone]);
+        Assert.Equal(0f, view.ParticleImpulseX[gone]);
+        Assert.Equal(1u, view.ParticleLive[p[0].Lane]);
+    }
+
+    /// <summary>The retired shape table holds one step's removals (capacity: the body count); a removal every step for many steps
+    /// overruns it unless each step clears it, and every removed toucher's End still names it.</summary>
+    [Fact]
+    public void The_retired_table_holds_one_steps_removals()
+    {
+        using var world = World(bodies: 2, joints: 0);
+        var floor = world.AddStaticBox(1, (0f, -0.5f, 0f), (2f, 0.5f, 2f));
+        for (var cycle = 0; cycle < 200; cycle++)
+        {
+            var id = (ulong)(100 + cycle);
+            var ball = world.AddSphere(id, (0f, 0.1f, 0f), 0.1f, 1000f);
+            world.Step(Dt);
+            world.Step(Dt);
+            Assert.True(world.View.ContactCount[ball] > 0, $"cycle {cycle}: touching");
+            world.RemoveBody(ball);
+            world.Step(Dt);
+            var ends = world.Facts.End;
+            Assert.Equal(1, ends.Length);
+            Assert.Equal(new[] { (floor.Lane, 1ul), (ball.Lane, id) }.OrderBy(x => x.Item1),
+                new[] { (ends[0].LaneA, ends[0].StableIdA), (ends[0].LaneB, ends[0].StableIdB) }.OrderBy(x => x.Item1));
+        }
+    }
+
+    [Fact]
     public void A_removed_anchor_ends_its_grab()
     {
         using var world = World();
