@@ -425,6 +425,34 @@ internal unsafe struct Box3DSoaFactsNative
     public Box3DSoaOverload* Overload;
     public uint OverloadCount;
     public uint Reserved2;
+    public uint BodyRemovedCount;
+    public uint JointRemovedCount;
+    public Box3DSoaBodyRemoved* BodyRemoved;
+    public Box3DSoaJointRemoved* JointRemoved;
+}
+
+/// <summary>A body removed by RemoveBody since the previous step, published by the next one. The lane and generation are the dead handle's;
+/// <see cref="WetPatches"/> and <see cref="WetVolume"/> (m^3) are the wet patches its removal took with it.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public readonly struct Box3DSoaBodyRemoved
+{
+    public readonly int Lane;
+    public readonly uint Generation;
+    public readonly ulong StableId;
+    public readonly uint WetPatches;
+    public readonly float WetVolume;
+}
+
+/// <summary>A joint retired since the previous step, published by the next one: by DestroyJoint (<see cref="WithBody"/> 0) or because RemoveBody
+/// removed a body it named (1). The lane and generation are the dead handle's; the bodies are the two it joined.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public readonly struct Box3DSoaJointRemoved
+{
+    public readonly int Lane;
+    public readonly uint Generation;
+    public readonly int BodyA;
+    public readonly int BodyB;
+    public readonly uint WithBody;
 }
 
 /// <summary>A joint whose load reached its threshold in the step just taken, with the load (world frame; N and N m) Box3D reports for it after the step. The joint stays: Ymir never removes on a threshold.</summary>
@@ -495,6 +523,10 @@ public readonly unsafe ref struct Box3DSoaFacts
     public ReadOnlySpan<Box3DSoaHit> Hit => Facts(_f.Hit, _f.HitCount);
     /// <summary>Joints that reached a force or torque threshold in the last step (at most once each), in Box3D's joint order.</summary>
     public ReadOnlySpan<Box3DSoaOverload> Overloads => Facts(_f.Overload, _f.OverloadCount);
+    /// <summary>Bodies removed since the previous step, in removal order. A touch such a body was in ends in <see cref="End"/> by its old lane and stable id.</summary>
+    public ReadOnlySpan<Box3DSoaBodyRemoved> BodiesRemoved => Facts(_f.BodyRemoved, _f.BodyRemovedCount);
+    /// <summary>Joints retired since the previous step, in removal order: every DestroyJoint and every joint a RemoveBody took.</summary>
+    public ReadOnlySpan<Box3DSoaJointRemoved> JointsRemoved => Facts(_f.JointRemoved, _f.JointRemovedCount);
     public Box3DSoaDropped Dropped => new(_f.BeginDropped, _f.EndDropped, _f.HitDropped);
     public int Capacity => (int)_f.FactCapacity;
 }
