@@ -868,7 +868,7 @@ public sealed class Box3DSoaParticleTests
         // refusals
         Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((float.NaN, 0f, 0f), 1f, 0.01f)]));
         Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((0f, 0f, 0f), 1f, 0f)])); // no radius
-        Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((0f, 0f, 0f), 1f, 0.01f, 1u << 23)])); // an unknown phase bit
+        Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((0f, 0f, 0f), 1f, 0.01f, 1u << 24)])); // an unknown phase bit
         Assert.Throws<InvalidOperationException>(() => small.CreateParticles([new((0f, 0f, 0f), 1f, 0.01f, 0, 2)])); // no such material
         Assert.Throws<InvalidOperationException>(() => small.CreateDistances([new Box3DSoaDistanceDesc(ps[0], ps[0])]));
         Assert.Throws<InvalidOperationException>(() => small.Attach(Box3DSoaAttachKind.Body, ps[0], 5)); // no such body
@@ -1033,6 +1033,167 @@ public sealed class Box3DSoaParticleTests
             Assert.Equal(0L, allocated);
         }
     }
+
+    // ---- NO_PARTICLE_CONTACT: lodur:ruling:ymir-flesh-meets-bodies-and-fluid -------------------------------------------------
+
+    /// <summary>Two ropes of different groups across each other, the lower held taut at y 0.5 along x, the upper dropped on it along z. The closest cross pair over 2 s, in units of ri + rj.</summary>
+    private static float RopesClosest(bool upperFlesh)
+    {
+        using var world = World(gravityY: -10f, attachments: 8);
+        var lower = Line((-0.3f, 0.5f, 0f), (Spacing, 0f, 0f), 21);
+        var a = Graph.Rope(world, lower, ParticleMass, ParticleRadius, Box3DSoaPhase.Of(1), bend: -1f);
+        world.Attach(Box3DSoaAttachKind.Static, a.Particles[0], point: lower[0], tether: true);
+        world.Attach(Box3DSoaAttachKind.Static, a.Particles[20], point: lower[20], tether: true);
+        var b = Graph.Rope(world, Line((0f, 0.53f, -0.3f), (0f, 0f, Spacing), 21), ParticleMass, ParticleRadius,
+            Box3DSoaPhase.Of(2, noParticleContact: upperFlesh), bend: -1f);
+        var closest = float.MaxValue;
+        for (var step = 0; step < 240; step++)
+        {
+            world.Step(Dt, Sub);
+            var v = world.View;
+            foreach (var i in a.Particles) foreach (var j in b.Particles)
+                closest = MathF.Min(closest, Graph.Dist(v, i.Lane, j.Lane) / (2f * ParticleRadius));
+        }
+        return closest;
+    }
+
+    [Fact]
+    public void A_no_particle_contact_rope_passes_through_a_rope_of_another_group()
+    {
+        // The closest cross pair over 2 s, in ri + rj, deterministic readings; bounds per lodur:ruling:deterministic-bound-margin.
+        // Without the bit (a dropped rope rests on the other): shipped 0.759, least claimed mutant Mg (walk_half hashes with table_mask while grid_sort used
+        // grid_mask: the walk misses most pairs) 0.045: bound sqrt(0.759 x 0.045) = 0.185, separation 16.9. With the bit: shipped 0.126, least claimed mutant
+        // Mn (the bit ignored: grid_sort, build_grid and walk_half all treat the lane as solid) 0.759: bound sqrt(0.126 x 0.759) = 0.309, separation 6.0.
+        // Mw (walk_half's skip alone removed) reads 0.126 where the lane's stale cell lands on nothing, and 0.063 with its cells written (it then walks only the
+        // forward half of its pairs): it does not separate, so it is unclaimed here; the skip is what keeps a lane's stale cell out of the walk, and the
+        // source test pins it. A resting rope read 0.759, not 0.95: soft contact under the rope's weight, not this cut.
+        var contact = RopesClosest(false);
+        var through = RopesClosest(true);
+        var line = $"FLESH_PASS closest cross pair in ri + rj: without the bit {contact:F3}, with it on the dropped rope {through:F3}";
+        Console.Error.WriteLine(line);
+        Readings.Add(line);
+        Assert.True(contact > 0.185f, "two ropes of different groups did not stop each other: " + line);
+        Assert.True(through < 0.309f, "a rope with the bit did not pass through: " + line);
+    }
+
+    /// <summary>A 12 x 12 sheet of touching particles (pitch 2 r) carrying the flag, held at its four corners by static pins, at y 0.5.</summary>
+    private static (Box3DSoaWorld World, Made Sheet) FleshSheet(int fluid)
+    {
+        var world = World(particles: 144 + 216 + 8, distances: 400, bends: 400, attachments: 8, tethers: 8, fluid: fluid);
+        var sheet = Graph.Sheet(world, (-0.1375f, 0.5f, -0.1375f), (2f * ParticleRadius, 0f, 0f), (0f, 0f, 2f * ParticleRadius), 12, 12, ParticleMass, ParticleRadius,
+            Box3DSoaPhase.Of(1, true, true, noParticleContact: true));
+        foreach (var i in new[] { 0, 11, 132, 143 })
+        {
+            var v = world.View;
+            world.Attach(Box3DSoaAttachKind.Static, sheet.Particles[i], point: (v.ParticleX[i], v.ParticleY[i], v.ParticleZ[i]));
+        }
+        return (world, sheet);
+    }
+
+    [Fact]
+    public void A_no_particle_contact_sheet_still_meets_fluid_and_bodies()
+    {
+        // Mf (the bit also left out of the fluid grid) reads 216 of 216 through; shipped 0. Mn (the bit ignored) reads 0 here, as this scene does not
+        // see particle contact: not a mutant of this test.
+        // Fluid: a 6 x 6 x 6 block poured on the sheet. A flat sheet has no walls, so the block spreads off its edge (that part falls for good): only
+        // fluid over the sheet's interior (a pitch in from every edge) counts, and none of it may be below the sheet's lowest particle after 2 s.
+        var (world, sheet) = FleshSheet(216);
+        int through;
+        using (world)
+        {
+            world.SetMaterial(1, 0.3f, 0, 0.01f);
+            var block = Graph.Block(world, (-0.0625f, 0.56f, -0.0625f), 6, 6, 6, ParticleRadius, 0.015625f, Box3DSoaPhase.Of(2, fluid: true), material: 1);
+            Run(world, 240);
+            var v = world.View;
+            var plane = sheet.Particles.Min(h => v.ParticleY[h.Lane]);
+            const float edge = 5.5f * 2f * ParticleRadius - 2f * ParticleRadius;
+            through = block.Count(h => v.ParticleY[h.Lane] < plane && MathF.Abs(v.ParticleX[h.Lane]) < edge && MathF.Abs(v.ParticleZ[h.Lane]) < edge);
+            var line = $"FLESH_FLUID over the sheet's interior, below its lowest particle ({plane:F3}) after 2 s: {through} of {block.Length} (off the edge: {block.Count(h => v.ParticleY[h.Lane] < plane) - through})";
+            Console.Error.WriteLine(line);
+            Readings.Add(line);
+        }
+        Assert.Equal(0, through);
+
+        // Body: a sphere dropped on the sheet rests on it, its centre within r + 2 particle radii of the sheet particle under it.
+        var (bodyWorld, bodySheet) = FleshSheet(0);
+        using (bodyWorld)
+        {
+            const float r = 0.04f;
+            var sphere = bodyWorld.AddSphere(100, (0f, 0.6f, 0f), r, 1000f);
+            Run(bodyWorld, 240);
+            var v = bodyWorld.View;
+            var under = bodySheet.Particles.OrderBy(h => Graph.Sq(v.ParticleX[h.Lane] - v.PositionX[sphere]) + Graph.Sq(v.ParticleZ[h.Lane] - v.PositionZ[sphere])).First();
+            var gap = v.PositionY[sphere] - v.ParticleY[under.Lane];
+            var line = $"FLESH_BODY sphere centre above the sheet particle under it: {gap:F4} (r {r}, bound r + 2 particle radii {r + 2f * ParticleRadius:F4})";
+            Console.Error.WriteLine(line);
+            Readings.Add(line);
+            Assert.True(gap > 0f && gap <= r + 2f * ParticleRadius, "the sphere did not rest on the sheet: " + line);
+        }
+    }
+
+    [Fact]
+    public void Fluid_with_no_particle_contact_is_refused_and_creates_nothing()
+    {
+        using var world = World(fluid: 4);
+        Assert.Throws<InvalidOperationException>(() => world.CreateParticles(
+        [
+            new((0f, 0f, 0f), 0.02f, 0.0125f, Box3DSoaPhase.Of(1)),
+            new((0.1f, 0f, 0f), 0.02f, 0.0125f, Box3DSoaPhase.Of(1, fluid: true, noParticleContact: true)),
+        ]));
+        Assert.Equal(0, world.View.ParticleCount);
+        world.CreateParticles([new((0f, 0f, 0f), 0.02f, 0.0125f, Box3DSoaPhase.Of(1, noParticleContact: true)), new((0.1f, 0f, 0f), 0.02f, 0.0125f, Box3DSoaPhase.Of(1, fluid: true))]);
+        Assert.Equal(2, world.View.ParticleCount);
+    }
+
+    /// <summary>Four 16 x 16 sheets, each wrapped round a capsule and attached to it at every particle, no gravity; ms per tick over 120 ticks.</summary>
+    private static double FleshCost(bool flesh)
+    {
+        using var world = World(bodies: 8, particles: 4 * 256 + 8, distances: 4 * 496 + 8, bends: 8, attachments: 4 * 256 + 8, tethers: 8, gravityY: 0f);
+        const float radius = 0.0765f;
+        for (var s = 0; s < 4; s++)
+        {
+            var body = world.AddCapsule((ulong)(10 + s), (0f, 0f, 0.4f * s), radius, 0.225f, 100f, rotation: (0f, 0f, 0.70710678f, 0.70710678f)); // local Y along world -X
+            var desc = new Box3DSoaParticleDesc[256];
+            var local = new (float X, float Y, float Z)[256];
+            for (var j = 0; j < 16; j++) for (var i = 0; i < 16; i++)
+            {
+                var th = 2f * MathF.PI * i / 16f;
+                var along = -0.225f + Spacing * j;
+                desc[j * 16 + i] = new Box3DSoaParticleDesc((-along, radius * MathF.Cos(th), 0.4f * s + radius * MathF.Sin(th)), ParticleMass, ParticleRadius,
+                    Box3DSoaPhase.Of((uint)(s + 1), noParticleContact: flesh));
+                local[j * 16 + i] = (radius * MathF.Sin(th), along, radius * MathF.Cos(th));
+            }
+            var p = new Box3DSoaParticleHandle[256];
+            world.CreateParticles(desc, p);
+            var d = new List<Box3DSoaDistanceDesc>();
+            for (var j = 0; j < 16; j++) for (var i = 0; i < 16; i++)
+            {
+                if (j + 1 < 16) d.Add(new(p[j * 16 + i], p[(j + 1) * 16 + i]));
+                d.Add(new(p[j * 16 + i], p[j * 16 + (i + 1) % 16]));
+            }
+            world.CreateDistances(d.ToArray());
+            for (var k = 0; k < 256; k++) world.Attach(Box3DSoaAttachKind.Body, p[k], body, local[k]);
+        }
+        Run(world, 30);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        Run(world, 120);
+        return watch.Elapsed.TotalMilliseconds / 120;
+    }
+
+    [Fact]
+    public void Flesh_cost_line()
+    {
+        // Printed, not bounded: probe P7 read a live Fella at 5.44 ms in the solid contact walk and 1.04 ms out of it.
+        var off = new double[5];
+        var on = new double[5];
+        FleshCost(true); FleshCost(false); // warm both
+        for (var k = 0; k < 5; k++) { off[k] = FleshCost(false); on[k] = FleshCost(true); }
+        Array.Sort(off); Array.Sort(on);
+        var line = $"PARTICLE_COST four 16 x 16 sheets, every particle attached to a capsule, 4 substeps, median of 5 alternated runs: without NO_PARTICLE_CONTACT {off[2]:F3} ms per tick, with it {on[2]:F3} ms per tick";
+        Console.Error.WriteLine(line);
+        Readings.Add(line);
+        Assert.True(off[2] > 0 && on[2] > 0);
+    }
 }
 
 /// <summary>The structural promises of the particle module, read from its source.</summary>
@@ -1142,5 +1303,17 @@ public sealed class Box3DSoaParticleSourceTests
             Assert.Equal(0, Count(text, @"rederive_topology|kill_|ymir_particles_(create|destroy|remove|attach)"));
         Assert.Equal(0, Count(c, @"carry|hard_impulse|cancel|k_body|end_force_scale|tension_diff|add_link_load|ymir_particles_step"));
         Assert.Equal(0, Count(soa, @"carry|ymir_particles_step|ymir_soa_apply_particle_impulses"));
+    }
+
+    [Fact]
+    public void The_solid_grid_is_sized_by_its_members_and_the_fluid_grid_is_not()
+    {
+        var c = StripComments(File.ReadAllText(Path.Combine(Native(), "ymir_particles.c")));
+        Assert.Equal(0, Count(Body(c, "static void grid_sort("), @"table_mask"));
+        Assert.Equal(0, Count(Body(c, "YMIR_INLINE void walk_half("), @"table_mask"));
+        Assert.Contains("YMIR_PHASE_NO_PARTICLE_CONTACT", Body(c, "YMIR_INLINE void walk_half(")); // the walk skips exactly the lanes grid_sort left out
+        Assert.Equal(1, Count(c, @"grid_mask\s*="));
+        Assert.Contains("grid_mask =", Body(c, "static void build_grid("));
+        Assert.Contains("grid_sort(p, inv_cell, 0, p->table_mask)", Body(c, "static float fluid_grid("));
     }
 }

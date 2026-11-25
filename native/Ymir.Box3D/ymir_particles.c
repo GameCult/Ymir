@@ -883,7 +883,9 @@ int32_t ymir_particles_create_particles(ymir_particles* p, int32_t n, const ymir
     {
         if (!finite3(d[k].position) || !finite3(d[k].rest) || !finite3(d[k].velocity) || !isfinite(d[k].mass) || d[k].mass < 0.0f ||
             (d[k].mass > 0.0f && !isfinite(1.0f / d[k].mass)) || !isfinite(d[k].radius) || d[k].radius <= 0.0f ||
-            (d[k].phase & ~(uint32_t)YMIR_PHASE_VALID) != 0 || d[k].material >= (uint32_t)p->material_capacity)
+            (d[k].phase & ~(uint32_t)YMIR_PHASE_VALID) != 0 ||
+            ((d[k].phase & YMIR_PHASE_FLUID) && (d[k].phase & YMIR_PHASE_NO_PARTICLE_CONTACT)) ||
+            d[k].material >= (uint32_t)p->material_capacity)
         {
             return YMIR_PARTICLES_INVALID_ARGUMENT;
         }
@@ -1356,22 +1358,23 @@ static int32_t cell_of(float v, float inv_cell)
     return (int32_t)vclamp(floorf(v * inv_cell), -1.0e6f, 1.0e6f);
 }
 
-// Counting sort into a hash grid of cell 1 / inv_cell: the live particles' predicted positions, fluid lanes left out when
-// `solids` is set. Within a bucket particles keep index order, so every neighbour walk is the same on every run.
-static void grid_sort(ymir_particles* p, float inv_cell, int solids)
+// Counting sort into a hash grid of `mask` + 1 buckets and cell 1 / inv_cell: the live particles' predicted positions, fluid and
+// NO_PARTICLE_CONTACT lanes left out when `solids` is set. Within a bucket particles keep index order, so every neighbour walk is
+// the same on every run, whatever the bucket count.
+static void grid_sort(ymir_particles* p, float inv_cell, int solids, uint32_t mask)
 {
-    int32_t buckets = (int32_t)p->table_mask + 1;
+    int32_t buckets = (int32_t)mask + 1;
     memset(p->cell_start, 0, sizeof(int32_t) * (size_t)(buckets + 1));
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (!p->particle_live[i] || (solids && (p->phase[i] & YMIR_PHASE_FLUID)))
+        if (!p->particle_live[i] || (solids && (p->phase[i] & (YMIR_PHASE_FLUID | YMIR_PHASE_NO_PARTICLE_CONTACT))))
         {
             continue;
         }
         p->cell_x[i] = cell_of(p->pp_x[i], inv_cell);
         p->cell_y[i] = cell_of(p->pp_y[i], inv_cell);
         p->cell_z[i] = cell_of(p->pp_z[i], inv_cell);
-        p->cell_start[cell_hash(p->cell_x[i], p->cell_y[i], p->cell_z[i], p->table_mask) + 1]++;
+        p->cell_start[cell_hash(p->cell_x[i], p->cell_y[i], p->cell_z[i], mask) + 1]++;
     }
     for (int32_t c = 0; c < buckets; ++c)
     {
@@ -1380,27 +1383,36 @@ static void grid_sort(ymir_particles* p, float inv_cell, int solids)
     }
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (p->particle_live[i] && !(solids && (p->phase[i] & YMIR_PHASE_FLUID)))
+        if (p->particle_live[i] && !(solids && (p->phase[i] & (YMIR_PHASE_FLUID | YMIR_PHASE_NO_PARTICLE_CONTACT))))
         {
-            uint32_t c = cell_hash(p->cell_x[i], p->cell_y[i], p->cell_z[i], p->table_mask);
+            uint32_t c = cell_hash(p->cell_x[i], p->cell_y[i], p->cell_z[i], mask);
             p->sorted[p->cell_start[c] + p->cell_fill[c]++] = i;
         }
     }
 }
 
-// The contact grid: the non-fluid lanes at a cell of 2 rmax, which holds every contact pair (reach 2 rmax). Fluid lanes meet
-// the others in fluid_density, on a grid of their own.
+// The contact grid: the lanes that are neither fluid nor NO_PARTICLE_CONTACT, at a cell of 2 rmax, which holds every contact pair
+// (reach 2 rmax). Its bucket count follows its members, sized as create sizes table_mask and never above it. Fluid lanes meet the
+// others in fluid_density, on a grid of their own.
 static void build_grid(ymir_particles* p)
 {
     float rmax = 0.0f;
+    int32_t members = 0;
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (p->particle_live[i] && !(p->phase[i] & YMIR_PHASE_FLUID))
+        if (p->particle_live[i] && !(p->phase[i] & (YMIR_PHASE_FLUID | YMIR_PHASE_NO_PARTICLE_CONTACT)))
         {
             rmax = vmax(rmax, p->radius[i]);
+            ++members;
         }
     }
-    grid_sort(p, rmax > 0.0f ? 1.0f / (2.0f * rmax) : 0.0f, 1);
+    uint32_t table = 16;
+    while (table < 2u * (uint32_t)members)
+    {
+        table <<= 1;
+    }
+    p->grid_mask = table - 1 < p->table_mask ? table - 1 : p->table_mask;
+    grid_sort(p, rmax > 0.0f ? 1.0f / (2.0f * rmax) : 0.0f, 1, p->grid_mask);
 }
 
 
@@ -1461,7 +1473,7 @@ YMIR_INLINE void walk_half(ymir_particles* p, pair_fn fn, void* ctx)
 {
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
-        if (!p->particle_live[i] || (p->phase[i] & YMIR_PHASE_FLUID)) // the grid holds no fluid lane
+        if (!p->particle_live[i] || (p->phase[i] & (YMIR_PHASE_FLUID | YMIR_PHASE_NO_PARTICLE_CONTACT))) // the grid holds neither
         {
             continue;
         }
@@ -1469,7 +1481,7 @@ YMIR_INLINE void walk_half(ymir_particles* p, pair_fn fn, void* ctx)
         {
             int32_t o = cell == 0 ? 13 : 13 + cell, da = o / 9 - 1, db = o / 3 % 3 - 1, dc = o % 3 - 1;
             int32_t ca = p->cell_x[i] + da, cb = p->cell_y[i] + db, cc = p->cell_z[i] + dc;
-            uint32_t bucket = cell_hash(ca, cb, cc, p->table_mask);
+            uint32_t bucket = cell_hash(ca, cb, cc, p->grid_mask);
             for (int32_t q = p->cell_start[bucket]; q < p->cell_start[bucket + 1]; ++q)
             {
                 int32_t j = p->sorted[q];
@@ -1598,7 +1610,7 @@ static float fluid_grid(ymir_particles* p)
     }
     float inv_cell = 1.0f / (4.0f * rfmax);
     p->fluid_rings = (int32_t)ceilf(2.0f * (rfmax + rmax) * inv_cell);
-    grid_sort(p, inv_cell, 0);
+    grid_sort(p, inv_cell, 0, p->table_mask);
     for (int32_t q = 0; q < p->live_particles; ++q)
     {
         int32_t j = p->sorted[q];

@@ -108,7 +108,7 @@ separate native object (`ymir_box3d_soa.c`, ABI 15) so the Aetheria session's co
   lanes that never move; created with none (`NULL` or all zero) it behaves byte-identically to ABI 8. Nothing writes a
   particle's position or velocity but the step.
   - Data model. Particle lanes: `x y z vx vy vz radius inv_mass rest_x rest_y rest_z phase material live generation removed_at
-    component`. The phase word: bits 0-19 are the group, bit 20 `SELF_COLLIDE`, bit 21 `SELF_FILTER`, bit 22 `FLUID`; any other bit is refused.
+    component`. The phase word: bits 0-19 are the group, bit 20 `SELF_COLLIDE`, bit 21 `SELF_FILTER`, bit 22 `FLUID`, bit 23 `NO_PARTICLE_CONTACT` (refused together with `FLUID`); any other bit is refused.
     Distance lanes: two particles, rest length, compliance (m/N), `tension` (sensor). Bend lanes: two distances that share one
     particle (and so the three particles a, b, c), rest and limit offsets, compliance. Attachment lanes: kind (body, static,
     removed), flags (`TETHER`), particle, body, point, compliance, `force` (sensor). Tether lanes (derived): attachment,
@@ -158,7 +158,10 @@ separate native object (`ymir_box3d_soa.c`, ABI 15) so the Aetheria session's co
     lengths), free inside it and rigid at it. It bends on any topology a caller builds, and the limit is a hard constraint at the
     substep the solver runs: how stiff it reads at few substeps is the open question `bend-limit-stiffness`.
   - Contact. Particles of different groups collide; of one group only when both set `SELF_COLLIDE`, and not (when either sets
-    `SELF_FILTER`) if their rest-pose distance is under 1.5 (ri + rj). Each pair is found once, walking half the 27-cell
+    `SELF_FILTER`) if their rest-pose distance is under 1.5 (ri + rj). A `NO_PARTICLE_CONTACT` particle meets bodies and fluid
+    only: it is left out of the solid grid, so no non-fluid particle touches it, while body contact and the fluid grid still
+    hold it. The solid grid is sized by its members (a cell's particles are walked in lane order whatever the bucket count, so
+    the sizing moves no byte); the fluid grid keeps the full table, which `fluid_density`'s sum order depends on. Each pair is found once, walking half the 27-cell
     neighbourhood from each particle (its own cell for higher lanes, 13 cells forward), in two walks: the first counts each
     particle's overlaps; the second moves both ends of a pair by one displacement, weighted `1 / max(n_i, n_j)`, so a pair's two
     corrections carry equal and opposite momentum and contact conserves it (to float32 rounding of the positions: 0.01% in the
