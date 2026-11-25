@@ -513,8 +513,8 @@ public sealed partial class Box3DSoaFluidTests
     // shipped 0.0214 (fluid 0.0156 / 0.0204, solid 0.0196 / 0.0214 at 60 / 120 Hz). Ma (solve_attachments returns at entry) 0.0560 (120 Hz) to 0.1475 (60 Hz), and Mc (the
     // skin's attachment compliance x 1e6 here, not in the solver) 0.0559 to 0.1465: the skin free-falls past the bone before the load arrives, so both read alike on every
     // row. Bound sqrt(0.0214 x 0.0559) = 0.0346, separation 2.6, both mutants claimed. The place bound is |skin mean axis distance - 0.07| at 3 s: shipped reads 6e-8 to
-    // 2.7e-7 (float32 noise, not zero, so no zero-reading convention), worst 2.7e-7; the least claimed mutant is attachment compliance x 100 (1e-1 here) at 4.8e-4 to 5.1e-4;
-    // bound sqrt(2.7e-7 x 4.8e-4) = 3.6e-6, separation 1.8e3. Compliance x 10 reads 4.9e-6 on every row and fails the bound too (it also trips stretch on 3 rows); Ma and Mc
+    // 2.7e-7 (float32 noise, not zero, so no zero-reading convention), worst 2.7e-7; the least claimed mutant is attachment compliance x 10 (1e-2 here) at 4.91e-6 to 4.94e-6 (it also trips stretch on 3 rows);
+    // bound sqrt(2.7e-7 x 4.9e-6) = 1.15e-6, separation 18. Compliance x 100 reads 4.8e-4 to 5.1e-4 and fails the bound too; Ma and Mc
     // read 0.331 to 0.350. Not claimed: bend compliance x 1e6 and 1 to 3 substeps pass every row (4 is pinned by construction only). Inside the bone is exact zero in every
     // row for shipped, Ma and Mc: the capsule body itself stops a particle against those. It claims the body-contact mutant (body_contacts returns at entry): 119 to 2151
     // inside, fluid and solid, against 0. The load reaching the bone surface (a centre within the bone radius + 1.5 r) reads 33 to 174 shipped (fluid 174 / 103, solid 41 / 33 at
@@ -522,7 +522,7 @@ public sealed partial class Box3DSoaFluidTests
     // load arrives: with the load block 3 m off the bone it reads 0 on every row while stretch, inside and place all pass. Floor sqrt(33 x 1) = 5.74, the mutant's zero counting as
     // one unit by the zero-reading rule, separation 33.
     private const float SkinStretch = 0.0346f;
-    private const float SkinPlace = 3.6e-6f;
+    private const float SkinPlace = 1.15e-6f;
     private const float SkinReached = 5.74f;
 
     [Theory]
