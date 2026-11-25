@@ -218,10 +218,18 @@ separate native object (`ymir_box3d_soa.c`, ABI 14) so the Aetheria session's co
     disc holds its contact point (volumes add, the centre is the volume-weighted mean, the radius is recomputed); else it takes the lowest free lane; else it joins the nearest patch of the same support
     and material; else the batch is refused `FULL`, whole, and every lane is as it was (an undo log sized by `fluid_capacity`). A dead or non-fluid particle, a stale handle, a particle named twice
     or one with no support is refused whole too. `wet_volume` per body (the view's `WetVolume`, `body_wet_volume` natively) is the sum of the live patches on the body in wet lane order, written by
-    `rederive_wet` alone, which only `settle` and `remove(WET)` call (`destroy_particles` kills patches on solid particles only, which lie on no body); the step never writes a wet lane or the volume. `remove(WET)` kills patches and ends in `rederive_wet`,
+    `rederive_wet` alone, which `settle`, `remove(WET)` and `destroy_particles` (when it kills patches on the solid particles it destroys) call; the step never writes a wet lane or the volume. `remove(WET)` kills patches and ends in `rederive_wet`,
     never in `rederive_topology`; `destroy_particles` kills the patches on the solid particles it destroys. `settle` and `remove` return the patch handles to read. Material `wet_friction` (>= 0) is stored
-    and viewed (`MaterialWetFriction`) and read by nothing here: what wet friction does to a contact is the cut `ymir-fluid-wet-friction`. Which particles settle, and when, is the caller's policy
+    and viewed (`MaterialWetFriction`), and lowers friction where the liquid lies (below). Which particles settle, and when, is the caller's policy
     (speed, age, film depth: `lodur:follow_up:bds-blood-settle-policy`); Ymir holds the data and the command.
+  - Wet friction. Settled liquid lowers friction where it lands, per contact, never per shape: `wet_mu(body, point, mu)` is `min(mu, wet_friction)` of the lowest live patch on that body whose
+    disc holds the point (the point in the body's frame, as `wet_x wet_y wet_z` are), and `mu` at once when the body's `wet_volume` is 0. It is the one patch test. A particle that touches a body
+    uses it at the nearest surface point for a solid particle (also `min` with `particle_wet_mu[i]`, the wet friction of the lowest live patch on that solid particle, +inf when dry, derived by
+    `rederive_wet`); a fluid particle keeps its material friction. Body-body contact goes through the GameCult Box3D fork's `b3World_SetContactFrictionCallback`: `b3UpdateConvexContact` calls the
+    hook right after the mix (`sqrt(frictionA frictionB)`) with the mean of the manifold points in each body's frame (one point per manifold), both bodies' user data (lane + 1) and the mixed value,
+    and the world's hook returns `wet_mu` on B of `wet_mu` on A of it: it only lowers. The read is race-free (patches change only between steps) and a world with no settled liquid steps byte for
+    byte as before. Mesh contacts are not hooked (Ymir makes none). A recycled contact (Box3D skips a contact's update while its bodies stay within the recycle distance) keeps the friction it last
+    computed, so liquid settled under a resting body takes effect when that contact next updates. No ABI change (14).
     Fluid holds no constraint: `create_distances` and `attach` refuse a fluid particle, so `create_bends` (over distances) can
     never name one; a thing that holds liquid is cloth around free fluid (a balloon), as in Flex sec. 8. Every `create_particles`
     and every `destroy_particles` of particles that held no distance derives only the isolated lanes
