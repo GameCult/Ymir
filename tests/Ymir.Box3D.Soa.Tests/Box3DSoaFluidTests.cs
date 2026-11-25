@@ -280,11 +280,13 @@ public sealed class Box3DSoaFluidTests
     // lodur:ruling:deterministic-bound-zero-reading: bound sqrt(2.530e-3 x 1e-6) = 5.0e-5, separation 50.
     private const double KernelReachBound = 5.0e-5;
 
-    // Drift as a fraction of the initial momentum, worst of the three mass ratios: shipped 3.50e-4 (fluid : solid 1 : 30; 1.5e-5 at the other two,
-    // the float32 floor as Contact_conserves_momentum's), least claimed mutant 1.165e-2 (M1, solid end of pass B not moved, at 30 : 1; M3, each
-    // end takes the whole correction, reads 0.139 at least): bound sqrt(3.50e-4 x 1.165e-2) = 2.0e-3, separation 33.
-    // Kinetic energy, equal-mass-class scene only: shipped 1.000000 (no rise at 1e-6), never above initial to the float floor 1e-5 as the contact test.
-    // At 30 : 1 the density pass does raise it (1.108, pure contact 1.0001): stored constraint violation released against light solids; reported, not claimed.
+    // Drift as a fraction of the initial momentum, worst of the four mass ratios: shipped 5.72e-4 (fluid : solid 1 : 30; 6e-6 to 1e-5, the float32
+    // floor as Contact_conserves_momentum's, at the other three). Mutants, worst row / least row: M1 (solid end of pass B not moved) 0.20 / 2.5e-2;
+    // M3 (each end takes the whole correction) 0.148 / 2.06e-3. The midpoint sqrt(5.72e-4 x 2.5e-2) = 3.8e-3 would rise, so the bound keeps
+    // its 2.0e-3 (never loosened); shipped is 3.5 under it and M1 and M3 fail it on every row but M3's 100 : 1.
+    // Kinetic energy rise (max / initial - 1) on every row: shipped reads 1.000000, no rise at the print's 1e-6 (half a unit, 5e-7, by
+    // lodur:ruling:deterministic-bound-zero-reading); M9 (the pair split 2 w / (wi + wj) over a unit-mass lambda) rises 0.108 at 30 : 1 and 0.130 at
+    // 100 : 1. The midpoint sqrt(5e-7 x 0.108) = 2.3e-4 would loosen the standing 1e-5, which stays: separation 1.1e4.
     private const double MomentumBound = 2.0e-3;
     private const double EnergyBound = 1e-5;
 
@@ -292,6 +294,7 @@ public sealed class Box3DSoaFluidTests
     [InlineData(0.064f, 0.02f)]       // fluid water, solids as the pour
     [InlineData(0.002f, 0.06f)]       // fluid : solid 1 : 30
     [InlineData(0.06f, 0.002f)]       // fluid : solid 30 : 1
+    [InlineData(0.1f, 0.001f)]        // fluid : solid 100 : 1
     public void Fluid_solid_momentum_zero_g(float fluidMass, float solidMass)
     {
         // A fluid block thrown into a free sheet and a free rope in zero gravity for 2 s: every pair (fluid and fluid, fluid and solid, solid
@@ -302,7 +305,7 @@ public sealed class Box3DSoaFluidTests
         var line = $"MOMENTUM_FLUID m_f {fluidMass} m_s {solidMass}: drift {drift:E3} of the initial momentum, kinetic energy max/initial {energy:F6}";
         Readings.Add(line);
         Assert.True(drift <= MomentumBound, line);
-        if (fluidMass == 0.064f) Assert.True(energy <= 1 + EnergyBound, line);
+        Assert.True(energy <= 1 + EnergyBound, line);
     }
 
     [Fact]

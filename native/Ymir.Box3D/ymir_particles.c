@@ -1369,8 +1369,8 @@ static int density_pair(const ymir_particles* p, int32_t i, int32_t j)
     return (fi | fj) != 0 && (fi != 0 && fj != 0 ? 1 : collides(p, i, j));
 }
 
-// Pass B: the pair's correction, (lambda_i + lambda_j) grad W / n0, split by inverse mass: each end moves 2 w / (wi + wj) of it,
-// so the pair carries equal and opposite momentum at any mass ratio and a solid end is the reaction.
+// Pass B: the pair's correction, (lambda_i + lambda_j) grad W / n0, with each end moving its own inverse mass times it (XPBD,
+// Macklin et al. 2016): equal and opposite momentum at any mass ratio, equal masses unchanged, a static end takes nothing.
 static void density_scatter(ymir_particles* p, void* ctx, int32_t i, int32_t j)
 {
     (void)ctx;
@@ -1386,14 +1386,14 @@ static void density_scatter(ymir_particles* p, void* ctx, int32_t i, int32_t j)
         return;
     }
     v3 corr = vmul(spiky(d, sqrtf(r2), h), l / n0_of(p, h));
-    v3 di = vmul(corr, 2.0f * p->inv_mass[i] / wsum), dj = vmul(corr, 2.0f * p->inv_mass[j] / wsum);
+    v3 di = vmul(corr, p->inv_mass[i]), dj = vmul(corr, p->inv_mass[j]);
     p->dp_x[i] += di.x; p->dp_y[i] += di.y; p->dp_z[i] += di.z;
     p->dp_x[j] -= dj.x; p->dp_y[j] -= dj.y; p->dp_z[j] -= dj.z;
 }
 
 // Density constraint of every fluid particle, once per substep, after contact. Pass A gathers (fluid i over the full 27
 // cells, in cell then index order): n_i = sum W (self included; the solids that touch i count too), C_i = max(n_i / n0 - 1, 0),
-// lambda_i = -C_i / (sum |grad C_i|^2 + eps); a solid's lambda is 0. Pass B scatters the pair corrections over the contact
+// lambda_i = -C_i / (sum_k w_k |grad_k C_i|^2 + eps w_i), 0 when that is 0; a solid's lambda is 0. Pass B scatters the pair corrections over the contact
 // pass's half-walk and applies them after it (Jacobi), so the sums are the same on every run.
 static void fluid_density(ymir_particles* p)
 {
@@ -1409,7 +1409,7 @@ static void fluid_density(ymir_particles* p)
             continue;
         }
         v3 xi = P(p, p->pp_x, p->pp_y, p->pp_z, i), gsum = {0.0f, 0.0f, 0.0f};
-        float h0 = 4.0f * p->radius[i], n0 = n0_of(p, h0), n = poly6(0.0f, h0), ssum = 0.0f;
+        float h0 = 4.0f * p->radius[i], n0 = n0_of(p, h0), n = poly6(0.0f, h0), ssum = 0.0f, wi = p->inv_mass[i];
         for (int32_t o = 0; o < 27; ++o)
         {
             int32_t ca = p->cell_x[i] + o / 9 - 1, cb = p->cell_y[i] + o / 3 % 3 - 1, cc = p->cell_z[i] + o % 3 - 1;
@@ -1432,13 +1432,14 @@ static void fluid_density(ymir_particles* p)
                 {
                     v3 g = spiky(d, sqrtf(r2), h);
                     gsum = vadd(gsum, g);
-                    ssum += vdot(g, g);
+                    ssum += p->inv_mass[j] * vdot(g, g);
                 }
             }
         }
         float c = vmax(n / n0 - 1.0f, 0.0f);
         p->density[i] = n / n0;
-        p->lambda[i] = c == 0.0f ? 0.0f : -c / ((vdot(gsum, gsum) + ssum) / (n0 * n0) + YMIR_PBF_EPS);
+        float den = (wi * vdot(gsum, gsum) + ssum) / (n0 * n0) + YMIR_PBF_EPS * wi;
+        p->lambda[i] = c == 0.0f || den == 0.0f ? 0.0f : -c / den;
     }
     walk_half(p, density_scatter, NULL);
     for (int32_t i = 0; i < p->particle_count; ++i)
