@@ -1406,7 +1406,7 @@ static void fluid_density(ymir_particles* p)
         p->lambda[i] = 0.0f;
         p->dp_x[i] = p->dp_y[i] = p->dp_z[i] = 0.0f;
     }
-    int32_t rings = p->fluid_rings, side = 2 * rings + 1, cells = side * side * side;
+    int32_t rings = p->fluid_rings;
     for (int32_t i = 0; i < p->particle_count; ++i)
     {
         if (!p->particle_live[i] || !(p->phase[i] & YMIR_PHASE_FLUID))
@@ -1417,10 +1417,11 @@ static void fluid_density(ymir_particles* p)
         float h0 = 4.0f * p->radius[i], n0 = n0_of(p, h0), n = poly6(0.0f, h0), ssum = 0.0f, wi = p->inv_mass[i];
         int32_t* list = p->nbr + (size_t)i * YMIR_FLUID_NEIGHBOURS;
         int32_t count = 0;
-        for (int32_t o = 0; o < cells; ++o)
+        for (int32_t da = -rings; da <= rings; ++da)
+        for (int32_t db = -rings; db <= rings; ++db)
+        for (int32_t dc = -rings; dc <= rings; ++dc)
         {
-            int32_t ca = p->cell_x[i] + o / (side * side) - rings, cb = p->cell_y[i] + o / side % side - rings,
-                    cc = p->cell_z[i] + o % side - rings;
+            int32_t ca = p->cell_x[i] + da, cb = p->cell_y[i] + db, cc = p->cell_z[i] + dc;
             uint32_t bucket = cell_hash(ca, cb, cc, p->table_mask);
             for (int32_t q = p->cell_start[bucket]; q < p->cell_start[bucket + 1]; ++q)
             {
