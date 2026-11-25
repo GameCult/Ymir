@@ -71,9 +71,9 @@ public sealed partial class Box3DSoaFluidTests
     // separation 74. The box under the patch moves 0.1688 m shipped; M1 and M2 read 0.0000, counted one unit (1e-6 m) by lodur:ruling:deterministic-bound-zero-reading:
     // bound sqrt(0.1688 x 1e-6) = 4.1e-4 m, separation 410.
     // The late-settled patch under a resting box reads 6.276e-3 shipped (rest 100 ticks); M5 (the fork does not run the hook on recycled contacts) holds the box, 1.0: the same 0.079.
-    // The patch removed from under a resting box: shipped 3.839e-5 m moved; M5 slides it about 0.17 m: DryBound 2.3e-3 stands (separation 60 and 73).
+    // The dry readings across the tests: shipped worst 3.839e-5 m (the patch removed from under a resting box); least claimed mutant M5 (no hook on recycled contacts) 0.1128 m there: bound sqrt(3.839e-5 x 0.1128) = 2.1e-3, tightened from 2.3e-3, separation 54.
     private const double SlideBound = 0.079;
-    private const double DryBound = 2.3e-3;
+    private const double DryBound = 2.1e-3;
     private const double MovedBound = 4.1e-4;
 
     [Fact]
