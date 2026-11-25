@@ -175,8 +175,11 @@ public sealed class Box3DSoaFluidTests
         return (worst, emax / p0.E);
     }
 
-    /// <summary>Probe scene 3: a 7 x 7 x 7 fluid block above a 16 x 16 sheet tilted down toward +x (pinned at its corners) and a sloped 24-rope.</summary>
-    private static (Box3DSoaWorld World, Made Sheet, Made Rope, Box3DSoaParticleHandle[] Fluid) Pour(bool nudge = false)
+    /// <summary>
+    /// Probe scene 3: a 7 x 7 x 7 block above a 16 x 16 sheet tilted down toward +x (pinned at its corners) and a sloped 24-rope. The block is fluid, or
+    /// with <paramref name="solid"/> the same particles flagged solid (group 6, self-collide) as the control.
+    /// </summary>
+    private static (Box3DSoaWorld World, Made Sheet, Made Rope, Box3DSoaParticleHandle[] Fluid) Pour(bool nudge = false, bool solid = false)
     {
         var world = new Box3DSoaWorld(4, gravityY: -9.81f, particles: new Box3DSoaParticleCapacities(640, 560, 520, 8, 1024, 2)); // the probe's g
         world.AddStaticBox(1, (0f, -50f, 0f), (1f, 1f, 1f));
@@ -194,15 +197,12 @@ public sealed class Box3DSoaFluidTests
         world.Attach(Box3DSoaAttachKind.Static, rope.Particles[23], point: line[23], tether: true);
         var desc = new Box3DSoaParticleDesc[343];
         for (var a = 0; a < 7; a++) for (var b = 0; b < 7; b++) for (var c = 0; c < 7; c++)
-            desc[(a * 7 + b) * 7 + c] = new Box3DSoaParticleDesc((0.10f + a * sp, 0.75f + b * sp, 0.18f + c * sp), 1000f * sp * sp * sp, r, Box3DSoaPhase.Of(6, fluid: true), 1);
+            desc[(a * 7 + b) * 7 + c] = new Box3DSoaParticleDesc((0.10f + a * sp, 0.75f + b * sp, 0.18f + c * sp), 1000f * sp * sp * sp, r, solid ? Box3DSoaPhase.Of(6, true, false) : Box3DSoaPhase.Of(6, fluid: true), 1);
         if (nudge) desc[100].X = BitConverter.UInt32BitsToSingle(BitConverter.SingleToUInt32Bits(desc[100].X) + 1);
         var fluid = new Box3DSoaParticleHandle[desc.Length];
         world.CreateParticles(desc, fluid);
         return (world, sheet, rope, fluid);
     }
-
-    /// <summary>Substeps of the pour (probe scene 3 ran 8; the pour is chaotic and its pinned counts move with it: 6 -> 333/12/338, 8 -> 295/33/329 with one overlap at 0.496, 12 -> 212/60/299).</summary>
-    private const int PourSub = 10;
 
     // ---- behaviour ------------------------------------------------------------------------------------------
 
@@ -212,6 +212,8 @@ public sealed class Box3DSoaFluidTests
     // claim; 1.5 is a sanity ceiling (the column compressing under its weight is the one-pass solver, not a defect: probe pours peaked at 1.07).
     private const float ColumnMax = 1.5f;
     private const float ColumnMean = 0.0137f;
+    private const float FloorPenetration = 0.233f;
+    private const int FloorThrough = 18;
 
     [Fact]
     public void Fluid_column_rests_at_rest_density()
@@ -308,20 +310,24 @@ public sealed class Box3DSoaFluidTests
         Assert.True(energy <= 1 + EnergyBound, line);
     }
 
-    [Fact]
-    public void Fluid_pours_on_a_sheet_and_off_a_rope()
+    // The pour is read, not judged: at the scene's own 4 substeps its sheet stretches under the block's weight until a particle the sheet's own size
+    // passes between the pins (the sieve, lodur:question:ymir-sheet-sieve-at-budget-substeps), and the same block flagged solid tunnels worse, so no count of it
+    // claims a mutant of the fluid. What fluid owns is pinned by Fluid_holds_on_a_solid_floor; this test runs the scene and prints both readings.
+    private static string PourReading(bool solid)
     {
-        var (world, sheet, rope, fluid) = Pour();
+        var (world, sheet, rope, fluid) = Pour(solid: solid);
         using (world)
         {
             var touchedSheet = new bool[fluid.Length];
             var touchedRope = new bool[fluid.Length];
-            var deep = 0; var minRatio = 9f;
+            var deep = 0; var minRatio = 9f; var maxStretch = 0f;
             var solids = sheet.Particles.Select(h => (h.Lane, Sheet: true)).Concat(rope.Particles.Select(h => (h.Lane, Sheet: false))).ToArray();
             for (var tick = 0; tick < 240; tick++)
             {
-                world.Step(1f / 60f, PourSub);
+                world.Step(1f / 60f, Sub);
                 var v = world.View;
+                foreach (var e in sheet.Edges)
+                    maxStretch = MathF.Max(maxStretch, Graph.Dist(v, v.DistanceA[e.Lane], v.DistanceB[e.Lane]) / v.DistanceRest[e.Lane] - 1f);
                 for (var k = 0; k < fluid.Length; k++)
                 {
                     var f = fluid[k].Lane;
@@ -337,13 +343,66 @@ public sealed class Box3DSoaFluidTests
             }
             var view = world.View;
             var below = fluid.Count(h => view.ParticleY[h.Lane] < -0.2f);
-            var line = $"POUR touched the sheet {touchedSheet.Count(b => b)} of {fluid.Length}, the rope {touchedRope.Count(b => b)}, below y = -0.2 m at 4 s {below}, within half a contact distance of a solid {deep} (closest {minRatio:F3} of a contact distance)";
-            Readings.Add(line);
-            Assert.True(touchedSheet.Count(b => b) >= 250, line);
-            Assert.True(touchedRope.Count(b => b) >= 30, line);
-            Assert.True(below >= 300, line);
-            Assert.Equal(0, deep);
+            return $"POUR_{(solid ? "SOLID" : "FLUID")} at {Sub} substeps: touched the sheet {touchedSheet.Count(b => b)} of {fluid.Length}, the rope {touchedRope.Count(b => b)}, below y = -0.2 m at 4 s {below}, " +
+                   $"within half a contact distance of a solid (tick x particle pairs) {deep} (closest {minRatio:F3} of a contact distance), worst sheet edge stretch {maxStretch:F3}";
         }
+    }
+
+    [Fact]
+    public void Fluid_pours_on_a_sheet_and_off_a_rope()
+    {
+        foreach (var solid in new[] { false, true })
+        {
+            var line = PourReading(solid);
+            Console.Error.WriteLine(line);
+            Readings.Add(line);
+        }
+    }
+
+    // A fluid block dropped 15 cm onto a floor of immovable solid particles (mass 0). Two readings, both over the 4 s at 4 substeps:
+    // penetration = 1 - closest fluid-floor distance / contact distance (sampled at tick ends), and the fluid particles that went below the floor plane
+    // while over the floor's interior (a pitch in from every edge: a flat floor has no walls, so the rest spill off its edge, 210 of 343 by 4 s).
+    // Penetration: shipped 0.187, Mt1 (collides returns 0 for any fluid-solid pair) 0.292, Mt2 (density_pair counts fluid-fluid only) 0.291: bound
+    // sqrt(0.187 x 0.291) = 0.233, separation 1.56. Through: shipped 1, Mt1 343, Mt2 1: bound sqrt(1 x 343) = 18, separation 343. The shipped 1 is the
+    // block's centre column, exactly over a hole of the floor lattice: by the lattice symmetry the contacts push it sideways at the hole's plane and the
+    // column's weight takes it through. Nowhere near half a contact distance deep, so not the fluid defect the spec stops on; reported.
+    private static (float Penetration, int Below) Floor(out string line)
+    {
+        using var world = FluidWorld(640, gravityY: -9.81f);
+        world.SetMaterial(1, 0.3f, 0, 0.01f);
+        const float pitch = 0.04f, r = 0.02f;
+        var floor = Graph.Block(world, (0f, 0f, 0f), 16, 1, 16, r, 0f, Box3DSoaPhase.Of(4), pitch: pitch);
+        var fluid = Graph.Block(world, (0.18f, 0.15f, 0.18f), 7, 7, 7, r, 1000f * pitch * pitch * pitch, Box3DSoaPhase.Of(6, fluid: true), material: 1, pitch: pitch);
+        var closest = 9f;
+        var through = new bool[fluid.Length];
+        for (var tick = 0; tick < 240; tick++)
+        {
+            world.Step(1f / 60f, Sub);
+            var v = world.View;
+            for (var k = 0; k < fluid.Length; k++) // a particle that spills off the floor's edge is not below it: only one over the floor's interior (a pitch in from every edge) counts
+            {
+                var l = fluid[k].Lane;
+                if (v.ParticleY[l] < 0f && v.ParticleX[l] >= pitch && v.ParticleX[l] <= 14f * pitch && v.ParticleZ[l] >= pitch && v.ParticleZ[l] <= 14f * pitch) through[k] = true;
+            }
+            foreach (var f in fluid)
+                foreach (var s in floor)
+                    closest = MathF.Min(closest, Graph.Dist(v, f.Lane, s.Lane) / (v.ParticleRadius[f.Lane] + v.ParticleRadius[s.Lane]));
+        }
+        var view = world.View;
+        var below = through.Count(b => b);
+        var spilled = fluid.Count(h => view.ParticleY[h.Lane] < 0f);
+        var penetration = MathF.Max(0f, 1f - closest);
+        line = $"FLOOR a 7 x 7 x 7 fluid block dropped 15 cm onto a 16 x 16 immovable floor at {Sub} substeps: penetration {penetration:F3} of a contact distance, fluid that went below the floor plane over its interior {below} of {fluid.Length} ({spilled} below it at 4 s, the rest of them over the edge)";
+        Readings.Add(line);
+        return (penetration, below);
+    }
+
+    [Fact]
+    public void Fluid_holds_on_a_solid_floor()
+    {
+        var (penetration, below) = Floor(out var line);
+        Assert.True(penetration <= FloorPenetration, line + $": penetration over {FloorPenetration}");
+        Assert.True(below <= FloorThrough, line + $": more than {FloorThrough} through");
     }
 
     [Fact]
@@ -465,15 +524,15 @@ public sealed class Box3DSoaFluidTests
             var hashes = new ulong[6];
             for (var c = 0; c < 6; c++)
             {
-                for (var t = 0; t < 40; t++) world.Step(1f / 60f, PourSub);
+                for (var t = 0; t < 40; t++) world.Step(1f / 60f, Sub);
                 hashes[c] = HashFluid(world.View);
             }
             return hashes;
         }
     }
 
-    // Recorded on this commit's build (gcc 13.2, -ffp-contract=off): the pour scene's particle, density and body lanes at ticks 40, 80, ... 240.
-    private static readonly ulong[] FluidHashes = [5483896317407431507ul, 5543394749619665441ul, 17137743801444348829ul, 2389985220451369037ul, 13124815529364315574ul, 13300095781041689986ul];
+    // Recorded on this commit's build (gcc 13.2, -ffp-contract=off): the pour scene's (4 substeps, fluid block) particle, density and body lanes at ticks 40, 80, ... 240.
+    private static readonly ulong[] FluidHashes = [1411589122874970870ul, 596362460742496133ul, 8904430253179177755ul, 14416133262375170555ul, 427244065076485429ul, 13468858124061906785ul];
 
     [Fact]
     public void Fluid_world_is_byte_deterministic()
