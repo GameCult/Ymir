@@ -8,11 +8,11 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 11) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 12) so the Aetheria session's contract is untouched.
 
 ## Contract
 
-- Native (ABI 11): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
+- Native (ABI 12): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
   create_particles / destroy_particles / create_distances / create_bends / attach / remove / set_material / free_slots /
   add_body / add_joint / step / get_view / get_facts / set_anchor_target / destroy_joint / free_joint_slots / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
@@ -176,16 +176,22 @@ separate native object (`ymir_box3d_soa.c`, ABI 11) so the Aetheria session's co
     `C_i = max(n_i / n0 - 1, 0)`, so there is no artificial-pressure term and an under-dense fluid (a gas of far particles) is not
     pulled together; `lambda_i = -C_i / (sum_k w_k |grad_k C_i|^2 + eps w_i)` (0 when that is 0; XPBD inverse-mass weighting, Macklin et al. 2016) with the gradients over `n0` in 1/m^2 and `eps = 1e-4` (a sweep of
     1e-6 to 1e-2 on the column test moved the max density between 1.344 and 1.377 and nothing else: the gradient sum is about 500).
-    Per substep, after contact: pass A gathers `n_i` over the full 27 cells in cell then index order (self and the solids counted,
-    `s = 1` as Flex 7.1) and `lambda` of each fluid particle (a solid's is 0); pass B walks the contact pass's half of the
-    neighbourhood and moves a pair with a fluid end and a kernel overlap by `d = (lambda_i + lambda_j) grad W / n0(h)`, end `i`
-    by `w_i d` and end `j` by `-w_j d`, applied after the walk (equal masses move as before; a static end takes nothing and the fluid its XPBD share, so the energy at 30 : 1 and 100 : 1 does not rise). A pair therefore
+    Per substep, after contact: pass A gathers `n_i` for each fluid particle over the rings of cells that hold its kernel reach (cell then
+    index order; self and the solids counted, `s = 1` as Flex 7.1) and its `lambda` (a solid's is 0), and writes its neighbour list: every
+    kernel neighbour (fluid, or a solid it would touch by contact) in walk order, up to 96 (about 33 at rest at 4 r reach, about 45 at the
+    column's compression); each one past that adds 1 to `fluid_neighbour_overflow`, the ABI 12 view scalar (last step, summed over its
+    substeps), so `n` and `lambda` stay exact and only the correction and XSPH lose those pairs. Pass B reads the lists: each fluid row in index
+    order, each listed neighbour in list order, a fluid neighbour below the row skipped (its own row does the pair), a solid always done from the
+    fluid row; a pair moves by `d = (lambda_i + lambda_j) grad W / n0(h)`, end `i`
+    by `w_i d` and end `j` by `-w_j d`, applied after the pass (equal masses move as before; a static end takes nothing and the fluid its XPBD share, so the energy at 30 : 1 and 100 : 1 does not rise). A pair therefore
     carries equal and opposite momentum at any mass ratio (a solid end is the reaction: `m_i dx_i = -m_j dx_j`), a zero-mass end
     takes nothing, and the one pair formula serves fluid with fluid and with solids. The XSPH viscosity of Schechter and Bridson
-    runs after the velocity update over fluid pairs on the same walk (fluid rows only), `dv = c (v_j - v_i) W / n0` with `c` the mean of the two
-    materials' `viscosity`, split by inverse mass the same way, and only when some material has a viscosity above 0 (one scan of the material lanes a substep). The grid cell is `2 r_max` as before when no fluid is live and
-    `2 (r_fmax + r_max)` when one is, so every kernel pair lies in the 27 cells; a world with no live fluid steps byte-identically to
-    one before this change (no pass runs: `live_fluid` counts the live fluid particles, written by create and destroy only). The
+    runs after the velocity update over the same lists (fluid neighbours above the row), `dv = c (v_j - v_i) W / n0` with `c` the mean of the two
+    materials' `viscosity`, split by inverse mass the same way, and only when some material has a viscosity above 0 (one scan of the material lanes a substep). A pair that
+    entered reach since pass A is missed by XSPH (smoothing, not a constraint). The lists are per-substep scratch, carved once at create (384 bytes a particle lane). The grid cell is `2 r_max` always, solids and fluid alike: the contact
+    pass walks the half of its 27 cells, and the fluid passes walk `ceil(2 (r_fmax + r_max) / 2 r_max)` rings (2 at equal radii: 5^3 cells); a world with no live fluid steps byte-identically to
+    one before fluid (no pass runs: `live_fluid` counts the live fluid particles, written by create and destroy only). Cost on the 16 x 16 sheet scene at 4 substeps, increment over the same scene without fluid (Release, three runs):
+    512 fluid +3.0 to +3.1 ms a tick at viscosity 0 and +3.2 to +3.4 at 0.01; 2000 fluid +13.1 to +13.5 and +13.6 to +13.9, against a target of 1.0 ms at 512. By phase at 512 (ms a tick): contact pass +0.7 over its no-fluid 1.5, pass A 2.9 (of which the bare walk of 125 cells a row, with no arithmetic, 2.0), pass B 0.11, apply 0.01, XSPH 0.12, grid 0.16. The walk of the rings is the owner of the miss; per-tick lists and cell-sorted copies are the parked levers. The
     sensor lane `particle_density` reads `n_i / n0` (1 at rest, 0 for a solid) in the last substep the particle ran.
     Fluid holds no constraint: `create_distances` and `attach` refuse a fluid particle, so `create_bends` (over distances) can
     never name one; a thing that holds liquid is cloth around free fluid (a balloon), as in Flex sec. 8. Every `create_particles`
@@ -230,7 +236,7 @@ no allocation across 100 steps with fact reads. `Box3DSoaImpulseTests`: `contact
 
 ## Not done
 
-`Box3DSoaFluidTests`: the refusals (a distance or attachment naming fluid, a viscosity below 0 or not finite); 64 fluid particles created and destroyed a tick on the 20-pin sheet leaving every tether lane byte-equal; an 8 x 8 x 16 column in a box well (max density, mean density, nothing outside); fluid thrown into a free sheet and rope at fluid : solid mass 64 : 20, 1 : 30, 30 : 1 and 100 : 1 (momentum drift, energy on every row); a 343-particle fluid block dropped 15 cm onto a floor of immovable solid particles at 4 substeps (penetration, nothing through the floor's interior bar the one particle over a lattice hole); probe scene 3, the 343-particle pour on a tilted sheet and a sloped rope at 4 substeps, printed as readings with the same block flagged solid as the control, asserting nothing; fluid pushing a free box with the impulse lane equal to its M dv; a 3 r lattice not clumping; XSPH damping a shear field; the kernel reaching a larger solid beyond two contact radii; the pour's six checkpoint hashes (two runs, a one-ulp nudge, eight concurrent worlds). Each bound states its readings and the mutant it separates from. `Fluid_cost_line` prints 512 and 2000 fluid particles on the sheet scene.
+`Box3DSoaFluidTests`: the refusals (a distance or attachment naming fluid, a viscosity below 0 or not finite); 64 fluid particles created and destroyed a tick on the 20-pin sheet leaving every tether lane byte-equal; an 8 x 8 x 16 column in a box well (max density, mean density, nothing outside); fluid thrown into a free sheet and rope at fluid : solid mass 64 : 20, 1 : 30, 30 : 1 and 100 : 1 (momentum drift, energy on every row); a 343-particle fluid block dropped 15 cm onto a floor of immovable solid particles at 4 substeps (penetration, nothing through the floor's interior bar the one particle over a lattice hole); probe scene 3, the 343-particle pour on a tilted sheet and a sloped rope at 4 substeps, printed as readings with the same block flagged solid as the control, asserting nothing; fluid pushing a free box with the impulse lane equal to its M dv; a 3 r lattice not clumping; XSPH damping a shear field; the kernel reaching a larger solid beyond two contact radii; the pour's six checkpoint hashes (two runs, a one-ulp nudge, eight concurrent worlds). Each bound states its readings and the mutant it separates from. `Fluid_cost_line` prints 512 and 2000 fluid particles on the sheet scene at viscosity 0 and 0.01. Overflow is asserted 0 in the column, the floor and the pour.
 
 Body removal with a stable ordering rule, compound bodies
 and per-shape material, and motor joints with a velocity target or per-joint force readback (the motor joint here is a position spring only; Lodur drives limbs from torque lanes).
