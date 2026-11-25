@@ -430,21 +430,35 @@ public sealed class Box3DSoaCouplingTests
     [InlineData(2000)]
     public void Fluid_cost_line(int fluid)
     {
-        // Printed, not asserted. Target at 512: an increment of at most 1.0 ms per tick over the same scene without fluid, at XSPH viscosity 0 and 0.01.
+        // Target at 512: an increment of at most 1.0 ms per tick over the same scene without fluid, at XSPH viscosity 0 and 0.01.
         const int lanes = 200000;
         var perLane = (double)WorldBytes(lanes, 0) / lanes;
         var perFluid = (double)(WorldBytes(lanes, lanes) - WorldBytes(lanes, 0)) / lanes;
         var memory = $"PARTICLE_COST bytes: {perLane:F0} per particle lane at fluid capacity 0 (the whole block; the fluid copies, nbr_start and nbr_count are 7 x 4 = 28 of it, where h1 carved 388 in every world), {perFluid:F0} more per fluid capacity (the neighbour arena, 96 entries)";
         Console.Error.WriteLine(memory);
         Reading(memory);
-        var without = PourCost(0);
+        // The one-run difference moves 0.3 ms from run to run, so the line is paired: the scene without fluid and the scene with it
+        // run back to back (the order alternating, so a drifting machine favours neither), and the increment is the median of the pairs'
+        // differences with its interquartile range. Printed, not asserted.
+        const int pairs = 9;
         foreach (var viscosity in new[] { 0f, 0.01f })
         {
-            var with = PourCost(fluid, viscosity);
-            var line = $"PARTICLE_COST {fluid} fluid particles r 1.25 cm viscosity {viscosity} poured on the 16 x 16 sheet scene, 4 substeps, 1 body: {with:F3} ms per tick; the scene without fluid {without:F3} ms; fluid increment {with - without:F3} ms per tick";
+            var increments = new double[pairs];
+            var withs = new double[pairs];
+            var withouts = new double[pairs];
+            for (var k = 0; k < pairs; k++)
+            {
+                if (k % 2 == 0) { withouts[k] = PourCost(0); withs[k] = PourCost(fluid, viscosity); }
+                else { withs[k] = PourCost(fluid, viscosity); withouts[k] = PourCost(0); }
+                increments[k] = withs[k] - withouts[k];
+            }
+            Array.Sort(increments);
+            Array.Sort(withs);
+            Array.Sort(withouts);
+            var line = $"PARTICLE_COST {fluid} fluid particles r 1.25 cm viscosity {viscosity} poured on the 16 x 16 sheet scene, 4 substeps, 1 body, {pairs} interleaved pairs: median {withs[pairs / 2]:F3} ms per tick with, {withouts[pairs / 2]:F3} without; fluid increment median {increments[pairs / 2]:F3} ms per tick, IQR {increments[1] / 2 + increments[2] / 2:F3} to {increments[6] / 2 + increments[7] / 2:F3} (min {increments[0]:F3}, max {increments[pairs - 1]:F3})";
             Console.Error.WriteLine(line);
             Reading(line);
-            Assert.True(with > 0);
+            Assert.True(withs[pairs / 2] > 0);
         }
     }
 }
