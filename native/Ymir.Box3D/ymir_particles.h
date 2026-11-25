@@ -29,7 +29,8 @@ enum
     YMIR_PARTICLES_INVALID_ARGUMENT = 1,
     YMIR_PARTICLES_DUPLICATE_ID = 2,
     YMIR_PARTICLES_FULL = 3,
-    YMIR_PARTICLES_OUT_OF_MEMORY = 4
+    YMIR_PARTICLES_OUT_OF_MEMORY = 4,
+    YMIR_PARTICLES_REFERENCED = 6 // a body that a live attachment or sensor names cannot be released
 };
 
 // Phase word: bits 0-19 are the group; the three flags below are the only other bits.
@@ -279,6 +280,10 @@ int32_t ymir_particles_settle(ymir_particles* p, int32_t n, const ymir_handle* h
 // Creates liquid sensors in the lowest free lanes. Refuses whole (INVALID_ARGUMENT) a body outside [0, body_count), a radius that is not finite and > 0, or a
 // non-finite point; FULL when there are not n free lanes; nothing changes. A sensor only reads: its volume moves nothing.
 int32_t ymir_particles_create_sensors(ymir_particles* p, int32_t n, const ymir_sensor_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out);
+// Frees what the particle layer holds on body lane `body` so the body can be removed: REFERENCED, changing nothing, while a live body
+// attachment or a live sensor names it (the caller removes those first); otherwise every live wet patch on it is removed (one rederive_wet) and
+// `patches` and `volume` (either may be NULL) receive their count and summed volume (m^3). No rigid-body call.
+int32_t ymir_particles_release_body(ymir_particles* p, int32_t body, uint64_t step_count, uint32_t* patches, float* volume);
 int32_t ymir_particles_set_material(ymir_particles* p, int32_t index, const ymir_material_desc* d);
 int32_t ymir_particles_free_slots(const ymir_particles* p, uint32_t lane_set, uint64_t step_count);
 
