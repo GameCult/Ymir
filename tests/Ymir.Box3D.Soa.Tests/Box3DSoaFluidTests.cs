@@ -549,7 +549,7 @@ public sealed class Box3DSoaFluidTests
     }
 
     // Recorded on this commit's build (gcc 13.2, -ffp-contract=off): the pour scene's (4 substeps, fluid block) particle, density and body lanes at ticks 40, 80, ... 240.
-    private static readonly ulong[] FluidHashes = [1411589122874970870ul, 596362460742496133ul, 8904430253179177755ul, 14416133262375170555ul, 427244065076485429ul, 13468858124061906785ul];
+    private static readonly ulong[] FluidHashes = [2183254217684687738ul, 4955991183327756149ul, 16519590483747763541ul, 6219824879232744950ul, 15471166218907503526ul, 18039537074735517335ul];
 
     [Fact]
     public void Fluid_world_is_byte_deterministic()

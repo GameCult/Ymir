@@ -160,6 +160,8 @@ typedef struct ymir_particles
     int32_t tether_count;                                                 // derived: the live tethers
     int32_t body_count;                                                   // bodies filled in `proxies` this step
     int32_t live_particles;
+    int32_t fluid_rings;    // derived by build_grid: rings of 2 rmax cells that hold a kernel pair, 0 without fluid
+    int32_t fluid_overflow; // kernel neighbours past a fluid particle's list in the last step, summed over substeps: a sensor
     int32_t live_fluid; // derived: the live particles with the FLUID phase bit; the create and destroy commands are its only writers
     ymir_particle_proxy* proxies;
 
@@ -169,6 +171,7 @@ typedef struct ymir_particles
     uint32_t *phase, *material, *particle_live, *particle_generation;
     uint64_t* particle_removed_at;
     int32_t* component; // derived: the lowest lane of the particle's distance-connected component
+    int32_t *nbr, *nbr_count; // scratch: a fluid particle's kernel neighbours in walk order (YMIR_FLUID_NEIGHBOURS each), this substep's
     float* density;     // sensor: a fluid particle's number density over its rest density n_i / n0 in the last substep it ran, else 0
 
     // distance lanes
