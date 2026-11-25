@@ -70,6 +70,8 @@ public sealed partial class Box3DSoaFluidTests
     // the patch, metres moved in 40 ticks: shipped worst 3.123e-5; M4 (no disc: the patch is the whole floor) 0.1688, B slides with A: bound sqrt(3.123e-5 x 0.1688) = 2.3e-3,
     // separation 74. The box under the patch moves 0.1688 m shipped; M1 and M2 read 0.0000, counted one unit (1e-6 m) by lodur:ruling:deterministic-bound-zero-reading:
     // bound sqrt(0.1688 x 1e-6) = 4.1e-4 m, separation 410.
+    // The late-settled patch under a resting box reads 6.276e-3 shipped (rest 100 ticks); M5 (the fork does not run the hook on recycled contacts) holds the box, 1.0: the same 0.079.
+    // The patch removed from under a resting box: shipped 3.839e-5 m moved; M5 slides it about 0.17 m: DryBound 2.3e-3 stands (separation 60 and 73).
     private const double SlideBound = 0.079;
     private const double DryBound = 2.3e-3;
     private const double MovedBound = 4.1e-4;
@@ -160,5 +162,112 @@ public sealed partial class Box3DSoaFluidTests
         Readings.Add($"WETFRICTION slope: dry slid {dry:E3} m, wet slid {wet:F3} m in 2 s");
         Assert.True(dry < 0.01f, $"dry slid {dry} m");
         Assert.True(wet > SlopeBound, $"wet slid only {wet} m");
+    }
+
+    [Fact]
+    public void A_reused_lane_is_not_slippery()
+    {
+        // Liquid settled on a solid particle makes that particle slip (particle_wet_mu); when the solid is destroyed the lane goes dry, and a solid created on the reused lane slides
+        // as one that never met the liquid (the control destroys the drop instead of settling it).
+        static (float X, int Lane, int Reused) Slide(bool patch)
+        {
+            var world = FluidWorld(16, wets: 4, gravityY: -9.81f);
+            using (world)
+            {
+                world.AddStaticBox(1, (0f, -0.5f, 0f), (4f, 0.5f, 2f), friction: 0.6f);
+                world.SetMaterial(0, 0.6f);
+                world.SetMaterial(1, 0.6f, wetFriction: 0.05f);
+                var solid = Box3DSoaPhase.Of(1);
+                world.CreateParticles([new Box3DSoaParticleDesc((0f, R, 0f), 0.02f, R, solid, 0u, null, default)]);
+                world.CreateParticles([Fluid((0f, 3f * R, 0f), material: 1u)]);
+                for (var tick = 0; tick < 20; tick++) world.Step(Dt, Sub);
+                var under = world.View.SupportParticle[1];
+                if (patch) { Assert.Equal(0, under); world.Settle([Handle(world, 1)]); } else world.DestroyParticles([Handle(world, 1)]);
+                world.DestroyParticles([Handle(world, 0)]);
+                world.Step(Dt, Sub);
+                var made = new Box3DSoaParticleHandle[1];
+                world.CreateParticles([new Box3DSoaParticleDesc((0f, R, 0f), 0.02f, R, solid, 0u, null, (1.5f, 0f, 0f))], made);
+                for (var tick = 0; tick < 60; tick++) world.Step(Dt, Sub);
+                return (world.View.ParticleX[made[0].Lane], made[0].Lane, 0);
+            }
+        }
+        var (with, without) = (Slide(true), Slide(false));
+        Readings.Add($"WETFRICTION reused lane: lane {with.Lane}, x {with.X:F6} after a settled patch, {without.X:F6} without");
+        Assert.Equal(0, with.Lane);
+        Assert.Equal(BitConverter.SingleToInt32Bits(without.X), BitConverter.SingleToInt32Bits(with.X));
+    }
+
+    /// <summary>A floor, a drop of liquid 0.4 m off settled into a patch of radius 0.56 m (wet friction 0.1) that holds the point 0, a box of 5 kg at 0 that rests <paramref name="rest"/> ticks, then <paramref name="between"/> and <paramref name="settleLate"/>.</summary>
+    private static double RestedThenPushed(int rest, bool settleLate, bool removeAfter)
+    {
+        var world = FluidWorld(8, wets: 4, gravityY: -9.81f);
+        using (world)
+        {
+            world.AddStaticBox(1, (0f, -0.5f, 0f), (4f, 0.5f, 2f), friction: 0.6f);
+            world.SetMaterial(0, 0.6f);
+            world.SetMaterial(1, 0.6f, wetFriction: WetMu);
+            var scale = 0.05f / R;
+            world.CreateParticles([Fluid((0.4f, 0.05f, 0f), FluidMass * scale * scale * scale, 0.05f, material: 1u)]);
+            for (var tick = 0; tick < 20; tick++) world.Step(Dt, Sub);
+            var patch = new Box3DSoaConstraintHandle[1];
+            if (!settleLate) world.Settle([Handle(world, 0)], patch);
+            var box = world.AddBox(10ul, (0f, 0.1f, 0f), (0.1f, 0.1f, 0.1f), BoxMass / 0.008f, friction: 0.6f);
+            for (var tick = 0; tick < rest; tick++) world.Step(Dt, Sub);
+            if (settleLate) world.Settle([Handle(world, 0)], patch);
+            if (removeAfter) world.Remove(patch[0]);
+            for (var tick = 0; tick < 5; tick++) world.Step(Dt, Sub);
+            return Moved(world, [box], 0);
+        }
+    }
+
+    [Theory]
+    [InlineData(5)]
+    [InlineData(100)]
+    public void Liquid_settled_under_a_resting_box_makes_it_slide(int rest)
+    {
+        // The box rests dry (its contact recycled, held by friction), then a patch is settled under it: the hook runs on the recycled contact, so friction drops.
+        var moved = RestedThenPushed(rest, settleLate: true, removeAfter: false);
+        var acceleration = 2.0 * moved / ((double)PushTicks * Dt * PushTicks * Dt);
+        Readings.Add($"WETFRICTION late patch after {rest} ticks: acceleration {acceleration:F4} against {WetAcceleration:F4}, relative error {Math.Abs(acceleration / WetAcceleration - 1.0):E3}");
+        Assert.True(Math.Abs(acceleration / WetAcceleration - 1.0) <= SlideBound, $"acceleration {acceleration} against {WetAcceleration}");
+    }
+
+    [Fact]
+    public void Liquid_removed_from_under_a_resting_box_restores_friction()
+    {
+        // The box rests on the patch (friction lowered), the patch is removed: the recycled contact takes the floor's friction back and holds the push.
+        var moved = Math.Abs(RestedThenPushed(20, settleLate: false, removeAfter: true));
+        Readings.Add($"WETFRICTION patch removed from under a resting box: moved {moved:E3} m");
+        Assert.True(moved < DryBound, $"the box moved {moved} m");
+    }
+
+    // Overlapping patches of two liquids: the lowest lane decides, wherever its centre sorts. Wet acceleration, relative error against (F - 0.3 m g) / m: shipped 2.262e-2; M7 (the
+    // first holder in x order wins: the 0.05 patch, acceleration 3.51) 2.32: bound sqrt(2.262e-2 x 2.32) = 0.229, separation 10.1.
+    private const double LowestLaneBound = 0.229;
+
+    [Fact]
+    public void Lowest_lane_decides_where_patches_overlap()
+    {
+        var world = FluidWorld(8, wets: 4, gravityY: -9.81f, materials: 3);
+        using (world)
+        {
+            world.AddStaticBox(1, (0f, -0.5f, 0f), (4f, 0.5f, 2f), friction: 0.6f);
+            world.SetMaterial(0, 0.6f);
+            world.SetMaterial(1, 0.6f, wetFriction: 0.3f);
+            world.SetMaterial(2, 0.6f, wetFriction: 0.05f);
+            var scale = DropRadius / R;
+            // Lane 0 sits at +0.05 m (wet 0.3), lane 1 at -0.05 m (wet 0.05): both hold the point 0, and the sort by x meets lane 1 first.
+            world.CreateParticles([Fluid((0.05f, DropRadius, 0f), FluidMass * scale * scale * scale, DropRadius, material: 1u),
+                                   Fluid((-0.05f, DropRadius, 0f), FluidMass * scale * scale * scale, DropRadius, material: 2u)]);
+            for (var tick = 0; tick < 20; tick++) world.Step(Dt, Sub);
+            world.Settle([Handle(world, 0)]);
+            world.Settle([Handle(world, 1)]);
+            var box = world.AddBox(10ul, (0f, 0.1f, 0f), (0.1f, 0.1f, 0.1f), BoxMass / 0.008f, friction: 0.6f);
+            var moved = Moved(world, [box], 0);
+            var expected = (PushForce - 0.3 * BoxMass * 9.81) / BoxMass;
+            var acceleration = 2.0 * moved / ((double)PushTicks * Dt * PushTicks * Dt);
+            Readings.Add($"WETFRICTION lowest lane: acceleration {acceleration:F4} against {expected:F4}, relative error {Math.Abs(acceleration / expected - 1.0):E3}");
+            Assert.True(Math.Abs(acceleration / expected - 1.0) <= LowestLaneBound, $"acceleration {acceleration} against {expected}");
+        }
     }
 }
