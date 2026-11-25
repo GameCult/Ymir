@@ -274,4 +274,108 @@ public sealed class Box3DSoaJointTests
         Assert.True(first.AsSpan().SequenceEqual(Run()));
         Assert.Contains(first, b => b != 0);
     }
+
+    private const float BobRadius = 0.1f, BobDensity = 1000f;
+    private static float BobMass => 4f / 3f * MathF.PI * BobRadius * BobRadius * BobRadius * BobDensity;
+
+    /// <summary>A static box with a heavy sphere hung one metre below it by a joint of the given kind at the box's centre.</summary>
+    private static (Box3DSoaWorld World, int Bob, Box3DSoaJointHandle Joint) Hanging(
+        Box3DSoaJointKind kind, float forceThreshold = float.PositiveInfinity, float torqueThreshold = float.PositiveInfinity)
+    {
+        var world = new Box3DSoaWorld(capacity: 4, jointCapacity: 2);
+        var pin = world.AddStaticBox(1, (0f, 5f, 0f), (0.1f, 0.1f, 0.1f));
+        var bob = world.AddSphere(2, (0f, 4f, 0f), BobRadius, BobDensity);
+        var joint = world.AddJoint(kind, pin, bob, (0f, 5f, 0f), (0f, 0f, 1f), forceThreshold: forceThreshold, torqueThreshold: torqueThreshold);
+        return (world, bob, joint);
+    }
+
+    private static float Magnitude(Box3DSoaView v, int joint) =>
+        MathF.Sqrt(v.JointConstraintForceX[joint] * v.JointConstraintForceX[joint] + v.JointConstraintForceY[joint] * v.JointConstraintForceY[joint] +
+                   v.JointConstraintForceZ[joint] * v.JointConstraintForceZ[joint]);
+
+    [Theory]
+    [InlineData(Box3DSoaJointKind.Spherical)]
+    [InlineData(Box3DSoaJointKind.Weld)]
+    public void Constraint_lanes_read_the_load(Box3DSoaJointKind kind)
+    {
+        var (world, _, joint) = Hanging(kind);
+        using var _ = world;
+        var view = world.View;
+        for (var i = 0; i < 120; i++) world.Step(Dt);
+        Assert.Equal(BobMass * 10f, Magnitude(view, joint), BobMass * 10f * 0.02f); // m g within 2%
+        world.DestroyJoint(joint);
+        Assert.Equal(0f, Magnitude(view, joint)); // a removed lane keeps no load
+        Assert.Equal(0f, view.JointConstraintTorqueZ[joint]);
+    }
+
+    [Fact]
+    public void An_overload_is_reported_not_acted_on()
+    {
+        var (world, bob, joint) = Hanging(Box3DSoaJointKind.Spherical, forceThreshold: 200f);
+        using var _ = world;
+        var view = world.View;
+        var first = -1;
+        for (var i = 0; i < 400 && first < 0; i++)
+        {
+            view.ForceY[bob] = -2f * i; // a slow ramp of downward pull
+            world.Step(Dt);
+            var reached = Magnitude(view, joint) >= 198f;
+            var overloads = world.Facts.Overloads;
+            if (!reached) Assert.Equal(0, overloads.Length); // never before the load comes within 1% of the threshold
+            else if (overloads.Length > 0) first = i;
+            else
+            {
+                view.ForceY[bob] = -2f * (i + 1);
+                world.Step(Dt); // by the step after
+                var next = world.Facts.Overloads;
+                Assert.Equal(1, next.Length);
+                Assert.Equal(joint.Lane, next[0].JointLane);
+                Assert.Equal(joint.Generation, next[0].JointGeneration);
+                Assert.True(next[0].ForceY > 190f); // the load rides on the fact
+                first = i + 1;
+            }
+        }
+        Assert.True(first >= 0, "the ramp must reach the threshold");
+        for (var i = 0; i < 10; i++)
+        {
+            view.ForceY[bob] = -400f;
+            world.Step(Dt);
+        }
+        Assert.Equal((uint)Box3DSoaJointKind.Spherical, view.JointKind[joint]); // the joint still holds: no removal on a threshold
+        Assert.Equal(joint.Generation, view.JointGeneration[joint]);
+        Assert.Equal(4f, view.PositionY[bob], 0.2f);
+
+        world.DestroyJoint(joint);
+        for (var i = 0; i < 30; i++) world.Step(Dt);
+        Assert.True(view.PositionY[bob] < 3f, "DestroyJoint frees the child");
+    }
+
+    [Fact]
+    public void Thresholds_are_a_sensor_set_by_desc_or_command_and_refused_when_not_a_load()
+    {
+        var (world, bob, joint) = Hanging(Box3DSoaJointKind.Weld);
+        using var _ = world;
+        for (var i = 0; i < 5; i++) world.Step(Dt);
+        Assert.Equal(0, world.Facts.Overloads.Length); // +inf is never
+
+        world.SetJointThresholds(joint, 10f, float.PositiveInfinity); // below the bob's weight
+        world.Step(Dt);
+        Assert.Equal(1, world.Facts.Overloads.Length);
+        world.SetJointThresholds(joint, float.PositiveInfinity, float.PositiveInfinity);
+        world.Step(Dt);
+        Assert.Equal(0, world.Facts.Overloads.Length);
+
+        Assert.Throws<InvalidOperationException>(() => world.SetJointThresholds(joint, float.NaN, 1f));
+        Assert.Throws<InvalidOperationException>(() => world.SetJointThresholds(joint, 1f, -1f));
+        Assert.Throws<InvalidOperationException>(() => world.SetJointThresholds(new Box3DSoaJointHandle(joint.Lane, joint.Generation + 1), 1f, 1f));
+        Assert.Throws<InvalidOperationException>(() => world.SetJointThresholds(new Box3DSoaJointHandle(1, 0), 1f, 1f));
+        Assert.Throws<InvalidOperationException>(() => world.AddJoint(Box3DSoaJointKind.Spherical, 0, bob, (0f, 5f, 0f), (0f, 0f, 1f), forceThreshold: float.NaN));
+        Assert.Throws<InvalidOperationException>(() => world.AddJoint(Box3DSoaJointKind.Spherical, 0, bob, (0f, 5f, 0f), (0f, 0f, 1f), torqueThreshold: -0.5f));
+        Assert.Equal(1, world.View.JointCount); // the refusals added nothing
+        world.Step(Dt);
+        Assert.Equal(0, world.Facts.Overloads.Length); // and changed nothing
+
+        world.DestroyJoint(joint);
+        Assert.Throws<InvalidOperationException>(() => world.SetJointThresholds(joint, 1f, 1f)); // a removed joint has none
+    }
 }

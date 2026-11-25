@@ -17,6 +17,7 @@
 #include "ymir_particles.h"
 #include "ymir_world_lock.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -94,6 +95,9 @@ typedef struct ymir_box3d_soa_body_desc
 // weak grab hangs below its target. All six are finite and >= 0 and are ignored by the other kinds.
 // `ymir_box3d_soa_destroy_joint` releases a joint of any kind: its lane becomes a tombstone (kind REMOVED = 4, bodies -1,
 // every lane 0) that add_joint may reuse only once a step has completed since.
+// `force_threshold` (N) and `torque_threshold` (N m) make the joint report an Overload fact in a step where its load reaches
+// them; +inf (the usual value) is never, NaN or a negative value is refused. A threshold is a sensor: Ymir never removes a
+// joint on it.
 typedef struct ymir_box3d_soa_joint_desc
 {
     uint32_t kind;
@@ -111,6 +115,8 @@ typedef struct ymir_box3d_soa_joint_desc
     float angular_hertz;
     float angular_damping;
     float max_torque;
+    float force_threshold;
+    float torque_threshold;
 } ymir_box3d_soa_joint_desc;
 
 // Pointers first and in lane order, so the layout is the same on every 64-bit target. Lanes the caller
@@ -189,6 +195,13 @@ typedef struct ymir_box3d_soa_view
     const float* joint_origin_x;
     const float* joint_origin_y;
     const float* joint_origin_z;
+    // The load the joint carries, world frame, from Box3D's constraint solution at the end of the last step (N and N m); a free lane reads 0. Sensors: a joint hanging a mass m at rest reads m g.
+    const float* joint_constraint_force_x;
+    const float* joint_constraint_force_y;
+    const float* joint_constraint_force_z;
+    const float* joint_constraint_torque_x;
+    const float* joint_constraint_torque_y;
+    const float* joint_constraint_torque_z;
     // Contact lanes, read-only, refreshed every step. contact_impulse is N s: the sum over the body's touching
     // contact manifold points of stepNormalImpulse, the normal impulse the contacts delivered to the body over
     // the whole step (0 for a body touching nothing). Exact, normal channel only: Box3D exposes no tangent
@@ -338,6 +351,15 @@ typedef struct ymir_box3d_soa_hit_fact
     uint64_t material_b;
 } ymir_box3d_soa_hit_fact;
 
+// A joint whose load reached its threshold in the step just taken, with the load Box3D reports for it after the step. The joint stays: Ymir never removes on a threshold.
+typedef struct ymir_box3d_soa_overload_fact
+{
+    int32_t joint_lane;
+    uint32_t joint_generation;
+    float force[3];
+    float torque[3];
+} ymir_box3d_soa_overload_fact;
+
 // What Box3D reported for the step just taken, in Box3D's event order. The arrays are fixed for the
 // world's life and rewritten by every step: facts last one step. `dropped` counts facts past
 // `fact_capacity` that this step could not keep.
@@ -354,6 +376,9 @@ typedef struct ymir_box3d_soa_facts
     const ymir_box3d_soa_touch_fact* begin;
     const ymir_box3d_soa_touch_fact* end;
     const ymir_box3d_soa_hit_fact* hit;
+    const ymir_box3d_soa_overload_fact* overload; // at most joint_capacity: Box3D reports a joint at most once per step
+    uint32_t overload_count;
+    uint32_t reserved2;
 } ymir_box3d_soa_facts;
 
 // The closest hit of a ray. `hit` is 0 for a miss and every other field is then 0. `lane` and `stable_id` name
@@ -374,7 +399,7 @@ typedef struct ymir_box3d_soa_ray_hit
 #define YMIR_SOA_CONTACT_IMPULSE_LANE (YMIR_SOA_STATE_LANES + YMIR_SOA_WRITE_LANES)
 #define YMIR_SOA_PARTICLE_IMPULSE_LANE (YMIR_SOA_CONTACT_IMPULSE_LANE + 1) // 3 lanes: x y z
 #define YMIR_SOA_BODY_FLOAT_LANES (YMIR_SOA_PARTICLE_IMPULSE_LANE + 3)
-#define YMIR_SOA_JOINT_FLOAT_LANES 15
+#define YMIR_SOA_JOINT_FLOAT_LANES 21
 
 typedef struct ymir_box3d_soa_world
 {
@@ -408,6 +433,7 @@ typedef struct ymir_box3d_soa_world
     ymir_box3d_soa_touch_fact* begin_facts;
     ymir_box3d_soa_touch_fact* end_facts;
     ymir_box3d_soa_hit_fact* hit_facts;
+    ymir_box3d_soa_overload_fact* overload_facts; // `joint_capacity` entries
     b3ContactData* contact_scratch; // `capacity` entries: a body has one shape, so at most capacity - 1 contacts
     b3Vec3 gravity;
     ymir_particles* particles; // NULL when created without particle capacity: the step then runs exactly as ABI 8
@@ -428,6 +454,17 @@ static float* ymir_soa_joint_lane(const ymir_box3d_soa_world* world, int lane)
 static int ymir_soa_finite(float v)
 {
     return isfinite(v);
+}
+
+// A joint threshold: finite and >= 0, or +inf (never). Box3D asserts on inf, so +inf reaches it as FLT_MAX, its "never".
+static int ymir_soa_threshold_ok(float v)
+{
+    return !isnan(v) && v >= 0.0f;
+}
+
+static float ymir_soa_threshold(float v)
+{
+    return isinf(v) ? FLT_MAX : v;
 }
 
 static int ymir_soa_finite3(const float* v)
@@ -493,8 +530,11 @@ static void ymir_soa_refresh_joint(ymir_box3d_soa_world* world, int j)
     {
         angle = b3SphericalJoint_GetTwistAngle(world->joints[j]);
     }
+    b3Vec3 force = b3Joint_GetConstraintForce(world->joints[j]);
+    b3Vec3 torque = b3Joint_GetConstraintTorque(world->joints[j]);
     const float values[YMIR_SOA_JOINT_FLOAT_LANES] = {
-        angle, qa.v.x, qa.v.y, qa.v.z, qa.s, rel.v.x, rel.v.y, rel.v.z, rel.s, w.x, w.y, w.z, origin.x, origin.y, origin.z};
+        angle, qa.v.x, qa.v.y, qa.v.z, qa.s, rel.v.x, rel.v.y, rel.v.z, rel.s, w.x, w.y, w.z, origin.x, origin.y, origin.z,
+        force.x, force.y, force.z, torque.x, torque.y, torque.z};
     for (int lane = 0; lane < YMIR_SOA_JOINT_FLOAT_LANES; ++lane)
     {
         ymir_soa_joint_lane(world, lane)[j] = values[lane];
@@ -565,6 +605,7 @@ static void ymir_soa_free(ymir_box3d_soa_world* world)
     free(world->begin_facts);
     free(world->end_facts);
     free(world->hit_facts);
+    free(world->overload_facts);
     free(world->contact_scratch);
     ymir_particles_free(world->particles);
     free(world);
@@ -629,6 +670,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     world->begin_facts = (ymir_box3d_soa_touch_fact*)calloc((size_t)fact_capacity, sizeof(ymir_box3d_soa_touch_fact));
     world->end_facts = (ymir_box3d_soa_touch_fact*)calloc((size_t)fact_capacity, sizeof(ymir_box3d_soa_touch_fact));
     world->hit_facts = (ymir_box3d_soa_hit_fact*)calloc((size_t)fact_capacity, sizeof(ymir_box3d_soa_hit_fact));
+    world->overload_facts = (ymir_box3d_soa_overload_fact*)calloc(m, sizeof(ymir_box3d_soa_overload_fact));
     world->contact_scratch = (b3ContactData*)calloc(n, sizeof(b3ContactData));
     world->gravity = (b3Vec3){gravity_x, gravity_y, gravity_z};
     if (particle_capacities != NULL && (particle_capacities->particles > 0 || particle_capacities->distances > 0 || particle_capacities->bends > 0 ||
@@ -642,7 +684,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
         }
     }
     if (world->contact_count == NULL || world->material_id == NULL || world->begin_facts == NULL ||
-        world->end_facts == NULL || world->hit_facts == NULL || world->contact_scratch == NULL ||
+        world->end_facts == NULL || world->hit_facts == NULL || world->overload_facts == NULL || world->contact_scratch == NULL ||
         world->bodies == NULL || world->stable_id == NULL || world->kind == NULL || world->parent == NULL ||
         world->limb == NULL || world->size == NULL || world->lanes == NULL || world->joints == NULL || world->joint_kind == NULL ||
         world->joint_body_a == NULL || world->joint_body_b == NULL || world->joint_local_a == NULL || world->joint_local_origin_a == NULL ||
@@ -871,6 +913,16 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_free_joint_slots(const ymir_box3d_s
     return free_slots;
 }
 
+// What every joint kind shares: the bodies, the thresholds and the lane + 1 user data a joint event resolves to its lane.
+static void ymir_soa_joint_base(const ymir_box3d_soa_world* world, b3JointDef* base, int slot, const ymir_box3d_soa_joint_desc* d)
+{
+    base->bodyIdA = world->bodies[d->body_a];
+    base->bodyIdB = world->bodies[d->body_b];
+    base->forceThreshold = ymir_soa_threshold(d->force_threshold);
+    base->torqueThreshold = ymir_soa_threshold(d->torque_threshold);
+    base->userData = (void*)((uintptr_t)slot + 1u);
+}
+
 // Creates a joint between two existing bodies. The joint frame is built in world space (origin at the
 // anchor, z along the axis) and expressed in each body's local frame, so the creation pose is zero.
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
@@ -883,7 +935,8 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
         !ymir_soa_finite(d->linear_hertz) || !ymir_soa_finite(d->linear_damping) || !ymir_soa_finite(d->max_force) ||
         !ymir_soa_finite(d->angular_hertz) || !ymir_soa_finite(d->angular_damping) || !ymir_soa_finite(d->max_torque) ||
         d->linear_hertz < 0.0f || d->linear_damping < 0.0f || d->max_force < 0.0f || d->angular_hertz < 0.0f ||
-        d->angular_damping < 0.0f || d->max_torque < 0.0f)
+        d->angular_damping < 0.0f || d->max_torque < 0.0f || !ymir_soa_threshold_ok(d->force_threshold) ||
+        !ymir_soa_threshold_ok(d->torque_threshold))
     {
         return YMIR_SOA_INVALID_ARGUMENT;
     }
@@ -908,10 +961,9 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
     if (d->kind == YMIR_SOA_JOINT_REVOLUTE)
     {
         b3RevoluteJointDef def = b3DefaultRevoluteJointDef();
-        def.base.bodyIdA = world->bodies[d->body_a];
-        def.base.bodyIdB = world->bodies[d->body_b];
         def.base.localFrameA = local_a;
         def.base.localFrameB = local_b;
+        ymir_soa_joint_base(world, &def.base, slot, d);
         def.enableLimit = d->enable_limit != 0;
         def.lowerAngle = d->lower;
         def.upperAngle = d->upper;
@@ -920,10 +972,9 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
     else if (d->kind == YMIR_SOA_JOINT_SPHERICAL)
     {
         b3SphericalJointDef def = b3DefaultSphericalJointDef();
-        def.base.bodyIdA = world->bodies[d->body_a];
-        def.base.bodyIdB = world->bodies[d->body_b];
         def.base.localFrameA = local_a;
         def.base.localFrameB = local_b;
+        ymir_soa_joint_base(world, &def.base, slot, d);
         def.enableConeLimit = d->enable_limit != 0 && d->cone_angle > 0.0f;
         def.coneAngle = d->cone_angle;
         def.enableTwistLimit = d->enable_limit != 0;
@@ -934,10 +985,9 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
     else if (d->kind == YMIR_SOA_JOINT_MOTOR)
     {
         b3MotorJointDef def = b3DefaultMotorJointDef();
-        def.base.bodyIdA = world->bodies[d->body_a];
-        def.base.bodyIdB = world->bodies[d->body_b];
         def.base.localFrameA = local_a;
         def.base.localFrameB = local_b;
+        ymir_soa_joint_base(world, &def.base, slot, d);
         def.linearHertz = d->linear_hertz;
         def.linearDampingRatio = d->linear_damping;
         def.maxSpringForce = d->max_force;
@@ -949,10 +999,9 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
     else
     {
         b3WeldJointDef def = b3DefaultWeldJointDef();
-        def.base.bodyIdA = world->bodies[d->body_a];
-        def.base.bodyIdB = world->bodies[d->body_b];
         def.base.localFrameA = local_a;
         def.base.localFrameB = local_b;
+        ymir_soa_joint_base(world, &def.base, slot, d);
         joint = b3CreateWeldJoint(world->world_id, &def);
     }
     if (B3_IS_NULL(joint))
@@ -1009,6 +1058,21 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_destroy_joint(ymir_box3d_soa_world*
         return YMIR_SOA_INVALID_ARGUMENT;
     }
     ymir_soa_retire_joint(world, joint);
+    return YMIR_SOA_OK;
+}
+
+// Sets a live joint's thresholds (see the joint desc), named by lane and generation like destroy_joint. Refusals change nothing.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_set_joint_thresholds(
+    ymir_box3d_soa_world* world, int32_t joint, uint32_t generation, float force_threshold, float torque_threshold)
+{
+    if (world == NULL || joint < 0 || joint >= world->joint_count || world->joint_kind[joint] > YMIR_SOA_JOINT_MOTOR ||
+        world->joint_generation[joint] != generation || !ymir_soa_threshold_ok(force_threshold) ||
+        !ymir_soa_threshold_ok(torque_threshold))
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    b3Joint_SetForceThreshold(world->joints[joint], ymir_soa_threshold(force_threshold));
+    b3Joint_SetTorqueThreshold(world->joints[joint], ymir_soa_threshold(torque_threshold));
     return YMIR_SOA_OK;
 }
 
@@ -1111,6 +1175,21 @@ static void ymir_soa_collect_facts(ymir_box3d_soa_world* world)
     ymir_box3d_soa_facts* f = &world->facts;
     f->begin_count = f->end_count = f->hit_count = 0;
     f->begin_dropped = f->end_dropped = f->hit_dropped = 0;
+    f->overload_count = 0;
+    b3JointEvents joint_events = b3World_GetJointEvents(world->world_id);
+    for (int i = 0; i < joint_events.count; ++i)
+    {
+        int j = (int)((uintptr_t)joint_events.jointEvents[i].userData) - 1;
+        if (j < 0 || j >= world->joint_count || world->joint_kind[j] == YMIR_SOA_JOINT_REMOVED)
+        {
+            continue;
+        }
+        b3Vec3 force = b3Joint_GetConstraintForce(world->joints[j]);
+        b3Vec3 torque = b3Joint_GetConstraintTorque(world->joints[j]);
+        world->overload_facts[f->overload_count++] = (ymir_box3d_soa_overload_fact){
+            .joint_lane = j, .joint_generation = world->joint_generation[j],
+            .force = {force.x, force.y, force.z}, .torque = {torque.x, torque.y, torque.z}};
+    }
     b3ContactEvents events = b3World_GetContactEvents(world->world_id);
     for (int i = 0; i < events.beginCount; ++i)
     {
@@ -1577,6 +1656,12 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         .joint_origin_x = jb + 12 * m,
         .joint_origin_y = jb + 13 * m,
         .joint_origin_z = jb + 14 * m,
+        .joint_constraint_force_x = jb + 15 * m,
+        .joint_constraint_force_y = jb + 16 * m,
+        .joint_constraint_force_z = jb + 17 * m,
+        .joint_constraint_torque_x = jb + 18 * m,
+        .joint_constraint_torque_y = jb + 19 * m,
+        .joint_constraint_torque_z = jb + 20 * m,
         .contact_impulse = base + YMIR_SOA_CONTACT_IMPULSE_LANE * n,
         .contact_count = world->contact_count,
         .material_id = world->material_id,
@@ -1687,5 +1772,6 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_facts(const ymir_box3d_soa_worl
     facts->begin = world->begin_facts;
     facts->end = world->end_facts;
     facts->hit = world->hit_facts;
+    facts->overload = world->overload_facts;
     return YMIR_SOA_OK;
 }
