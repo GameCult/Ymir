@@ -472,7 +472,7 @@ public sealed partial class Box3DSoaFluidTests
         return (world, bone, skin, edges, load);
     }
 
-    private static string SkinReading(bool solid, int hz, float attach, out float stretch, out int inside, out float place)
+    private static string SkinReading(bool solid, int hz, float attach, out float stretch, out int inside, out float place, out int reachedCount)
     {
         var (world, bone, skin, edges, load) = SkinScene(solid, attach);
         using (world)
@@ -503,22 +503,27 @@ public sealed partial class Box3DSoaFluidTests
             }
             var mean = (float)(sum / skin.Length);
             place = MathF.Abs(mean - SkinBone);
+            reachedCount = reached.Count(x => x);
             return $"SKIN_SIEVE {(solid ? "solid" : "fluid")} {hz} Hz at attach compliance {attach:E0}: worst skin edge stretch {stretch:F4}, place off {place:E2}, load particles inside the bone {inside}, " +
-                   $"skin mean axis distance {mean:F5} (bone {SkinBone}), load reaching the bone surface {reached.Count(x => x)} of {load.Length}";
+                   $"skin mean axis distance {mean:F5} (bone {SkinBone}), load reaching the bone surface {reachedCount} of {load.Length}";
         }
     }
 
-    // Bounds follow lodur:ruling:deterministic-bound-margin and lodur:ruling:deterministic-bound-zero-reading. Worst edge stretch over the four rows: shipped 0.0214
-    // (fluid 0.0156 / 0.0204, solid 0.0196 / 0.0214 at 60 / 120 Hz). Ma (solve_attachments returns at entry) 0.0560 (120 Hz) to 0.1475 (60 Hz), and Mc (the skin's
-    // attachment compliance x 1e6 here, not in the solver) 0.0559 to 0.1465: the skin free-falls past the bone before the load arrives, so both read alike on every
-    // row. Bound sqrt(0.0214 x 0.0559) = 0.0346, separation 2.6, both mutants claimed. The place bound is |skin mean axis distance - 0.07| at 3 s: shipped reads 0
-    // to the print's 1e-5 (raw 6e-8 to 2.7e-7, float32 noise), half a unit 5e-6 by the zero-reading rule; Ma 0.331 to 0.350 (axis distance 0.402 to 0.420), Mc 0.331 to
-    // 0.349: bound sqrt(5e-6 x 0.331) = 1.29e-3, separation 6.6e4. Inside the bone is exact zero in every row, shipped and Ma and Mc alike: the capsule
-    // body itself stops a particle, so the count claims no mutant of the attachment and guards the weld and body contact. The load reaching the bone surface (a centre
-    // within the bone radius + 1.5 r) reads 103 to 174 of 343 fluid and 33 to 41 of 64 solid shipped: the load rests between the skin's particles on the bone, as a
-    // skin of six particles a ring leaves it, and is printed, not asserted.
+    // Bounds follow lodur:ruling:deterministic-bound-margin; the reached floor also lodur:ruling:deterministic-bound-zero-reading. Worst edge stretch over the four rows:
+    // shipped 0.0214 (fluid 0.0156 / 0.0204, solid 0.0196 / 0.0214 at 60 / 120 Hz). Ma (solve_attachments returns at entry) 0.0560 (120 Hz) to 0.1475 (60 Hz), and Mc (the
+    // skin's attachment compliance x 1e6 here, not in the solver) 0.0559 to 0.1465: the skin free-falls past the bone before the load arrives, so both read alike on every
+    // row. Bound sqrt(0.0214 x 0.0559) = 0.0346, separation 2.6, both mutants claimed. The place bound is |skin mean axis distance - 0.07| at 3 s: shipped reads 6e-8 to
+    // 2.7e-7 (float32 noise, not zero, so no zero-reading convention), worst 2.7e-7; the least claimed mutant is attachment compliance x 100 (1e-1 here) at 4.8e-4 to 5.1e-4;
+    // bound sqrt(2.7e-7 x 4.8e-4) = 3.6e-6, separation 1.8e3. Compliance x 10 reads 4.9e-6 on every row and fails the bound too (it also trips stretch on 3 rows); Ma and Mc
+    // read 0.331 to 0.350. Not claimed: bend compliance x 1e6 and 1 to 3 substeps pass every row (4 is pinned by construction only). Inside the bone is exact zero in every
+    // row for shipped, Ma and Mc: the capsule body itself stops a particle against those. It claims the body-contact mutant (body_contacts returns at entry): 119 to 2151
+    // inside, fluid and solid, against 0. The load reaching the bone surface (a centre within the bone radius + 1.5 r) reads 33 to 174 shipped (fluid 174 / 103, solid 41 / 33 at
+    // 60 / 120 Hz; of 343 fluid and 64 solid): the load rests between the skin's particles on the bone, as a skin of six particles a ring leaves it. It is asserted as the proof the
+    // load arrives: with the load block 3 m off the bone it reads 0 on every row while stretch, inside and place all pass. Floor sqrt(33 x 1) = 5.74, the mutant's zero counting as
+    // one unit by the zero-reading rule, separation 33.
     private const float SkinStretch = 0.0346f;
-    private const float SkinPlace = 1.29e-3f;
+    private const float SkinPlace = 3.6e-6f;
+    private const float SkinReached = 5.74f;
 
     [Theory]
     [InlineData(false, 60)]
@@ -528,10 +533,11 @@ public sealed partial class Box3DSoaFluidTests
     public void Skin_on_a_bone_holds_under_pour_and_drop(bool solid, int hz)
     {
         // The case the corner-pinned sheet above is not: skin attached along its length to a bone (lodur:ruling:ymir-sheet-sieve-at-budget-substeps,
-        // lodur:ruling:bds-body-skeleton-particle-flesh-rough). 3 s at 4 substeps under a pour or a drop of solids from 25 cm; nothing may enter the bone.
-        var line = SkinReading(solid, hz, 1e-3f, out var stretch, out var inside, out var place);
+        // lodur:ruling:bds-body-skeleton-particle-flesh-rough). 3 s at 4 substeps under a pour or a drop of solids from 25 cm; the load must reach the bone, nothing may enter it.
+        var line = SkinReading(solid, hz, 1e-3f, out var stretch, out var inside, out var place, out var reached);
         Readings.Add(line);
         Assert.Equal(0, inside);
+        Assert.True(reached >= SkinReached, $"{line}: load reaching the bone surface under {SkinReached}");
         Assert.True(stretch <= SkinStretch, $"{line}: stretch over {SkinStretch}");
         Assert.True(place <= SkinPlace, $"{line}: place off the bone by over {SkinPlace}");
     }
