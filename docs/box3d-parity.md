@@ -6,14 +6,17 @@ Box3D v0.1.0 is Ymir's physics implementation and executable semantics oracle.
 The production native session ABI and snapshot lowering are live; explicit
 retained-world ownership is still being connected. The exact upstream source is pinned as the
 `extern/box3d` submodule at the GameCult fork's commit
-`fb719c4` (substep callback; `https://eureka.gamecult.org/forge/GameCult/box3d`, branch `gamecult/step-normal-impulse`).
-The fork is upstream `8441b4a06d6d09dcfb0b0f704df4d847d1437b92` plus three commits: an observed field,
+`c790839` (`https://eureka.gamecult.org/forge/GameCult/box3d`, branch `gamecult/destroy-enlarged-proxy`).
+The fork is upstream `8441b4a06d6d09dcfb0b0f704df4d847d1437b92` plus these commits: an observed field,
 `b3ManifoldPoint.stepNormalImpulse`, the normal impulse each contact point applied over the whole step; a
 static assert that `RELAX_ITERATIONS` is 1, the one setting under which that sum is exact; and a substep callback
 (`b3World_SetSubStepCallback`, with `b3Body_GetSubStepState` and `b3Body_ApplySubStepImpulse`, valid only inside it)
 that the particle phase runs in, after the biased solve and before positions integrate. The first two change no solver
 arithmetic and a world with no callback registered runs exactly as before, so dynamics are bit-identical to upstream
-(the six ABI 8 hashes pin it). To rebase it onto a newer Box3D, re-apply those commits, re-run the Soa impulse and
+(the six ABI 8 hashes pin it). Then the contact friction hook (`ebe346a`, see `soa-world.md`), and a broad-phase
+fix: a proxy destroyed after its step enlarged it, while it was the only buffered move, left its tree ancestors flagged
+enlarged and the empty move buffer skipped the rebuild that clears them, so Debug validation aborted the next step;
+the empty-buffer path now rebuilds (a root walk on a clean tree; the fork's `DestroyEnlargedProxyTest`). To rebase it onto a newer Box3D, re-apply those commits, re-run the Soa impulse and
 particle tests and compare a pile's state hash against the upstream build.
 
 Box3D does not own GameCult entity ids, gameplay policy, persistence, or result
