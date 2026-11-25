@@ -254,6 +254,99 @@ public sealed partial class Box3DSoaFluidTests
         Assert.Throws<InvalidOperationException>(() => world.Remove(patches[0])); // a stale handle
     }
 
+    [Fact]
+    public void Settle_joins_the_lowest_patch_that_holds_the_point()
+    {
+        // Patches at x -0.05 and 0.05 (100 mm apart, radius 70.5 mm: separate); a drop at 0 lies in both discs and joins the lower lane.
+        using var world = WetFloor(16, 4, [(-0.05f, 0f, 0f), (0.05f, 0f, 0f), (0f, 0f, 0f)]);
+        var v = world.View;
+        Assert.True(v.ParticleX[1] - v.ParticleX[0] > 0.0705f && MathF.Abs(v.ParticleX[2] - v.ParticleX[0]) < 0.07f && MathF.Abs(v.ParticleX[2] - v.ParticleX[1]) < 0.07f, "the scene did not hold its geometry");
+        world.Settle([Handle(world, 0)]);
+        world.Settle([Handle(world, 1)]);
+        Assert.Equal(2, LivePatches(world.View));
+        var landed = new Box3DSoaConstraintHandle[1];
+        world.Settle([Handle(world, 2)], landed);
+        v = world.View;
+        Assert.Equal(0, landed[0].Lane);
+        Assert.Equal(2f * DropVolume, v.WetPatchVolume[0], 1e-9f);
+        Assert.Equal(DropVolume, v.WetPatchVolume[1], 1e-9f);
+    }
+
+    [Fact]
+    public void Settle_with_no_lane_joins_the_nearest_patch_of_its_material()
+    {
+        // Three lanes, all taken: lane 0 material 0 at x -0.12, lane 1 material 0 at -0.4, lane 2 material 1 at 0.09. A material 0 drop at 0 lies in no disc and no lane
+        // is free: it joins lane 0, the nearest of its own material (lane 2 is nearer and lane 1 farther, and neither may take it).
+        using var world = WetFloor(16, 3, [(-0.12f, 0f, 0f), (-0.4f, 0f, 0f), (0.09f, 0f, 0f), (0f, 0f, 0f)], material: [0u, 0u, 1u, 0u]);
+        var v = world.View;
+        Assert.True(v.ParticleX[3] - v.ParticleX[0] > 0.0705f && v.ParticleX[2] - v.ParticleX[3] > 0.0705f && v.ParticleX[3] - v.ParticleX[0] > v.ParticleX[2] - v.ParticleX[3], "the scene did not hold its geometry");
+        world.Settle([Handle(world, 0), Handle(world, 1), Handle(world, 2)]);
+        Assert.Equal(0, world.FreeWetSlots);
+        var landed = new Box3DSoaConstraintHandle[1];
+        world.Settle([Handle(world, 3)], landed);
+        v = world.View;
+        Assert.Equal(0, landed[0].Lane);
+        Assert.Equal(3, LivePatches(v));
+        Assert.Equal(2f * DropVolume, v.WetPatchVolume[0], 1e-9f);
+        Assert.Equal(DropVolume, v.WetPatchVolume[1], 1e-9f);
+        Assert.Equal(DropVolume, v.WetPatchVolume[2], 1e-9f);
+    }
+
+    [Fact]
+    public void Settle_refusal_unwinds_a_patch_it_created()
+    {
+        // One lane; the floor drop creates the patch, then the pedestal drop finds no lane and no patch on its support: FULL. The created patch and the count go back.
+        using var world = FluidWorld(16, gravityY: -9.81f, wets: 1);
+        world.AddStaticBox(1, (0f, -0.5f, 0f), (2f, 0.5f, 2f), friction: 0.3f);
+        world.AddStaticBox(2, (0.5f, 0.1f, 0f), (0.1f, 0.1f, 0.1f), friction: 0.3f);
+        world.CreateParticles([Fluid((-0.5f, R, 0f)), Fluid((0.5f, 0.2f + R, 0f)), Fluid((-0.45f, R, 0f))]);
+        for (var tick = 0; tick < 20; tick++) world.Step(1f / 60f, Sub);
+        Assert.Equal(0, world.View.WetCount);
+        var before = WorldBytes(world.View);
+        Assert.Throws<InvalidOperationException>(() => world.Settle([Handle(world, 0), Handle(world, 1)]));
+        Assert.Equal(0, world.View.WetCount);
+        Assert.Equal(0, LivePatches(world.View));
+        Assert.True(before.AsSpan().SequenceEqual(WorldBytes(world.View)), "a refused batch changed a lane");
+        var landed = new Box3DSoaConstraintHandle[1];
+        world.Settle([Handle(world, 0)], landed); // the lane is still free and its generation unmoved
+        Assert.Equal(0u, world.View.WetGeneration[0]);
+        // A lane below the count, dead and a step old, is taken again by the batch and must read dead again after the refusal.
+        world.Remove(landed[0]);
+        world.Step(1f / 60f, Sub);
+        before = WorldBytes(world.View);
+        Assert.Equal(1, world.View.WetCount);
+        Assert.Equal(0, LivePatches(world.View));
+        Assert.Throws<InvalidOperationException>(() => world.Settle([Handle(world, 2), Handle(world, 1)]));
+        Assert.Equal(0, LivePatches(world.View));
+        Assert.True(before.AsSpan().SequenceEqual(WorldBytes(world.View)), "a refused batch changed a lane");
+    }
+
+    private static string NativeSource(string file)
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
+        {
+            var path = Path.Combine(dir.FullName, "native", "Ymir.Box3D", file);
+            if (File.Exists(path)) return File.ReadAllText(path);
+        }
+        throw new FileNotFoundException(file);
+    }
+
+    [Fact]
+    public void Remove_wet_never_reaches_the_topology_derivation()
+    {
+        // Rederiving an unchanged graph writes the same bytes, so no lane tells the call from its absence; the rule is pinned on the source (the authority map: remove(WET)
+        // ends in rederive_wet, never in rederive_topology; rederive_wet's callers are settle and remove(WET)).
+        var source = NativeSource("ymir_particles.c").Replace("\r\n", "\n");
+        var at = source.IndexOf("if (type == YMIR_LANES_WET)", StringComparison.Ordinal);
+        Assert.True(at > 0);
+        var branch = source.Substring(at, source.IndexOf("return YMIR_PARTICLES_OK;", at, StringComparison.Ordinal) - at);
+        branch = System.Text.RegularExpressions.Regex.Replace(branch, "//[^\n]*", ""); // the comments name what the branch avoids
+        Assert.Contains("rederive_wet(p);", branch);
+        Assert.DoesNotContain("rederive_topology", branch);
+        Assert.DoesNotContain("TOPO_", branch);
+        Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(source, @"[^_]rederive_wet\(p\);").Count); // settle and remove(WET)
+    }
+
     // ---- determinism ----------------------------------------------------------------------------------------
 
     private static ulong HashWet(Box3DSoaView v)

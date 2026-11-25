@@ -348,7 +348,7 @@ static void kill_wet(ymir_particles* p, int32_t w, uint64_t step_count)
     p->wet_generation[w] += 1;
 }
 
-// wet_volume_body[b] = the sum of the live patches on body b, in wet lane order. The one writer; settle, remove and destroy_particles call it.
+// wet_volume_body[b] = the sum of the live patches on body b, in wet lane order. The one writer; settle and remove(WET) call it.
 static void rederive_wet(ymir_particles* p)
 {
     for (int32_t b = 0; b < p->body_capacity; ++b)
@@ -908,18 +908,12 @@ int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymi
             p->support_particle[i] = -1; // a drop does not keep resting on a solid destroyed under it until the next step
         }
     }
-    int wet_killed = 0;
     for (int32_t w = 0; w < p->wet_count; ++w)
     {
         if (p->wet_live[w] && p->wet_particle[w] >= 0 && !p->particle_live[p->wet_particle[w]])
         {
-            kill_wet(p, w, step_count); // the liquid on a destroyed solid goes with it
-            wet_killed = 1;
+            kill_wet(p, w, step_count); // the liquid on a destroyed solid goes with it; a particle patch is on no body, so wet_volume_body does not change
         }
-    }
-    if (wet_killed)
-    {
-        rederive_wet(p);
     }
     return rederive_topology(p, held ? TOPO_FULL : TOPO_ISOLATED, p->queue, killed);
 }
