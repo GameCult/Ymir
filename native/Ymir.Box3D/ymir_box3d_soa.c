@@ -1466,6 +1466,12 @@ static void ymir_soa_gather_proxies(ymir_box3d_soa_world* world)
         {
             b->size[k] = world->size[(size_t)k * (size_t)world->capacity + (size_t)i];
         }
+        int root = i;
+        for (int hops = 0; hops < world->count && world->parent[root] >= 0; ++hops)
+        {
+            root = world->parent[root]; // the limb tree's root: parents are earlier lanes, so the walk ends
+        }
+        b->root = root;
         b->position[0] = p.x; b->position[1] = p.y; b->position[2] = p.z;
         b->rotation[0] = q.v.x; b->rotation[1] = q.v.y; b->rotation[2] = q.v.z; b->rotation[3] = q.s;
         b->velocity[0] = v.x; b->velocity[1] = v.y; b->velocity[2] = v.z;

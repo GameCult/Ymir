@@ -67,7 +67,8 @@ enum
 
 enum
 {
-    YMIR_ATTACH_FLAG_TETHER = 1u // bounds each particle by the rest path to the nearest point of its two nearest islands of tether attachments
+    YMIR_ATTACH_FLAG_TETHER = 1u, // bounds each particle by the rest path to the nearest point of its two nearest islands of tether attachments
+    YMIR_ATTACH_FLAG_LIMB = 2u    // the particle is flesh of its body's limb tree: contact skips every body whose limb-tree root is the attached body's root; refused on a STATIC attachment
 };
 
 enum
@@ -166,6 +167,7 @@ typedef struct ymir_particle_proxy
     float angular_impulse[3];
     float sub_impulse[3];     // N s: this substep's, applied by the caller before the body's positions integrate
     float sub_angular[3];
+    int32_t root;             // the lane of the body's limb-tree root (the body itself when it has no parent); filled by the caller each step
 } ymir_particle_proxy;
 
 typedef struct ymir_particles
@@ -189,6 +191,9 @@ typedef struct ymir_particles
     uint32_t *phase, *material, *particle_live, *particle_generation;
     uint64_t* particle_removed_at;
     int32_t* component; // derived: the lowest lane of the particle's distance-connected component
+    int32_t *held_start, *held_count; // derived (rederive_topology): the slice of held_body that lists the bodies particle i is attached to (BODY attachments), contact skips them
+    int32_t* held_body;               // derived, attachment capacity: the live BODY attachments' bodies grouped by particle, in attachment lane order
+    int32_t* limb_body;               // derived: the body of the particle's lowest live LIMB attachment, -1 for none; contact skips every body in that body's limb tree
     int32_t *nbr, *nbr_start, *nbr_count; // scratch: the fluid rows' kernel neighbours in walk order, packed (CSR) in an arena of fluid_capacity * YMIR_FLUID_NEIGHBOURS; row i holds nbr_count[i] from nbr_start[i], this substep's
     int32_t *support_body, *support_particle; // sensor: what a fluid particle touched in the last substep, the highest body lane / the first solid lane its row listed touching it; -1 for none, and always -1 for a solid or free lane
     float* density;     // sensor: a fluid particle's number density over its rest density n_i / n0 in the last substep it ran, else 0
