@@ -38,7 +38,8 @@ enum
     YMIR_SOA_DUPLICATE_ID = 2,
     YMIR_SOA_FULL = 3,
     YMIR_SOA_OUT_OF_MEMORY = 4,
-    YMIR_SOA_INTERNAL_ERROR = 5
+    YMIR_SOA_INTERNAL_ERROR = 5,
+    YMIR_SOA_REFERENCED = 6 // remove_body refused: a live attachment or sensor names the body (remove those first)
 };
 
 enum
@@ -47,7 +48,8 @@ enum
     YMIR_SOA_KIND_STATIC_BOX = 1,
     YMIR_SOA_KIND_CAPSULE = 2,
     YMIR_SOA_KIND_BOX = 3,
-    YMIR_SOA_KIND_ANCHOR = 4
+    YMIR_SOA_KIND_ANCHOR = 4,
+    YMIR_SOA_KIND_REMOVED = 5 // a removed body's lane (remove_body): never accepted by add_body
 };
 
 enum
@@ -210,6 +212,9 @@ typedef struct ymir_box3d_soa_view
     const float* contact_impulse;
     const int32_t* contact_count;
     const uint64_t* material_id;
+    // Per body lane: counts the removals of that lane. remove_body refuses a handle whose generation is not the lane's, so a stale
+    // removal never takes a later body in a reused lane. A removed body's lane reads kind REMOVED and every other lane 0 (stable_id 0, parent -1).
+    const uint32_t* body_generation;
     // Per joint slot: counts the destroys of that slot. A grab's handle is (lane, generation); destroy_joint refuses
     // a handle whose generation is not the slot's, so a stale release cannot destroy a later grab in a reused slot.
     const uint32_t* joint_generation;
@@ -416,6 +421,8 @@ typedef struct ymir_box3d_soa_world
     int32_t* limb;
     int32_t* contact_count;
     uint64_t* material_id;
+    uint32_t* body_generation;
+    uint64_t* body_removed_at; // step_count when the lane was removed; reusable once a step has passed
     float* size; // 3 arrays of `capacity` floats, lane-major; written once in add_body
     float* lanes; // YMIR_SOA_BODY_FLOAT_LANES arrays of `capacity` floats, lane-major
     b3JointId* joints;
@@ -479,7 +486,7 @@ static int ymir_soa_is_anchor(uint32_t kind)
 
 static int ymir_soa_is_dynamic(uint32_t kind)
 {
-    return kind != YMIR_SOA_KIND_STATIC_BOX && !ymir_soa_is_anchor(kind);
+    return kind == YMIR_SOA_KIND_SPHERE || kind == YMIR_SOA_KIND_CAPSULE || kind == YMIR_SOA_KIND_BOX;
 }
 
 static void ymir_soa_refresh(ymir_box3d_soa_world* world, int index)
@@ -590,6 +597,8 @@ static void ymir_soa_free(ymir_box3d_soa_world* world)
     free(world->limb);
     free(world->contact_count);
     free(world->material_id);
+    free(world->body_generation);
+    free(world->body_removed_at);
     free(world->size);
     free(world->lanes);
     free(world->joints);
@@ -654,6 +663,8 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     world->limb = (int32_t*)calloc(n, sizeof(int32_t));
     world->contact_count = (int32_t*)calloc(n, sizeof(int32_t));
     world->material_id = (uint64_t*)calloc(n, sizeof(uint64_t));
+    world->body_generation = (uint32_t*)calloc(n, sizeof(uint32_t));
+    world->body_removed_at = (uint64_t*)calloc(n, sizeof(uint64_t));
     world->size = (float*)calloc(n * 3, sizeof(float));
     world->lanes = (float*)calloc(n * YMIR_SOA_BODY_FLOAT_LANES, sizeof(float));
     world->joints = (b3JointId*)calloc(m, sizeof(b3JointId));
@@ -683,7 +694,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
             return YMIR_SOA_OUT_OF_MEMORY;
         }
     }
-    if (world->contact_count == NULL || world->material_id == NULL || world->begin_facts == NULL ||
+    if (world->contact_count == NULL || world->material_id == NULL || world->body_generation == NULL || world->body_removed_at == NULL || world->begin_facts == NULL ||
         world->end_facts == NULL || world->hit_facts == NULL || world->overload_facts == NULL || world->contact_scratch == NULL ||
         world->bodies == NULL || world->stable_id == NULL || world->kind == NULL || world->parent == NULL ||
         world->limb == NULL || world->size == NULL || world->lanes == NULL || world->joints == NULL || world->joint_kind == NULL ||
@@ -729,6 +740,35 @@ YMIR_EXPORT void YMIR_CALL ymir_box3d_soa_destroy(ymir_box3d_soa_world* world)
     ymir_soa_free(world);
 }
 
+// The lane a new body takes: the lowest removed lane whose removing step has completed, else the next fresh lane, else -1. A removed
+// lane is not reused within the step that removed it, so lanes a caller read that step stay meaningful.
+static int ymir_soa_body_slot(const ymir_box3d_soa_world* world)
+{
+    for (int i = 0; i < world->count; ++i)
+    {
+        if (world->kind[i] == YMIR_SOA_KIND_REMOVED && world->step_count > world->body_removed_at[i])
+        {
+            return i;
+        }
+    }
+    return world->count < world->capacity ? world->count : -1;
+}
+
+// Bodies that add_body could create right now.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_free_body_slots(const ymir_box3d_soa_world* world)
+{
+    if (world == NULL)
+    {
+        return 0;
+    }
+    int32_t free_slots = world->capacity - world->count;
+    for (int i = 0; i < world->count; ++i)
+    {
+        free_slots += world->kind[i] == YMIR_SOA_KIND_REMOVED && world->step_count > world->body_removed_at[i];
+    }
+    return free_slots;
+}
+
 static int32_t ymir_soa_check_body(const ymir_box3d_soa_world* world, const ymir_box3d_soa_body_desc* d)
 {
     if (d->kind > YMIR_SOA_KIND_ANCHOR || !ymir_soa_finite3(d->position) || !ymir_soa_finite3(d->velocity) ||
@@ -751,7 +791,7 @@ static int32_t ymir_soa_check_body(const ymir_box3d_soa_world* world, const ymir
     {
         return YMIR_SOA_INVALID_ARGUMENT;
     }
-    if (d->parent < -1 || d->parent >= world->count)
+    if (d->parent < -1 || d->parent >= world->count || (d->parent >= 0 && world->kind[d->parent] == YMIR_SOA_KIND_REMOVED))
     {
         return YMIR_SOA_INVALID_ARGUMENT;
     }
@@ -782,13 +822,13 @@ static int32_t ymir_soa_check_body(const ymir_box3d_soa_world* world, const ymir
             }
             break;
     }
-    if (world->count >= world->capacity)
+    if (ymir_soa_body_slot(world) < 0)
     {
         return YMIR_SOA_FULL;
     }
     for (int i = 0; i < world->count; ++i)
     {
-        if (world->stable_id[i] == d->stable_id)
+        if (world->kind[i] != YMIR_SOA_KIND_REMOVED && world->stable_id[i] == d->stable_id)
         {
             return YMIR_SOA_DUPLICATE_ID;
         }
@@ -810,6 +850,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_body(
         return status;
     }
 
+    int slot = ymir_soa_body_slot(world);
     b3BodyDef body_def = b3DefaultBodyDef();
     body_def.type = ymir_soa_is_anchor(d->kind) ? b3_kinematicBody
                     : ymir_soa_is_dynamic(d->kind) ? b3_dynamicBody
@@ -818,7 +859,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_body(
     body_def.rotation = (b3Quat){{d->rotation[0], d->rotation[1], d->rotation[2]}, d->rotation[3]};
     body_def.linearVelocity = (b3Vec3){d->velocity[0], d->velocity[1], d->velocity[2]};
     body_def.enableSleep = false;
-    body_def.userData = (void*)((uintptr_t)world->count + 1u); // lane + 1: a shape resolves to its lane
+    body_def.userData = (void*)((uintptr_t)slot + 1u); // lane + 1: a shape resolves to its lane
     b3BodyId body = b3CreateBody(world->world_id, &body_def);
     if (B3_IS_NULL(body))
     {
@@ -862,12 +903,17 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_body(
         }
     }
 
-    int i = world->count++;
+    int i = slot;
+    if (i == world->count)
+    {
+        world->count++;
+    }
     world->bodies[i] = body;
     world->stable_id[i] = d->stable_id;
     world->kind[i] = d->kind;
     world->parent[i] = d->parent;
     world->limb[i] = d->limb;
+    world->contact_count[i] = 0;
     world->material_id[i] = ymir_soa_is_anchor(d->kind) ? 0 : d->material_id;
     /* Publish only the components the kind uses; unused ones read 0 whatever the caller passed. */
     int used = ymir_soa_is_anchor(d->kind) ? 0 : d->kind == YMIR_SOA_KIND_SPHERE ? 1 : d->kind == YMIR_SOA_KIND_CAPSULE ? 2 : 3;
@@ -929,7 +975,8 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
     ymir_box3d_soa_world* world, const ymir_box3d_soa_joint_desc* d, int32_t* index)
 {
     if (world == NULL || d == NULL || d->kind > YMIR_SOA_JOINT_MOTOR || d->body_a < 0 || d->body_a >= world->count ||
-        d->body_b < 0 || d->body_b >= world->count || d->body_a == d->body_b || !ymir_soa_finite3(d->anchor) ||
+        d->body_b < 0 || d->body_b >= world->count || d->body_a == d->body_b ||
+        world->kind[d->body_a] == YMIR_SOA_KIND_REMOVED || world->kind[d->body_b] == YMIR_SOA_KIND_REMOVED || !ymir_soa_finite3(d->anchor) ||
         !ymir_soa_finite3(d->axis) || !ymir_soa_finite(d->lower) || !ymir_soa_finite(d->upper) ||
         !ymir_soa_finite(d->cone_angle) || d->cone_angle < 0.0f || d->cone_angle > B3_PI ||
         !ymir_soa_finite(d->linear_hertz) || !ymir_soa_finite(d->linear_damping) || !ymir_soa_finite(d->max_force) ||
@@ -1076,6 +1123,53 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_set_joint_thresholds(
     return YMIR_SOA_OK;
 }
 
+// Removes a body named by its lane and the lane's generation read when it was added: the one body-ending path. Refused, nothing
+// changed, for a lane that is not a live body, a stale generation, or REFERENCED while a live attachment or sensor names the body.
+// Then: its wet patches go, every joint naming it is retired (ascending lane), Box3D destroys the body, and the lane becomes a
+// tombstone (kind REMOVED, every other lane 0, generation + 1) that add_body may reuse once a step has completed.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_remove_body(ymir_box3d_soa_world* world, int32_t lane, uint32_t generation)
+{
+    if (world == NULL || lane < 0 || lane >= world->count || world->kind[lane] == YMIR_SOA_KIND_REMOVED ||
+        world->body_generation[lane] != generation)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    if (world->particles != NULL)
+    {
+        int32_t status = ymir_particles_release_body(world->particles, lane, world->step_count, NULL, NULL);
+        if (status != YMIR_PARTICLES_OK)
+        {
+            return status;
+        }
+    }
+    for (int j = 0; j < world->joint_count; ++j)
+    {
+        if (world->joint_kind[j] != YMIR_SOA_JOINT_REMOVED && (world->joint_body_a[j] == lane || world->joint_body_b[j] == lane))
+        {
+            ymir_soa_retire_joint(world, j);
+        }
+    }
+    b3DestroyBody(world->bodies[lane]);
+    world->bodies[lane] = (b3BodyId){0};
+    world->kind[lane] = YMIR_SOA_KIND_REMOVED;
+    world->stable_id[lane] = 0;
+    world->parent[lane] = -1;
+    world->limb[lane] = 0;
+    world->contact_count[lane] = 0;
+    world->material_id[lane] = 0;
+    world->body_removed_at[lane] = world->step_count;
+    world->body_generation[lane] += 1;
+    for (int k = 0; k < 3; ++k)
+    {
+        world->size[(size_t)k * (size_t)world->capacity + (size_t)lane] = 0.0f;
+    }
+    for (int k = 0; k < YMIR_SOA_BODY_FLOAT_LANES; ++k)
+    {
+        ymir_soa_lane(world, k)[lane] = 0.0f;
+    }
+    return YMIR_SOA_OK;
+}
+
 // Applies the caller's force and torque lanes to the dynamic bodies, then clears them: a lane holds one
 // step's intent, so a stale force is never applied twice. A non-finite value refuses the whole step
 // before any body is touched.
@@ -1087,7 +1181,7 @@ static int32_t ymir_soa_apply_write_lanes(ymir_box3d_soa_world* world)
         lane[k] = ymir_soa_lane(world, YMIR_SOA_STATE_LANES + k);
         for (int i = 0; i < world->count; ++i)
         {
-            if (!ymir_soa_finite(lane[k][i]))
+            if (world->kind[i] != YMIR_SOA_KIND_REMOVED && !ymir_soa_finite(lane[k][i]))
             {
                 return YMIR_SOA_INVALID_ARGUMENT;
             }
@@ -1199,6 +1293,10 @@ static void ymir_soa_collect_facts(ymir_box3d_soa_world* world)
     for (int i = 0; i < events.endCount; ++i)
     {
         const b3ContactEndTouchEvent* e = events.endEvents + i;
+        if (!b3Shape_IsValid(e->shapeIdA) || !b3Shape_IsValid(e->shapeIdB))
+        {
+            continue; // a removed body's shape: attributed by the retired table
+        }
         ymir_soa_touch_fact(world, world->end_facts, &f->end_count, &f->end_dropped, e->shapeIdA, e->shapeIdB);
     }
     for (int i = 0; i < events.hitCount; ++i)
@@ -1230,6 +1328,10 @@ static void ymir_soa_collect_contact_lanes(ymir_box3d_soa_world* world)
     float* lane = ymir_soa_lane(world, YMIR_SOA_CONTACT_IMPULSE_LANE);
     for (int i = 0; i < world->count; ++i)
     {
+        if (world->kind[i] == YMIR_SOA_KIND_REMOVED)
+        {
+            continue; // its lanes stay 0
+        }
         int n = b3Body_GetContactData(world->bodies[i], world->contact_scratch, world->capacity);
         float impulse = 0.0f;
         for (int c = 0; c < n; ++c)
@@ -1253,6 +1355,12 @@ static void ymir_soa_gather_proxies(ymir_box3d_soa_world* world)
     {
         ymir_particle_proxy* b = pt->proxies + i;
         uint32_t kind = world->kind[i];
+        if (kind == YMIR_SOA_KIND_REMOVED)
+        {
+            memset(b, 0, sizeof(*b));
+            b->shape = YMIR_PROXY_NONE; // no shape: settle refuses it as a support, particles never touch it
+            continue;
+        }
         b3BodyId body = world->bodies[i];
         b3Pos p = b3Body_GetPosition(body);
         b3Quat q = b3Body_GetRotation(body);
@@ -1300,6 +1408,10 @@ static void ymir_soa_particle_substep(b3WorldId world_id, int sub_step, float h,
         b3Pos c;
         b3Quat q;
         b3Vec3 v, w;
+        if (world->kind[i] == YMIR_SOA_KIND_REMOVED)
+        {
+            continue; // its proxy stays zero
+        }
         if (!b3Body_GetSubStepState(world->bodies[i], &c, &q, &v, &w))
         {
             b->inv_mass = 0.0f;
@@ -1371,7 +1483,10 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_step(ymir_box3d_soa_world* world, f
     ymir_soa_collect_contact_lanes(world);
     for (int i = 0; i < world->count; ++i)
     {
-        ymir_soa_refresh(world, i);
+        if (world->kind[i] != YMIR_SOA_KIND_REMOVED)
+        {
+            ymir_soa_refresh(world, i);
+        }
     }
     for (int j = 0; j < world->joint_count; ++j)
     {
@@ -1532,6 +1647,11 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_attach(
     {
         return YMIR_SOA_INVALID_ARGUMENT;
     }
+    if (d != NULL && d->kind == YMIR_ATTACH_BODY && d->body >= 0 && d->body < world->count &&
+        world->kind[d->body] == YMIR_SOA_KIND_REMOVED)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
     return ymir_particles_attach(world->particles, d, world->count, world->step_count, out);
 }
 
@@ -1570,6 +1690,13 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create_sensors(ymir_box3d_soa_world
     if (world == NULL || world->particles == NULL)
     {
         return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    for (int32_t k = 0; d != NULL && k < n; ++k)
+    {
+        if (d[k].body >= 0 && d[k].body < world->count && world->kind[d[k].body] == YMIR_SOA_KIND_REMOVED)
+        {
+            return YMIR_SOA_INVALID_ARGUMENT;
+        }
     }
     return ymir_particles_create_sensors(world->particles, n, d, world->count, world->step_count, out);
 }
@@ -1665,6 +1792,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         .contact_impulse = base + YMIR_SOA_CONTACT_IMPULSE_LANE * n,
         .contact_count = world->contact_count,
         .material_id = world->material_id,
+        .body_generation = world->body_generation,
         .joint_generation = world->joint_generation,
         .particle_impulse_x = base + (YMIR_SOA_PARTICLE_IMPULSE_LANE + 0) * n,
         .particle_impulse_y = base + (YMIR_SOA_PARTICLE_IMPULSE_LANE + 1) * n,

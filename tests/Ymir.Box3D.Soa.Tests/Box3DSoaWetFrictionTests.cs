@@ -25,7 +25,7 @@ public sealed partial class Box3DSoaFluidTests
         world.CreateParticles([Fluid((patchAt.X, DropRadius, patchAt.Z), FluidMass * scale * scale * scale, DropRadius, material: 1u)]);
         for (var tick = 0; tick < 20; tick++) world.Step(Dt, Sub);
         if (patch) world.Settle([Handle(world, 0)]); else world.DestroyParticles([Handle(world, 0)]);
-        var lanes = boxes.Select((at, i) => world.AddBox(10ul + (ulong)i, (at.X, 0.1f, at.Z), (0.1f, 0.1f, 0.1f), BoxMass / 0.008f, friction: 0.6f)).ToArray();
+        var lanes = boxes.Select((at, i) => (int)world.AddBox(10ul + (ulong)i, (at.X, 0.1f, at.Z), (0.1f, 0.1f, 0.1f), BoxMass / 0.008f, friction: 0.6f)).ToArray();
         return (world, lanes);
     }
 

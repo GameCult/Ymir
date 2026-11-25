@@ -10,7 +10,9 @@ public enum Box3DSoaKind : uint
     Capsule = 2,
     Box = 3,
     /// <summary>A kinematic body with no shape: it never collides or is hit, and only <see cref="Box3DSoaWorld.SetAnchorTarget"/> moves it.</summary>
-    Anchor = 4
+    Anchor = 4,
+    /// <summary>The kind lane of a removed body (a tombstone, from RemoveBody): every other lane reads 0 and the parent -1.</summary>
+    Removed = 5
 }
 
 public enum Box3DSoaJointKind : uint
@@ -220,6 +222,15 @@ public readonly record struct Box3DSoaJointHandle(int Lane, uint Generation)
     public static implicit operator int(Box3DSoaJointHandle handle) => handle.Lane;
 }
 
+/// <summary>
+/// A body's identity: its lane and the lane's generation when it was added. Converts to the lane for reading lanes and for every
+/// parameter that names a body; <see cref="Box3DSoaWorld.RemoveBody"/> takes the whole handle and refuses one from an earlier occupant of the lane.
+/// </summary>
+public readonly record struct Box3DSoaBodyHandle(int Lane, uint Generation)
+{
+    public static implicit operator int(Box3DSoaBodyHandle handle) => handle.Lane;
+}
+
 /// <summary>The closest hit of a ray. <see cref="Hit"/> false is a miss and every other field is then default.</summary>
 public readonly record struct Box3DSoaRayHit(
     bool Hit, int Lane, ulong StableId, (float X, float Y, float Z) Point, (float X, float Y, float Z) Normal, float Fraction);
@@ -302,6 +313,7 @@ internal unsafe struct Box3DSoaViewNative
     public float* ContactImpulse;
     public int* ContactCount;
     public ulong* MaterialId;
+    public uint* BodyGeneration;
     public uint* JointGeneration;
     public float* ParticleImpulseX;
     public float* ParticleImpulseY;
@@ -554,6 +566,14 @@ internal static unsafe partial class Box3DSoaNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_remove_body(nint world, int lane, uint generation);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_free_body_slots(nint world);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ymir_box3d_soa_set_joint_thresholds(nint world, int joint, uint generation, float forceThreshold, float torqueThreshold);
 
     [LibraryImport(Library)]
@@ -694,6 +714,10 @@ public readonly unsafe struct Box3DSoaView
     public ReadOnlySpan<int> ContactCount => Lane(_v.ContactCount, Count);
     /// <summary>The material id the body was added with (0 by default).</summary>
     public ReadOnlySpan<ulong> MaterialId => Lane(_v.MaterialId, Count);
+    /// <summary>Per body lane, the number of times it has been removed. A body's handle is its lane and the generation read when it was added;
+    /// <see cref="Box3DSoaWorld.RemoveBody"/> refuses a handle from an earlier occupant of the lane. <see cref="Count"/> is the high-water mark of lanes
+    /// ever used: a lane with kind <see cref="Box3DSoaKind.Removed"/> is free (reused once a step has completed).</summary>
+    public ReadOnlySpan<uint> BodyGeneration => Lane(_v.BodyGeneration, Count);
 
     /// <summary>Per joint slot, the number of times it has been destroyed. A joint's handle is its lane and the generation read
     /// when it was added; <see cref="Box3DSoaWorld.DestroyJoint"/> refuses a handle from an earlier occupant of the slot.</summary>
@@ -960,7 +984,7 @@ public sealed class Box3DSoaWorld : IDisposable
     }
 
     /// <summary>Adds a dynamic sphere; returns its lane index.</summary>
-    public int AddSphere(
+    public Box3DSoaBodyHandle AddSphere(
         ulong stableId, (float X, float Y, float Z) position, float radius, float density,
         (float X, float Y, float Z) velocity = default, float friction = 0.6f, float restitution = 0f,
         int parent = -1, int limb = 0, float rollingResistance = 0f, ulong materialId = 0) =>
@@ -968,7 +992,7 @@ public sealed class Box3DSoaWorld : IDisposable
             velocity, friction, restitution, parent, limb, rollingResistance, materialId));
 
     /// <summary>Adds a static axis-aligned box centred at <paramref name="position"/>.</summary>
-    public int AddStaticBox(
+    public Box3DSoaBodyHandle AddStaticBox(
         ulong stableId, (float X, float Y, float Z) position, (float X, float Y, float Z) halfExtents,
         float friction = 0.6f, float restitution = 0f, ulong materialId = 0) =>
         AddBody(Describe(Box3DSoaKind.StaticBox, stableId, position, default, halfExtents, 0f,
@@ -979,7 +1003,7 @@ public sealed class Box3DSoaWorld : IDisposable
     /// the body's local Y, swept by <paramref name="radius"/>. <paramref name="rotation"/> is a unit quaternion
     /// x y z w; the default (all zero) means identity.
     /// </summary>
-    public int AddCapsule(
+    public Box3DSoaBodyHandle AddCapsule(
         ulong stableId, (float X, float Y, float Z) position, float radius, float halfLength, float density,
         (float X, float Y, float Z, float W) rotation = default, float friction = 0.6f, float restitution = 0f,
         int parent = -1, int limb = 0, float rollingResistance = 0f, ulong materialId = 0) =>
@@ -987,7 +1011,7 @@ public sealed class Box3DSoaWorld : IDisposable
             default, friction, restitution, parent, limb, rollingResistance, materialId));
 
     /// <summary>Adds a dynamic box with the given half extents; rotation as for <see cref="AddCapsule"/>.</summary>
-    public int AddBox(
+    public Box3DSoaBodyHandle AddBox(
         ulong stableId, (float X, float Y, float Z) position, (float X, float Y, float Z) halfExtents, float density,
         (float X, float Y, float Z, float W) rotation = default, float friction = 0.6f, float restitution = 0f,
         int parent = -1, int limb = 0, ulong materialId = 0) =>
@@ -1084,18 +1108,30 @@ public sealed class Box3DSoaWorld : IDisposable
         }
     }
 
-    /// <summary>Bodies that can still be added. Bodies are never removed here; keep one anchor per cursor and reuse it.</summary>
+    /// <summary>Bodies AddSphere and its siblings could create right now: unused capacity plus lanes removed in an earlier step.</summary>
     public int FreeBodySlots
     {
         get
         {
-            var v = View;
-            return v.Capacity - v.Count;
+            ObjectDisposedException.ThrowIf(_handle == 0, this);
+            return Box3DSoaNative.ymir_box3d_soa_free_body_slots(_handle);
         }
     }
 
+    /// <summary>
+    /// Removes a body: its wet patches go, every joint naming it is retired (their handles go stale), and its lane becomes a tombstone
+    /// (kind <see cref="Box3DSoaKind.Removed"/>, every other lane 0, generation + 1) that a later Add* reuses once a <see cref="Step"/> has completed.
+    /// A touch it was in ends by name in the next step's facts. Throws, changing nothing, for a lane that is not a live body, a stale handle, or
+    /// while a live attachment or liquid sensor names the body (remove those first). Removing an anchor ends its grabs the same way.
+    /// </summary>
+    public void RemoveBody(Box3DSoaBodyHandle body)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        Check(Box3DSoaNative.ymir_box3d_soa_remove_body(_handle, body.Lane, body.Generation));
+    }
+
     /// <summary>Adds a kinematic anchor with no shape (rotation as for <see cref="AddCapsule"/>); returns its lane index.</summary>
-    public int AddAnchor(ulong stableId, (float X, float Y, float Z) position, (float X, float Y, float Z, float W) rotation = default) =>
+    public Box3DSoaBodyHandle AddAnchor(ulong stableId, (float X, float Y, float Z) position, (float X, float Y, float Z, float W) rotation = default) =>
         AddBody(Describe(Box3DSoaKind.Anchor, stableId, position, rotation, default, 0f, default, 0f, 0f, -1, 0));
 
     /// <summary>
@@ -1332,11 +1368,12 @@ public sealed class Box3DSoaWorld : IDisposable
         };
     }
 
-    private int AddBody(Box3DSoaBodyDesc desc)
+    private unsafe Box3DSoaBodyHandle AddBody(Box3DSoaBodyDesc desc)
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         Check(Box3DSoaNative.ymir_box3d_soa_add_body(_handle, desc, out var index));
-        return index;
+        Check(Box3DSoaNative.ymir_box3d_soa_get_view(_handle, out var v));
+        return new Box3DSoaBodyHandle(index, v.BodyGeneration[index]);
     }
 
     public void Step(float timeStep, int subStepCount = 4)

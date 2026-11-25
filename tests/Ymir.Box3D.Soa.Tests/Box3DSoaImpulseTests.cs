@@ -36,7 +36,7 @@ public sealed class Box3DSoaImpulseTests
         var fore = world.AddCapsule(3, (0.78f, 0.2f, 0f), 0.04f, 0.14f, 1000f, rotation: QuarterTurnZ);
         world.AddJoint(Box3DSoaJointKind.Spherical, torso, upper, (0.2f, 0.2f, 0f), (0f, 0f, 1f));
         world.AddJoint(Box3DSoaJointKind.Revolute, upper, fore, (0.6f, 0.2f, 0f), (0f, 0f, 1f));
-        var arm = new[] { (torso, 0.35f * 0.5f * 0.2f * 680f), (upper, CapsuleMass(0.045f, 0.15f, 1000f)), (fore, CapsuleMass(0.04f, 0.14f, 1000f)) };
+        var arm = new (int Lane, float Mass)[] { (torso, 0.35f * 0.5f * 0.2f * 680f), (upper, CapsuleMass(0.045f, 0.15f, 1000f)), (fore, CapsuleMass(0.04f, 0.14f, 1000f)) };
         return (world, arm);
     }
 
