@@ -55,10 +55,10 @@ enum
     YMIR_SOA_JOINT_SPHERICAL = 1,
     YMIR_SOA_JOINT_WELD = 2,
     YMIR_SOA_JOINT_MOTOR = 3,
-    YMIR_SOA_JOINT_REMOVED = 4 // a destroyed joint's lane: never accepted by add_joint
+    YMIR_SOA_JOINT_REMOVED = 4 // a retired joint's lane (destroy_joint): never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 15u
+#define YMIR_SOA_ABI_VERSION 16u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -92,7 +92,7 @@ typedef struct ymir_box3d_soa_body_desc
 // frame origin onto body A's (so B's anchor point onto A's), the angular spring pulls B's frame orientation onto
 // A's. `*_hertz` 0 turns that spring off; `max_force` (N) and `max_torque` (N m) bound what it may apply, so a
 // weak grab hangs below its target. All six are finite and >= 0 and are ignored by the other kinds.
-// `ymir_box3d_soa_destroy_joint` releases a motor joint: its lane becomes a tombstone (kind REMOVED = 4, bodies -1,
+// `ymir_box3d_soa_destroy_joint` releases a joint of any kind: its lane becomes a tombstone (kind REMOVED = 4, bodies -1,
 // every lane 0) that add_joint may reuse only once a step has completed since.
 typedef struct ymir_box3d_soa_joint_desc
 {
@@ -980,17 +980,11 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_joint(
     return YMIR_SOA_OK;
 }
 
-// Releases a motor joint (a grab) named by its lane and the slot's generation read when it was added. Only motor
-// joints: general joint removal is another cut's. A generation that is not the slot's current one is refused, so
-// a stale handle never destroys a later joint in a reused slot. The lane becomes a tombstone, kind REMOVED,
-// bodies -1 and every lane 0, until a later step lets add_joint reuse it.
-YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_destroy_joint(ymir_box3d_soa_world* world, int32_t joint, uint32_t generation)
+// The one path that ends a joint: Box3D destroys it (waking its bodies), the lane becomes a tombstone (kind
+// REMOVED, bodies -1, every lane 0) and its generation moves on, so no handle names it again. add_joint may
+// reuse the lane only once a step has completed since.
+static void ymir_soa_retire_joint(ymir_box3d_soa_world* world, int32_t joint)
 {
-    if (world == NULL || joint < 0 || joint >= world->joint_count || world->joint_kind[joint] != YMIR_SOA_JOINT_MOTOR ||
-        world->joint_generation[joint] != generation)
-    {
-        return YMIR_SOA_INVALID_ARGUMENT;
-    }
     b3DestroyJoint(world->joints[joint], true);
     world->joints[joint] = (b3JointId){0};
     world->joint_kind[joint] = YMIR_SOA_JOINT_REMOVED;
@@ -1002,6 +996,19 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_destroy_joint(ymir_box3d_soa_world*
     {
         ymir_soa_joint_lane(world, lane)[joint] = 0.0f;
     }
+}
+
+// Releases a joint of any kind (a grab, a cut, a tear) named by its lane and the slot's generation read when it
+// was added. A generation that is not the slot's current one, or a removed lane, is refused, so a stale handle never
+// destroys a later joint in a reused slot.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_destroy_joint(ymir_box3d_soa_world* world, int32_t joint, uint32_t generation)
+{
+    if (world == NULL || joint < 0 || joint >= world->joint_count || world->joint_kind[joint] > YMIR_SOA_JOINT_MOTOR ||
+        world->joint_generation[joint] != generation)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    ymir_soa_retire_joint(world, joint);
     return YMIR_SOA_OK;
 }
 

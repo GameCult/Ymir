@@ -167,14 +167,14 @@ public sealed class Box3DSoaGrabTests
     [Fact]
     public void The_managed_side_refuses_a_native_library_of_another_abi_in_either_direction()
     {
-        Assert.Equal(15u, Box3DSoaNative.ymir_box3d_soa_get_abi_version());
-        Box3DSoaWorld.RequireNativeAbi(15);
-        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(14)); // an older native under this managed build
-        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(16)); // a newer one
+        Assert.Equal(16u, Box3DSoaNative.ymir_box3d_soa_get_abi_version());
+        Box3DSoaWorld.RequireNativeAbi(16);
+        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(15)); // an older native under this managed build
+        Assert.Throws<InvalidOperationException>(() => Box3DSoaWorld.RequireNativeAbi(17)); // a newer one
     }
 
     [Fact]
-    public void Only_a_live_motor_joint_can_be_destroyed()
+    public void Every_joint_kind_destroys_through_one_path()
     {
         using var world = new Box3DSoaWorld(capacity: 4, gravityY: 0f, jointCapacity: 3);
         var pin = world.AddStaticBox(1, (0f, 5f, 0f), (0.1f, 0.1f, 0.1f));
@@ -183,16 +183,24 @@ public sealed class Box3DSoaGrabTests
         var hinge = world.AddJoint(Box3DSoaJointKind.Revolute, pin, sphere, (0f, 5f, 0f), (0f, 0f, 1f));
         var weld = world.AddJoint(Box3DSoaJointKind.Weld, anchor, sphere, (1f, 5f, 0f), (0f, 0f, 1f));
         var motor = world.AddMotorJoint(anchor, sphere, (1f, 5f, 0f), (5f, 0.7f, 100f), (0f, 0f, 0f));
-        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(hinge));
-        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(weld));
         Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(new Box3DSoaJointHandle(-1, 0)));
         Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(new Box3DSoaJointHandle(3, 0)));
+        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(new Box3DSoaJointHandle(hinge.Lane, hinge.Generation + 1))); // stale
         var view = world.View;
         Assert.Equal((uint)Box3DSoaJointKind.Revolute, view.JointKind[hinge]);
-        world.DestroyJoint(motor);
-        Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(motor)); // already gone
-        world.Step(Dt); // the live joints still step
-        Assert.Equal((uint)Box3DSoaJointKind.Weld, view.JointKind[weld]);
+        foreach (var joint in new[] { hinge, weld, motor })
+        {
+            world.DestroyJoint(joint);
+            Assert.Equal((uint)Box3DSoaJointKind.Removed, view.JointKind[joint]);
+            Assert.Equal(-1, view.JointBodyA[joint]);
+            Assert.Equal(-1, view.JointBodyB[joint]);
+            Assert.Equal(joint.Generation + 1, view.JointGeneration[joint]);
+            Assert.Equal(0f, view.JointAngle[joint]);
+            Assert.Equal(0f, view.JointOriginX[joint]);
+            Assert.Throws<InvalidOperationException>(() => world.DestroyJoint(joint)); // already gone
+        }
+        world.Step(Dt);
+        Assert.Equal((uint)Box3DSoaJointKind.Removed, view.JointKind[weld]);
     }
 
     [Fact]
