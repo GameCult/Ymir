@@ -1090,6 +1090,13 @@ public sealed class Box3DSoaParticleSourceTests
             Assert.Contains("rederive_topology(p, ", Body(c, $"int32_t ymir_particles_{command}("));
         foreach (var command in new[] { "create_distances", "create_bends", "attach", "remove" })
             Assert.DoesNotContain("TOPO_ISOLATED", Body(c, $"int32_t ymir_particles_{command}("));
+        // emission derives the isolated lanes only (a new particle holds no constraint); destroy names both, the graph changing when a victim held one
+        var created = Body(c, "int32_t ymir_particles_create_particles(");
+        Assert.Contains("TOPO_ISOLATED", created);
+        Assert.DoesNotContain("TOPO_FULL", created);
+        var destroyed = Body(c, "int32_t ymir_particles_destroy_particles(");
+        Assert.Contains("TOPO_ISOLATED", destroyed);
+        Assert.Contains("TOPO_FULL", destroyed);
         Assert.Equal(0, Count(c + h, @"PxReal|physx"));
         // the retired owners stay gone
         var retired = string.Join("|", "create_" + "chain", "split_" + "chain", "destroy_" + "chain", "chain_" + "first", "chain_" + "size", "chain_stable_" + "id",
@@ -1102,7 +1109,7 @@ public sealed class Box3DSoaParticleSourceTests
         // no fluid path runs in a world with no live fluid: both passes sit behind the counter
         var substep = StripComments(Body(c, "void ymir_particles_substep("));
         Assert.Equal(1, Count(substep, @"if \(p->live_fluid > 0\)\s*\{\s*fluid_density\(p\);"));
-        Assert.Equal(1, Count(substep, @"if \(p->live_fluid > 0\)\s*\{\s*fluid_viscosity\(p\);"));
+        Assert.Equal(1, Count(substep, @"if \(p->live_fluid > 0 && viscous_material\(p\)\)\s*\{\s*fluid_viscosity\(p\);"));
         // fluid has one writer of live_fluid pair: the two commands
         Assert.Equal(0, Count(StripComments(c.Replace(Body(c, "int32_t ymir_particles_create_particles("), "").Replace(Body(c, "int32_t ymir_particles_destroy_particles("), "")), @"live_fluid\s*(\+\+|--|[-+]?=[^=])"));
     }

@@ -786,17 +786,13 @@ int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymi
             return YMIR_PARTICLES_INVALID_ARGUMENT;
         }
     }
-    int held = 0; // whether a named particle holds a live distance or attachment: then the graph changes
+    int held = 0; // whether a named particle holds a live distance: then the graph changes (an attachment alone makes no tether lane)
     for (int32_t k = 0; k < n && !held; ++k)
     {
         int32_t i = h[k].lane;
         for (int32_t e = 0; e < p->distance_count && !held; ++e)
         {
             held = p->dist_live[e] && (p->dist_a[e] == i || p->dist_b[e] == i);
-        }
-        for (int32_t a = 0; a < p->attachment_count && !held; ++a)
-        {
-            held = p->att_kind[a] != YMIR_ATTACH_REMOVED && p->att_particle[a] == i;
         }
     }
     int32_t killed = 0;
@@ -1259,7 +1255,7 @@ static int touching(const ymir_particles* p, int32_t i, int32_t j, v3 xi, v3* d,
 
 typedef void (*pair_fn)(ymir_particles* p, void* ctx, int32_t i, int32_t j);
 
-// Rows are the walked particles; `rows` is a phase bit every walked row must carry (0 walks all of them).
+// Rows are the walked particles; `rows` is a phase bit every walked row must hold (0 walks all of them).
 YMIR_INLINE void walk_half(ymir_particles* p, pair_fn fn, void* ctx, uint32_t rows)
 {
     for (int32_t i = 0; i < p->particle_count; ++i)

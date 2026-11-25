@@ -127,6 +127,23 @@ public sealed class Box3DSoaFluidTests
         Readings.Add(line);
     }
 
+    [Fact]
+    public void Destroying_a_lone_attached_particle_leaves_the_tether_lanes_as_before_the_attach()
+    {
+        // A particle with a tether attachment and no distance: does it make a tether lane, and does destroying it leave one behind?
+        using var world = Box3DSoaParticleTests.World(particles: 16, distances: 16, bends: 16, attachments: 4, tethers: 64);
+        var ps = new Box3DSoaParticleHandle[2];
+        world.CreateParticles([new((0f, 0f, 0f), 0.02f, 0.0125f), new((1f, 0f, 0f), 0.02f, 0.0125f)], ps);
+        var before = Snapshot(world.View);
+        world.Attach(Box3DSoaAttachKind.Static, ps[0], point: (0f, 0f, 0f), tether: true);
+        var held = world.View.TetherCount;
+        world.DestroyParticles([ps[0]]);
+        var line = $"HELD_ATTACHMENT tether lanes {before.Count} before the attach, {held} with a lone tethered particle, {world.View.TetherCount} after destroying it";
+        Readings.Add(line);
+        Console.Error.WriteLine(line);
+        SameTethers(before, Snapshot(world.View));
+    }
+
     // ---- scenes ---------------------------------------------------------------------------------------------
 
     private static float Sq(float x) => x * x;
@@ -209,7 +226,7 @@ public sealed class Box3DSoaFluidTests
     // Bounds follow lodur:ruling:deterministic-bound-margin: the geometric mean of the shipped worst and the least claimed mutant, separation >= 1.2.
     // |mean - 1| at 3 s: shipped 0.0124, M2 (cell stays 2 r_max) 0.0152, M7 (fluid pairs also contact) 0.0206: bound sqrt(0.0124 x 0.0152) = 0.0137,
     // separation 1.23. The max density reads 1.3440 shipped, 1.3576 under M2 and 1.2653 under M7: no mutant is 1.2 away, so the max has no
-    // claim; 1.5 is a sanity ceiling (the column compressing under its weight is the one-pass solver, not a defect: probe pours peaked at 1.07).
+    // claim (Mc1, lambda halved, reads 1.2116, 1.11 under shipped; Mc2, pass A without the self term, 1.3340, 1.01: unclaimed, a follow-up); 1.5 is a sanity ceiling (the column compressing under its weight is the one-pass solver, not a defect: probe pours peaked at 1.07).
     private const float ColumnMax = 1.5f;
     private const float ColumnMean = 0.0137f;
     private const float FloorPenetration = 0.233f;
