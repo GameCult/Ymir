@@ -335,7 +335,7 @@ public sealed partial class Box3DSoaFluidTests
     public void Remove_wet_never_reaches_the_topology_derivation()
     {
         // Rederiving an unchanged graph writes the same bytes, so no lane tells the call from its absence; the rule is pinned on the source (the authority map: remove(WET)
-        // ends in rederive_wet, never in rederive_topology; rederive_wet's callers are settle and remove(WET)).
+        // ends in rederive_wet, never in rederive_topology; rederive_wet's callers are settle, remove(WET) and destroy).
         var source = NativeSource("ymir_particles.c").Replace("\r\n", "\n");
         var at = source.IndexOf("if (type == YMIR_LANES_WET)", StringComparison.Ordinal);
         Assert.True(at > 0);
@@ -344,7 +344,7 @@ public sealed partial class Box3DSoaFluidTests
         Assert.Contains("rederive_wet(p);", branch);
         Assert.DoesNotContain("rederive_topology", branch);
         Assert.DoesNotContain("TOPO_", branch);
-        Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(source, @"[^_]rederive_wet\(p\);").Count); // settle and remove(WET)
+        Assert.Equal(3, System.Text.RegularExpressions.Regex.Matches(source, @"[^_]rederive_wet\(p\);").Count); // settle, remove(WET), and destroy when a destroyed solid takes its patches (particle_wet_mu goes dry again)
     }
 
     // ---- determinism ----------------------------------------------------------------------------------------

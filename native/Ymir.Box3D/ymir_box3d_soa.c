@@ -555,6 +555,14 @@ static void ymir_soa_free(ymir_box3d_soa_world* world)
     free(world);
 }
 
+// Per-contact friction: a body carries lane + 1 as user data. Patches change only between steps, so the read is race-free; the hook only lowers.
+static float ymir_soa_contact_friction(void* user_a, void* user_b, b3Vec3 point_a, b3Vec3 point_b, float mixed, void* context)
+{
+    const ymir_particles* p = ((const ymir_box3d_soa_world*)context)->particles;
+    float f = ymir_particles_wet_mu(p, (int32_t)((uintptr_t)user_a) - 1, point_a.x, point_a.y, point_a.z, mixed);
+    return ymir_particles_wet_mu(p, (int32_t)((uintptr_t)user_b) - 1, point_b.x, point_b.y, point_b.z, f);
+}
+
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     int32_t capacity, int32_t joint_capacity, float gravity_x, float gravity_y, float gravity_z,
     int32_t fact_capacity, float hit_threshold, const ymir_particle_capacities* particle_capacities,
@@ -644,6 +652,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     if (world->particles != NULL)
     {
         b3World_SetSubStepCallback(world->world_id, ymir_soa_particle_substep, world);
+        b3World_SetContactFrictionCallback(world->world_id, ymir_soa_contact_friction, world);
     }
 
     *output = world;

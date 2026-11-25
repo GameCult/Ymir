@@ -112,7 +112,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(nbr, int32_t, (int64_t)p->fluid_capacity * YMIR_FLUID_NEIGHBOURS); CARVE(nbr_start, int32_t, np); CARVE(nbr_count, int32_t, np);
     CARVE(wet_body, int32_t, nw); CARVE(wet_particle, int32_t, nw); CARVE(wet_x, float, nw); CARVE(wet_y, float, nw); CARVE(wet_z, float, nw);
     CARVE(wet_radius, float, nw); CARVE(wet_volume, float, nw); CARVE(wet_material, uint32_t, nw); CARVE(wet_live, uint32_t, nw);
-    CARVE(wet_generation, uint32_t, nw); CARVE(wet_removed_at, uint64_t, nw); CARVE(wet_volume_body, float, nx);
+    CARVE(wet_generation, uint32_t, nw); CARVE(wet_removed_at, uint64_t, nw); CARVE(wet_volume_body, float, nx); CARVE(particle_wet_mu, float, np);
     CARVE(wu_code, int32_t, nf); CARVE(wu_x, float, nf); CARVE(wu_y, float, nf); CARVE(wu_z, float, nf); CARVE(wu_volume, float, nf);
     CARVE(dist_a, int32_t, nd); CARVE(dist_b, int32_t, nd); CARVE(dist_rest, float, nd); CARVE(dist_compliance, float, nd);
     CARVE(dist_tension, float, nd); CARVE(dist_live, uint32_t, nd); CARVE(dist_generation, uint32_t, nd);
@@ -184,6 +184,10 @@ ymir_particles* ymir_particles_create(const ymir_particle_capacities* c, int32_t
     for (int32_t w = 0; w < p->wet_capacity; ++w)
     {
         p->wet_body[w] = p->wet_particle[w] = -1; // a free patch lane holds -1 on both supports
+    }
+    for (int32_t i = 0; i < p->particle_capacity; ++i)
+    {
+        p->particle_wet_mu[i] = INFINITY; // dry
     }
     // n0 for h = 1: the Poly6 kernel summed over the simple-cubic lattice of spacing 1/2 within reach (self included); at h it is k / h^3
     float k = 0.0f;
@@ -348,9 +352,14 @@ static void kill_wet(ymir_particles* p, int32_t w, uint64_t step_count)
     p->wet_generation[w] += 1;
 }
 
-// wet_volume_body[b] = the sum of the live patches on body b, in wet lane order. The one writer; settle and remove(WET) call it.
+// wet_volume_body[b] = the sum of the live patches on body b, in wet lane order; particle_wet_mu[i] = the wet friction of the lowest live
+// patch on solid particle i, +inf when dry. The one writer; settle, remove(WET) and destroy call it.
 static void rederive_wet(ymir_particles* p)
 {
+    for (int32_t i = 0; i < p->particle_capacity; ++i)
+    {
+        p->particle_wet_mu[i] = INFINITY;
+    }
     for (int32_t b = 0; b < p->body_capacity; ++b)
     {
         p->wet_volume_body[b] = 0.0f;
@@ -360,6 +369,11 @@ static void rederive_wet(ymir_particles* p)
         if (p->wet_live[w] && p->wet_body[w] >= 0 && p->wet_body[w] < p->body_capacity)
         {
             p->wet_volume_body[p->wet_body[w]] += p->wet_volume[w];
+        }
+        if (p->wet_live[w] && p->wet_particle[w] >= 0 && p->wet_particle[w] < p->particle_capacity &&
+            p->particle_wet_mu[p->wet_particle[w]] == INFINITY)
+        {
+            p->particle_wet_mu[p->wet_particle[w]] = p->mat_wet_friction[p->wet_material[w]];
         }
     }
 }
@@ -908,12 +922,18 @@ int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymi
             p->support_particle[i] = -1; // a drop does not keep resting on a solid destroyed under it until the next step
         }
     }
+    int wet_killed = 0;
     for (int32_t w = 0; w < p->wet_count; ++w)
     {
         if (p->wet_live[w] && p->wet_particle[w] >= 0 && !p->particle_live[p->wet_particle[w]])
         {
             kill_wet(p, w, step_count); // the liquid on a destroyed solid goes with it; a particle patch is on no body, so wet_volume_body does not change
+            wet_killed = 1;
         }
+    }
+    if (wet_killed)
+    {
+        rederive_wet(p); // the dry lane reads +inf again
     }
     return rederive_topology(p, held ? TOPO_FULL : TOPO_ISOLATED, p->queue, killed);
 }
@@ -1778,6 +1798,29 @@ static float proxy_distance(const ymir_particle_proxy* b, v3 x, v3* normal, v3* 
     return d;
 }
 
+// The friction on body `body` at body-frame point (x, y, z): the wet friction of the lowest live patch whose disc holds the point, never above mu.
+// The one patch test, for particle-body contact here and body-body contact through the world's friction hook.
+float ymir_particles_wet_mu(const ymir_particles* p, int32_t body, float x, float y, float z, float mu)
+{
+    if (p == NULL || body < 0 || body >= p->body_capacity || p->wet_volume_body[body] == 0.0f)
+    {
+        return mu;
+    }
+    for (int32_t w = 0; w < p->wet_count; ++w)
+    {
+        if (!p->wet_live[w] || p->wet_body[w] != body)
+        {
+            continue;
+        }
+        v3 d = {x - p->wet_x[w], y - p->wet_y[w], z - p->wet_z[w]};
+        if (vlen(d) <= p->wet_radius[w])
+        {
+            return vmin(mu, p->mat_wet_friction[p->wet_material[w]]);
+        }
+    }
+    return mu;
+}
+
 static float proxy_reach(const ymir_particle_proxy* b)
 {
     if (b->shape == YMIR_PROXY_SPHERE)
@@ -1816,6 +1859,7 @@ static void body_contacts(phase* f)
         {
             continue;
         }
+        int fluid = (p->phase[i] & YMIR_PHASE_FLUID) != 0;
         float mu = p->mat_friction[p->material[i]];
         float r = p->radius[i];
         float wi = p->inv_mass[i];
@@ -1853,7 +1897,14 @@ static void body_contacts(phase* f)
             float w = wi + wb;
             x = vadd(x, vmul(n, depth * wi / w));
             proxy_push(f, b, s, vmul(n, -depth / w));
-            if (mu > 0.0f)
+            float mu_k = mu;
+            if (!fluid)
+            {
+                // A solid on a wet body or wetted itself slips: the lowest wet friction there; a fluid particle keeps its own.
+                v3 l = qrot_inv(b->rotation, vsub(s, c));
+                mu_k = vmin(ymir_particles_wet_mu(p, k, l.x, l.y, l.z, mu), p->particle_wet_mu[i]);
+            }
+            if (mu_k > 0.0f)
             {
                 // Slip of the particle against the body point over this substep, tangential part.
                 v3 rb = vsub(s, (v3){b->position[0], b->position[1], b->position[2]});
@@ -1865,7 +1916,7 @@ static void body_contacts(phase* f)
                 if (sl > 1e-9f)
                 {
                     v3 t = vmul(slip, 1.0f / sl);
-                    float move = vmin(sl, mu * depth);
+                    float move = vmin(sl, mu_k * depth);
                     float wt = wi + proxy_w(b, s, t);
                     x = vsub(x, vmul(t, move * wi / wt));
                     proxy_push(f, b, s, vmul(t, move / wt));

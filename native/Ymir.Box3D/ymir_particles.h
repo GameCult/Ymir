@@ -185,6 +185,7 @@ typedef struct ymir_particles
     float *wet_x, *wet_y, *wet_z, *wet_radius, *wet_volume; // wet_volume m^3; wet_radius = sqrt(volume / (pi YMIR_WET_FILM))
     uint32_t *wet_material, *wet_live, *wet_generation;
     uint64_t* wet_removed_at;
+    float* particle_wet_mu; // derived, per particle lane: the wet friction of the lowest live patch on that solid particle, +inf when dry (rederive_wet)
     float* wet_volume_body; // derived, per body lane: the sum of the live patches on it in wet lane order (rederive_wet, at command time only)
     int32_t* wu_code; // settle's undo log, one entry per distinct drop: a patch lane (merged: its old lanes below) or -(lane + 1) (created)
     float *wu_x, *wu_y, *wu_z, *wu_volume;
@@ -237,6 +238,9 @@ typedef struct ymir_particles
 // Creates the state for the capacities (all >= 0) and `body_capacity` proxies; NULL on failure.
 ymir_particles* ymir_particles_create(const ymir_particle_capacities* capacities, int32_t body_capacity);
 void ymir_particles_free(ymir_particles* p);
+
+// The friction on body lane `body` at body-frame point (x, y, z): the wet friction of the lowest live patch whose disc holds it, never above mu.
+float ymir_particles_wet_mu(const ymir_particles* p, int32_t body, float x, float y, float z, float mu);
 
 // Commands. `step_count` is the world's completed steps: a removed lane is reused once a step has passed, lowest
 // lane first. Every refusal happens before anything changes; a command that would need more tethers than the
