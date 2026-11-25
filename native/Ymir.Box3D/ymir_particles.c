@@ -113,6 +113,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(wet_body, int32_t, nw); CARVE(wet_particle, int32_t, nw); CARVE(wet_x, float, nw); CARVE(wet_y, float, nw); CARVE(wet_z, float, nw);
     CARVE(wet_radius, float, nw); CARVE(wet_volume, float, nw); CARVE(wet_material, uint32_t, nw); CARVE(wet_live, uint32_t, nw);
     CARVE(wet_generation, uint32_t, nw); CARVE(wet_removed_at, uint64_t, nw); CARVE(wet_volume_body, float, nx); CARVE(particle_wet_mu, float, np);
+    CARVE(wet_order, int32_t, nw); CARVE(wet_body_start, int32_t, nx); CARVE(wet_body_count, int32_t, nx); CARVE(wet_body_box, float, (int64_t)nx * 7);
     CARVE(wu_code, int32_t, nf); CARVE(wu_x, float, nf); CARVE(wu_y, float, nf); CARVE(wu_z, float, nf); CARVE(wu_volume, float, nf);
     CARVE(dist_a, int32_t, nd); CARVE(dist_b, int32_t, nd); CARVE(dist_rest, float, nd); CARVE(dist_compliance, float, nd);
     CARVE(dist_tension, float, nd); CARVE(dist_live, uint32_t, nd); CARVE(dist_generation, uint32_t, nd);
@@ -375,6 +376,51 @@ static void rederive_wet(ymir_particles* p)
         {
             p->particle_wet_mu[p->wet_particle[w]] = p->mat_wet_friction[p->wet_material[w]];
         }
+    }
+    // The lookup index: the live body patches grouped by body and sorted by centre x (then lane) in wet_order, with each body's slice, the box
+    // its discs lie in and its largest radius (wet_body_box: min xyz, max xyz, rmax). Insertion sort: it runs at command time over wet_count lanes.
+    int32_t n = 0;
+    for (int32_t w = 0; w < p->wet_count; ++w)
+    {
+        if (p->wet_live[w] && p->wet_body[w] >= 0 && p->wet_body[w] < p->body_capacity)
+        {
+            int32_t k = n++;
+            while (k > 0 && (p->wet_body[p->wet_order[k - 1]] > p->wet_body[w] ||
+                             (p->wet_body[p->wet_order[k - 1]] == p->wet_body[w] && p->wet_x[p->wet_order[k - 1]] > p->wet_x[w])))
+            {
+                p->wet_order[k] = p->wet_order[k - 1];
+                --k;
+            }
+            p->wet_order[k] = w;
+        }
+    }
+    for (int32_t b = 0; b < p->body_capacity; ++b)
+    {
+        p->wet_body_start[b] = p->wet_body_count[b] = 0;
+    }
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t w = p->wet_order[k];
+        int32_t b = p->wet_body[w];
+        float* box = p->wet_body_box + 7 * (int64_t)b;
+        float c[3] = {p->wet_x[w], p->wet_y[w], p->wet_z[w]};
+        if (p->wet_body_count[b]++ == 0)
+        {
+            p->wet_body_start[b] = k;
+            for (int a = 0; a < 3; ++a)
+            {
+                box[a] = c[a] - p->wet_radius[w];
+                box[3 + a] = c[a] + p->wet_radius[w];
+            }
+            box[6] = p->wet_radius[w];
+            continue;
+        }
+        for (int a = 0; a < 3; ++a)
+        {
+            box[a] = vmin(box[a], c[a] - p->wet_radius[w]);
+            box[3 + a] = vmax(box[3 + a], c[a] + p->wet_radius[w]);
+        }
+        box[6] = vmax(box[6], p->wet_radius[w]);
     }
 }
 
@@ -1802,23 +1848,41 @@ static float proxy_distance(const ymir_particle_proxy* b, v3 x, v3* normal, v3* 
 // The one patch test, for particle-body contact here and body-body contact through the world's friction hook.
 float ymir_particles_wet_mu(const ymir_particles* p, int32_t body, float x, float y, float z, float mu)
 {
-    if (p == NULL || body < 0 || body >= p->body_capacity || p->wet_volume_body[body] == 0.0f)
+    if (p == NULL || body < 0 || body >= p->body_capacity || p->wet_body_count[body] == 0)
     {
         return mu;
     }
-    for (int32_t w = 0; w < p->wet_count; ++w)
+    const float* box = p->wet_body_box + 7 * (int64_t)body;
+    if (x < box[0] || x > box[3] || y < box[1] || y > box[4] || z < box[2] || z > box[5])
     {
-        if (!p->wet_live[w] || p->wet_body[w] != body)
+        return mu; // outside every disc's box: a constant check
+    }
+    // The slice is sorted by centre x: only centres within the body's largest radius of x can hold the point. The lowest lane among them wins.
+    const int32_t* slice = p->wet_order + p->wet_body_start[body];
+    int32_t lo = 0, hi = p->wet_body_count[body];
+    while (lo < hi)
+    {
+        int32_t mid = (lo + hi) / 2;
+        if (p->wet_x[slice[mid]] < x - box[6])
         {
-            continue;
+            lo = mid + 1;
         }
-        v3 d = {x - p->wet_x[w], y - p->wet_y[w], z - p->wet_z[w]};
-        if (vlen(d) <= p->wet_radius[w])
+        else
         {
-            return vmin(mu, p->mat_wet_friction[p->wet_material[w]]);
+            hi = mid;
         }
     }
-    return mu;
+    int32_t found = -1;
+    for (int32_t k = lo; k < p->wet_body_count[body] && p->wet_x[slice[k]] <= x + box[6]; ++k)
+    {
+        int32_t w = slice[k];
+        v3 d = {x - p->wet_x[w], y - p->wet_y[w], z - p->wet_z[w]};
+        if ((found < 0 || w < found) && vlen(d) <= p->wet_radius[w])
+        {
+            found = w;
+        }
+    }
+    return found < 0 ? mu : vmin(mu, p->mat_wet_friction[p->wet_material[found]]);
 }
 
 static float proxy_reach(const ymir_particle_proxy* b)

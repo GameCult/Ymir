@@ -185,6 +185,8 @@ typedef struct ymir_particles
     float *wet_x, *wet_y, *wet_z, *wet_radius, *wet_volume; // wet_volume m^3; wet_radius = sqrt(volume / (pi YMIR_WET_FILM))
     uint32_t *wet_material, *wet_live, *wet_generation;
     uint64_t* wet_removed_at;
+    int32_t *wet_order, *wet_body_start, *wet_body_count; // derived lookup index (rederive_wet): live body patches by body then centre x; each body's slice
+    float* wet_body_box; // derived, 7 per body: min xyz and max xyz of its discs' boxes, then its largest radius
     float* particle_wet_mu; // derived, per particle lane: the wet friction of the lowest live patch on that solid particle, +inf when dry (rederive_wet)
     float* wet_volume_body; // derived, per body lane: the sum of the live patches on it in wet lane order (rederive_wet, at command time only)
     int32_t* wu_code; // settle's undo log, one entry per distinct drop: a patch lane (merged: its old lanes below) or -(lane + 1) (created)
