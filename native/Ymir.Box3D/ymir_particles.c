@@ -115,7 +115,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(wet_generation, uint32_t, nw); CARVE(wet_removed_at, uint64_t, nw); CARVE(wet_volume_body, float, nx); CARVE(particle_wet_mu, float, np);
     CARVE(wet_order, int32_t, nw); CARVE(wet_body_start, int32_t, nx); CARVE(wet_body_count, int32_t, nx); CARVE(wet_body_box, float, (int64_t)nx * 7);
     CARVE(sensor_body, int32_t, ns); CARVE(sensor_x, float, ns); CARVE(sensor_y, float, ns); CARVE(sensor_z, float, ns); CARVE(sensor_radius, float, ns);
-    CARVE(sensor_liquid_volume, float, ns); CARVE(sensor_live, uint32_t, ns); CARVE(sensor_generation, uint32_t, ns); CARVE(sensor_removed_at, uint64_t, ns);
+    CARVE(sensor_liquid_volume, float, ns); CARVE(sensor_wet_volume, float, ns); CARVE(sensor_live, uint32_t, ns); CARVE(sensor_generation, uint32_t, ns); CARVE(sensor_removed_at, uint64_t, ns);
     CARVE(wu_code, int32_t, nf); CARVE(wu_x, float, nf); CARVE(wu_y, float, nf); CARVE(wu_z, float, nf); CARVE(wu_volume, float, nf);
     CARVE(dist_a, int32_t, nd); CARVE(dist_b, int32_t, nd); CARVE(dist_rest, float, nd); CARVE(dist_compliance, float, nd);
     CARVE(dist_tension, float, nd); CARVE(dist_live, uint32_t, nd); CARVE(dist_generation, uint32_t, nd);
@@ -356,7 +356,7 @@ static void kill_sensor(ymir_particles* p, int32_t s, uint64_t step_count)
     p->sensor_live[s] = 0;
     p->sensor_body[s] = -1;
     p->sensor_x[s] = p->sensor_y[s] = p->sensor_z[s] = 0.0f;
-    p->sensor_radius[s] = p->sensor_liquid_volume[s] = 0.0f;
+    p->sensor_radius[s] = p->sensor_liquid_volume[s] = p->sensor_wet_volume[s] = 0.0f;
     p->sensor_removed_at[s] = step_count;
     p->sensor_generation[s] += 1;
 }
@@ -2359,6 +2359,64 @@ void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, floa
     }
 }
 
+// The volume of the live wet patches whose centre lies within r of the world point c. A body's patches go through the wet cut's index: the sphere is taken into the
+// body's frame (where its patches' centres are), culled against the box of the body's discs, and only centres within r of its x are walked, in the index's order
+// (bodies ascending, then centre x). Patches on solid particles have no index and are summed after, in wet lane order, at their particle's position.
+static float pooled_volume(const ymir_particles* p, v3 c, float r)
+{
+    float total = 0.0f;
+    float r2 = r * r;
+    for (int32_t b = 0; b < p->body_count && b < p->body_capacity; ++b)
+    {
+        if (p->wet_body_count[b] == 0)
+        {
+            continue;
+        }
+        const ymir_particle_proxy* body = p->proxies + b;
+        v3 l = qrot_inv(body->rotation, vsub(c, (v3){body->position[0], body->position[1], body->position[2]}));
+        const float* box = p->wet_body_box + 7 * (int64_t)b;
+        if (l.x + r < box[0] || l.x - r > box[3] || l.y + r < box[1] || l.y - r > box[4] || l.z + r < box[2] || l.z - r > box[5])
+        {
+            continue;
+        }
+        const int32_t* slice = p->wet_order + p->wet_body_start[b];
+        int32_t lo = 0, hi = p->wet_body_count[b];
+        while (lo < hi)
+        {
+            int32_t mid = (lo + hi) / 2;
+            if (p->wet_x[slice[mid]] < l.x - r)
+            {
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
+            }
+        }
+        for (int32_t k = lo; k < p->wet_body_count[b] && p->wet_x[slice[k]] <= l.x + r; ++k)
+        {
+            int32_t w = slice[k];
+            v3 d = {l.x - p->wet_x[w], l.y - p->wet_y[w], l.z - p->wet_z[w]};
+            if (vdot(d, d) <= r2)
+            {
+                total += p->wet_volume[w];
+            }
+        }
+    }
+    for (int32_t w = 0; w < p->wet_count; ++w)
+    {
+        if (p->wet_live[w] && p->wet_particle[w] >= 0 && p->wet_particle[w] < p->particle_count && p->particle_live[p->wet_particle[w]])
+        {
+            v3 d = vsub(P(p, p->pos_x, p->pos_y, p->pos_z, p->wet_particle[w]), c);
+            if (vdot(d, d) <= r2)
+            {
+                total += p->wet_volume[w];
+            }
+        }
+    }
+    return total;
+}
+
 // Each live sensor reads the liquid inside it: the sum, in lane order, of (2 r)^3 over the live fluid particles whose centre lies within its sphere, against the
 // pose the last substep left each proxy in. It runs whether or not any particle is live, so a sensor never keeps a reading once the liquid is gone.
 static void read_sensors(ymir_particles* p)
@@ -2370,12 +2428,14 @@ static void read_sensors(ymir_particles* p)
             continue;
         }
         float volume = 0.0f;
-        if (p->live_fluid > 0 && p->sensor_body[s] < p->body_count)
+        float pooled = 0.0f;
+        if (p->sensor_body[s] < p->body_count)
         {
             const ymir_particle_proxy* b = p->proxies + p->sensor_body[s];
             v3 c = vadd((v3){b->position[0], b->position[1], b->position[2]}, qrot(b->rotation, (v3){p->sensor_x[s], p->sensor_y[s], p->sensor_z[s]}));
             float r2 = p->sensor_radius[s] * p->sensor_radius[s];
-            for (int32_t i = 0; i < p->particle_count; ++i)
+            pooled = pooled_volume(p, c, p->sensor_radius[s]);
+            for (int32_t i = 0; p->live_fluid > 0 && i < p->particle_count; ++i)
             {
                 if (!p->particle_live[i] || !(p->phase[i] & YMIR_PHASE_FLUID))
                 {
@@ -2390,6 +2450,7 @@ static void read_sensors(ymir_particles* p)
             }
         }
         p->sensor_liquid_volume[s] = volume;
+        p->sensor_wet_volume[s] = pooled;
     }
 }
 
@@ -2601,7 +2662,7 @@ int32_t ymir_particles_create_sensors(ymir_particles* p, int32_t n, const ymir_s
         p->sensor_y[s] = d[k].point[1];
         p->sensor_z[s] = d[k].point[2];
         p->sensor_radius[s] = d[k].radius;
-        p->sensor_liquid_volume[s] = 0.0f; // the first step's end reads it
+        p->sensor_liquid_volume[s] = p->sensor_wet_volume[s] = 0.0f; // the first step's end reads them
         if (s >= p->sensor_count)
         {
             p->sensor_count = s + 1;

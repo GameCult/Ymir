@@ -379,6 +379,7 @@ internal unsafe struct Box3DSoaViewNative
     public float* SensorZ;
     public float* SensorRadius;
     public float* SensorLiquidVolume;
+    public float* SensorWetVolume;
     public uint* SensorLive;
     public uint* SensorGeneration;
     public ulong* SensorRemovedAt;
@@ -823,6 +824,8 @@ public readonly unsafe struct Box3DSoaView
     public ReadOnlySpan<float> SensorRadius => Lane(_v.SensorRadius, SensorCount);
     /// <summary>m^3 of liquid inside each sensor at the end of the last step: the sum of (2 r)^3 over the live fluid particles whose centre was inside, 0 with none. A sensor: the step writes it and nothing reads it back.</summary>
     public ReadOnlySpan<float> SensorLiquidVolume => Lane(_v.SensorLiquidVolume, SensorCount);
+    /// <summary>m^3 of settled liquid at the end of the last step: the sum of the volumes of the live wet patches whose centre was inside each sensor, on any body or solid particle. A Settle, destroy or remove between steps shows at the next step.</summary>
+    public ReadOnlySpan<float> SensorWetVolume => Lane(_v.SensorWetVolume, SensorCount);
     public ReadOnlySpan<uint> SensorLive => Lane(_v.SensorLive, SensorCount);
     public ReadOnlySpan<uint> SensorGeneration => Lane(_v.SensorGeneration, SensorCount);
     public ReadOnlySpan<ulong> SensorRemovedAt => Lane(_v.SensorRemovedAt, SensorCount);

@@ -297,14 +297,16 @@ typedef struct ymir_box3d_soa_view
     const float* body_wet_volume;
     const float* material_wet_friction;
     // Liquid sensors, indexed up to sensor_count: a sphere (point in the body's frame, radius m) fixed in body lane sensor_body; a free lane reads live 0, body -1 and 0 elsewhere.
-    // liquid_volume (m^3) is the sum of (2 r)^3 over the live fluid particles whose centre was inside it at the end of the last step, 0 with no liquid: a sensor, the
-    // step writes it and nothing reads it back.
+    // liquid_volume (m^3) is the sum of (2 r)^3 over the live fluid particles whose centre was inside it at the end of the last step, 0 with no liquid; wet_volume (m^3) is the sum of the
+    // volumes of the live wet patches whose centre was inside it then, on any body or solid particle. End-of-step values: a Settle, destroy or remove between steps shows at the next step.
+    // Sensors: the step writes them and nothing reads them back.
     const int32_t* sensor_body;
     const float* sensor_x;
     const float* sensor_y;
     const float* sensor_z;
     const float* sensor_radius;
     const float* sensor_liquid_volume;
+    const float* sensor_wet_volume;
     const uint32_t* sensor_live;
     const uint32_t* sensor_generation;
     const uint64_t* sensor_removed_at;
@@ -1658,6 +1660,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         view->sensor_z = pt->sensor_z;
         view->sensor_radius = pt->sensor_radius;
         view->sensor_liquid_volume = pt->sensor_liquid_volume;
+        view->sensor_wet_volume = pt->sensor_wet_volume;
         view->sensor_live = pt->sensor_live;
         view->sensor_generation = pt->sensor_generation;
         view->sensor_removed_at = pt->sensor_removed_at;

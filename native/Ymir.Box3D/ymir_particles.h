@@ -203,9 +203,10 @@ typedef struct ymir_particles
     float *wu_x, *wu_y, *wu_z, *wu_volume;
 
     // sensor lanes: a sphere fixed in a body; a free lane reads live 0, body -1 and 0 elsewhere except generation and removed_at. Written by create_sensors and
-    // remove; sensor_liquid_volume is written by end alone (m^3: the sum of (2 r)^3 over the live fluid particles whose centre is inside, at the step's end)
+    // remove; sensor_liquid_volume and sensor_wet_volume are written by end alone, at the step's end (m^3): the sum of (2 r)^3 over the live fluid particles whose centre is inside,
+    // and the sum of the volumes of the live wet patches whose centre is inside, on any body or solid particle
     int32_t* sensor_body;
-    float *sensor_x, *sensor_y, *sensor_z, *sensor_radius, *sensor_liquid_volume;
+    float *sensor_x, *sensor_y, *sensor_z, *sensor_radius, *sensor_liquid_volume, *sensor_wet_volume;
     uint32_t *sensor_live, *sensor_generation;
     uint64_t* sensor_removed_at;
 
