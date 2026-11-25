@@ -20,7 +20,7 @@ public enum Box3DSoaJointKind : uint
     Weld = 2,
     /// <summary>Position springs pulling body B's frame onto body A's, bounded by a maximum force and torque.</summary>
     Motor = 3,
-    /// <summary>The kind lane of a destroyed joint (a tombstone): bodies read -1 and every other lane 0.</summary>
+    /// <summary>The kind lane of a retired joint (a tombstone, from DestroyJoint): bodies read -1 and every other lane 0.</summary>
     Removed = 4
 }
 
@@ -850,7 +850,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 15;
+    private const uint ExpectedAbi = 16;
     private nint _handle;
 
     /// <summary>
@@ -1009,11 +1009,11 @@ public sealed class Box3DSoaWorld : IDisposable
     }
 
     /// <summary>
-    /// Releases a motor joint (a grab); the anchor and the grabbed body stay. The joint's lane becomes a tombstone:
+    /// Releases a joint of any kind (a grab, a cut, a tear); the bodies stay. The joint's lane becomes a tombstone:
     /// kind <see cref="Box3DSoaJointKind.Removed"/>, bodies -1, every other lane 0. It is reused by a later AddJoint only
-    /// once a <see cref="Step"/> has completed, so lanes read this step stay valid. Throws for any other kind of joint
-    /// (general removal is another cut's), a lane that is not a live joint, or a handle whose generation is not the slot's:
-    /// a release made with a stale handle never destroys a later grab in a reused slot.
+    /// once a <see cref="Step"/> has completed, so lanes read this step stay valid. Throws for a lane that is not a live joint
+    /// or a handle whose generation is not the slot's: a release made with a stale handle never destroys a later joint in a reused slot.
+    /// The lanes keep no last state; read what you need before removing.
     /// </summary>
     public void DestroyJoint(Box3DSoaJointHandle joint)
     {
