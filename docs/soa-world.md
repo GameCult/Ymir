@@ -8,11 +8,11 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 13) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 14) so the Aetheria session's contract is untouched.
 
 ## Contract
 
-- Native (ABI 13): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
+- Native (ABI 14): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
   create_particles / destroy_particles / create_distances / create_bends / attach / remove / set_material / free_slots /
   add_body / add_joint / step / get_view / get_facts / set_anchor_target / destroy_joint / free_joint_slots / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
@@ -104,7 +104,7 @@ separate native object (`ymir_box3d_soa.c`, ABI 13) so the Aetheria session's co
   of `ymir_particles_begin`, `_substep` and `_end`). The particle state is a constraint graph: particles are one lane set with a
   phase word and every constraint type is a lane set of its own. There is no object above the lanes: a rope, a sheet, a gut or
   flesh is whatever constraints a caller emitted, and exists only in that caller's builders. A world created with a
-  `ymir_particle_capacities{particles, distances, bends, attachments, tethers, materials, fluid}` that is not all zero owns fixed
+  `ymir_particle_capacities{particles, distances, bends, attachments, tethers, materials, fluid, wets}` that is not all zero owns fixed
   lanes that never move; created with none (`NULL` or all zero) it behaves byte-identically to ABI 8. Nothing writes a
   particle's position or velocity but the step.
   - Data model. Particle lanes: `x y z vx vy vz radius inv_mass rest_x rest_y rest_z phase material live generation removed_at
@@ -112,7 +112,7 @@ separate native object (`ymir_box3d_soa.c`, ABI 13) so the Aetheria session's co
     Distance lanes: two particles, rest length, compliance (m/N), `tension` (sensor). Bend lanes: two distances that share one
     particle (and so the three particles a, b, c), rest and limit offsets, compliance. Attachment lanes: kind (body, static,
     removed), flags (`TETHER`), particle, body, point, compliance, `force` (sensor). Tether lanes (derived): attachment,
-    particle, bound, parent tether, edge, other attachment. Material table: friction, XSPH viscosity and the caller's material id. Handles are
+    particle, bound, parent tether, edge, other attachment. Material table: friction, XSPH viscosity, wet friction and the caller's material id. Handles are
     (lane, generation).
   - Commands, each refused whole before anything changes: `create_particles(n, desc{position, velocity, rest, mass, radius,
     phase, material})` takes the lowest free lanes; `destroy_particles(n, handles)` removes every constraint that touches them;
@@ -207,7 +207,21 @@ separate native object (`ymir_box3d_soa.c`, ABI 13) so the Aetheria session's co
     contact pass sets `support_particle` to the first solid listed in the particle's row that touches it (pass 1 of the walk, the solid's lane). A fluid particle resting only
     on fluid reads -1 on both, so the bottom of a deep pool is supported and the interior is not; a solid lane, a free lane and a lane after create or destroy read -1 too.
     The lanes name contact, not rest: the caller judges speed. They are notification only, written by the step and read by no pass; a world with no settled liquid
-    steps byte-identically to ABI 12.
+    steps byte-identically to ABI 12. `destroy_particles` writes -1 to a destroyed lane's support lanes and to the `support_particle` of every live drop that named a destroyed solid, so no read after a destroy
+    names a dead lane.
+  - Settle (ABI 14). Liquid at rest becomes data: `settle(n, handles)` (`Box3DSoaWorld.Settle`) turns each named fluid particle into volume in a wet patch and destroys the particle (through
+    `destroy_particles`, the ISOLATED derivation reused: fluid holds no constraint). A patch is a disc of settled liquid on one support: a body (`wet_body`, its point in the body's frame: the
+    particle's nearest surface point from the proxies, which the command refreshes first, so it follows the body) or a solid particle (`wet_particle`, point 0); the other support reads -1. Lanes
+    `wet_body wet_particle wet_x wet_y wet_z wet_radius wet_volume wet_material wet_live wet_generation wet_removed_at` (capacity `wets`, `YMIR_LANES_WET` = 4 for `remove` and `free_slots`, lanes
+    tombstoned and reused as the others). A drop's support is its last step's `support_body` (else `support_particle`); one with neither is refused. A drop's volume is `(2 r)^3`, its patch's radius
+    `sqrt(volume / (pi film))` with `YMIR_WET_FILM` = 1 mm (one constant; a film per liquid is not added). In handle order a drop joins the lowest live patch on the same support and material whose
+    disc holds its contact point (volumes add, the centre is the volume-weighted mean, the radius is recomputed); else it takes the lowest free lane; else it joins the nearest patch of the same support
+    and material; else the batch is refused `FULL`, whole, and every lane is as it was (an undo log sized by `fluid_capacity`). A dead or non-fluid particle, a stale handle, a particle named twice
+    or one with no support is refused whole too. `wet_volume` per body (the view's `WetVolume`, `body_wet_volume` natively) is the sum of the live patches on the body in wet lane order, written by
+    `rederive_wet` alone, which only `settle`, `remove(WET)` and `destroy_particles` call; the step never writes a wet lane or the volume. `remove(WET)` kills patches and ends in `rederive_wet`,
+    never in `rederive_topology`; `destroy_particles` kills the patches on the solid particles it destroys. `settle` and `remove` return the patch handles to read. Material `wet_friction` (>= 0) is stored
+    and viewed (`MaterialWetFriction`) and read by nothing here: what wet friction does to a contact is the cut `ymir-fluid-wet-friction`. Which particles settle, and when, is the caller's policy
+    (speed, age, film depth: `lodur:follow_up:bds-blood-settle-policy`); Ymir holds the data and the command.
     Fluid holds no constraint: `create_distances` and `attach` refuse a fluid particle, so `create_bends` (over distances) can
     never name one; a thing that holds liquid is cloth around free fluid (a balloon), as in Flex sec. 8. Every `create_particles`
     and every `destroy_particles` of particles that held no distance derives only the isolated lanes

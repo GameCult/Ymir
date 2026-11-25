@@ -83,7 +83,9 @@ public enum Box3DSoaConstraintType : uint
 {
     Distance = 1,
     Bend = 2,
-    Attachment = 3
+    Attachment = 3,
+    /// <summary>A wet patch: settled liquid on a body or a solid particle.</summary>
+    Wet = 4
 }
 
 /// <summary>A constraint's identity: its type, lane and the slot's generation when it was made.</summary>
@@ -548,6 +550,10 @@ internal static unsafe partial class Box3DSoaNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_settle(nint world, int n, Box3DSoaParticleHandle* handles, Box3DSoaParticleHandle* output);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ymir_box3d_soa_remove(nint world, uint type, int n, Box3DSoaParticleHandle* handles);
 
     [LibraryImport(Library)]
@@ -758,6 +764,28 @@ public readonly unsafe struct Box3DSoaView
     public ReadOnlySpan<int> SupportBody => Lane(_v.SupportBody, ParticleCount);
     /// <summary>A fluid particle's support in the last substep it ran: the first solid particle lane its row listed touching it, else -1 (resting on fluid alone reads -1); -1 for a solid or free lane.</summary>
     public ReadOnlySpan<int> SupportParticle => Lane(_v.SupportParticle, ParticleCount);
+
+    /// <summary>Wet patch lanes (settled liquid, see <see cref="Box3DSoaWorld.Settle"/>), indexed up to <see cref="WetCount"/>. A free lane reads live 0, -1 on both supports and 0 elsewhere.</summary>
+    public int WetCount => _v.WetCount;
+    /// <summary>The body lane a patch lies on, else -1; its point is in the body's frame.</summary>
+    public ReadOnlySpan<int> WetBody => Lane(_v.WetBody, WetCount);
+    /// <summary>The solid particle lane a patch lies on, else -1 (its point is then 0).</summary>
+    public ReadOnlySpan<int> WetParticle => Lane(_v.WetParticle, WetCount);
+    public ReadOnlySpan<float> WetX => Lane(_v.WetX, WetCount);
+    public ReadOnlySpan<float> WetY => Lane(_v.WetY, WetCount);
+    public ReadOnlySpan<float> WetZ => Lane(_v.WetZ, WetCount);
+    /// <summary>m: sqrt(volume / (pi film)), film 1 mm.</summary>
+    public ReadOnlySpan<float> WetRadius => Lane(_v.WetRadius, WetCount);
+    /// <summary>m^3 of liquid in each patch.</summary>
+    public ReadOnlySpan<float> WetPatchVolume => Lane(_v.WetPatchVolume, WetCount);
+    public ReadOnlySpan<uint> WetMaterial => Lane(_v.WetMaterial, WetCount);
+    public ReadOnlySpan<uint> WetLive => Lane(_v.WetLive, WetCount);
+    public ReadOnlySpan<uint> WetGeneration => Lane(_v.WetGeneration, WetCount);
+    public ReadOnlySpan<ulong> WetRemovedAt => Lane(_v.WetRemovedAt, WetCount);
+    /// <summary>m^3 of settled liquid on each body: the sum of its live patches, derived when a command changes them; the step never writes it.</summary>
+    public ReadOnlySpan<float> WetVolume => Lane(_v.BodyWetVolume, Count);
+    /// <summary>The wet friction of each material (stored for the friction cut; nothing here reads it).</summary>
+    public ReadOnlySpan<float> MaterialWetFriction => Lane(_v.MaterialWetFriction, MaterialCapacity);
 
     /// <summary>N s, world: the impulse the particle phase delivered to each body over the last step (0 for a body it did not touch). Box3D has already applied it; this is notification only.</summary>
     public ReadOnlySpan<float> ParticleImpulseX => Lane(_v.ParticleImpulseX, Count);
@@ -1128,6 +1156,25 @@ public sealed class Box3DSoaWorld : IDisposable
         }
     }
 
+    /// <summary>
+    /// Settles fluid particles into wet patches and destroys them: each drop (volume (2 r)^3) joins the lowest patch on its support whose disc
+    /// holds its contact point, else takes the lowest free lane, else joins the nearest patch on that support. A drop's support is its
+    /// last step's <see cref="Box3DSoaView.SupportBody"/>, else <see cref="Box3DSoaView.SupportParticle"/>. Refuses the whole batch, changing
+    /// nothing, for a dead or non-fluid particle, one without a support, a particle named twice, or no lane and no patch to join.
+    /// <paramref name="patches"/> (or empty) receives the patch each drop landed in. Which particles settle is the caller's policy.
+    /// </summary>
+    public unsafe void Settle(ReadOnlySpan<Box3DSoaParticleHandle> particles, Span<Box3DSoaConstraintHandle> patches = default)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        if (!patches.IsEmpty && patches.Length < particles.Length) throw new ArgumentException("One handle per particle.", nameof(patches));
+        var native = new Box3DSoaParticleHandle[particles.Length];
+        fixed (Box3DSoaParticleHandle* h = particles)
+        fixed (Box3DSoaParticleHandle* o = native)
+            Check(Box3DSoaNative.ymir_box3d_soa_settle(_handle, particles.Length, h, patches.IsEmpty ? null : o));
+        for (var i = 0; i < patches.Length && i < native.Length; i++)
+            patches[i] = new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Wet, native[i].Lane, native[i].Generation);
+    }
+
     /// <summary>Removes one constraint.</summary>
     public void Remove(Box3DSoaConstraintHandle constraint) => Remove([constraint]);
 
@@ -1135,10 +1182,10 @@ public sealed class Box3DSoaWorld : IDisposable
     /// Sets a material table entry: the friction particles of that material have against bodies, the caller's id for it and the
     /// XSPH viscosity coefficient (dimensionless, &gt;= 0) fluid particles of it relax their velocities by.
     /// </summary>
-    public void SetMaterial(int index, float friction, ulong materialId = 0, float viscosity = 0f)
+    public void SetMaterial(int index, float friction, ulong materialId = 0, float viscosity = 0f, float wetFriction = 0f)
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
-        Check(Box3DSoaNative.ymir_box3d_soa_set_material(_handle, index, new Box3DSoaMaterialDesc { Friction = friction, Viscosity = viscosity, MaterialId = materialId }));
+        Check(Box3DSoaNative.ymir_box3d_soa_set_material(_handle, index, new Box3DSoaMaterialDesc { Friction = friction, Viscosity = viscosity, WetFriction = wetFriction, MaterialId = materialId }));
     }
 
     /// <summary>Lanes a new particle could take right now (never used, or dead for a step).</summary>
@@ -1146,6 +1193,7 @@ public sealed class Box3DSoaWorld : IDisposable
     public int FreeDistanceSlots => FreeSlots(Box3DSoaConstraintType.Distance);
     public int FreeBendSlots => FreeSlots(Box3DSoaConstraintType.Bend);
     public int FreeAttachmentSlots => FreeSlots(Box3DSoaConstraintType.Attachment);
+    public int FreeWetSlots => FreeSlots(Box3DSoaConstraintType.Wet);
 
     private int FreeSlots(Box3DSoaConstraintType type)
     {

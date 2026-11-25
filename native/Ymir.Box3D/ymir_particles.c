@@ -2268,20 +2268,17 @@ int32_t ymir_particles_settle(ymir_particles* p, int32_t n, const ymir_handle* h
     {
         return YMIR_PARTICLES_INVALID_ARGUMENT;
     }
+    memset(p->done, 0, (size_t)p->particle_count); // scratch with no baseline: marks the particles named
     for (int32_t k = 0; k < n; ++k)
     {
         int32_t body, particle;
         v3 pt;
-        if (!particle_ok(p, h[k].lane, h[k].generation) || !(p->phase[h[k].lane] & YMIR_PHASE_FLUID) || p->contacts[h[k].lane] ||
+        if (!particle_ok(p, h[k].lane, h[k].generation) || !(p->phase[h[k].lane] & YMIR_PHASE_FLUID) || p->done[h[k].lane] ||
             !wet_support_point(p, h[k].lane, &body, &particle, &pt))
         {
-            for (int32_t j = 0; j < k; ++j)
-            {
-                p->contacts[h[j].lane] = 0;
-            }
             return YMIR_PARTICLES_INVALID_ARGUMENT; // a particle named twice would settle its volume twice
         }
-        p->contacts[h[k].lane] = 1; // scratch between steps: the step zeroes it again
+        p->done[h[k].lane] = 1;
     }
     int32_t saved_count = p->wet_count;
     int32_t logged = 0;
@@ -2365,10 +2362,6 @@ int32_t ymir_particles_settle(ymir_particles* p, int32_t n, const ymir_handle* h
         {
             out[k] = (ymir_handle){into, p->wet_generation[into]};
         }
-    }
-    for (int32_t k = 0; k < n; ++k)
-    {
-        p->contacts[h[k].lane] = 0;
     }
     if (status != YMIR_PARTICLES_OK)
     {

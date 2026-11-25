@@ -6,7 +6,7 @@ namespace Ymir.Box3D.Soa.Tests;
 using Pos = (float X, float Y, float Z);
 
 /// <summary>Fluid as a phase bit of the one particle solver: docs/soa-world.md, particles section, Fluid.</summary>
-public sealed class Box3DSoaFluidTests
+public sealed partial class Box3DSoaFluidTests
 {
     private const float Dt = Box3DSoaParticleTests.Dt;
     private const int Sub = Box3DSoaParticleTests.Sub;
@@ -35,8 +35,8 @@ public sealed class Box3DSoaFluidTests
     private const float R = 0.0125f;
     private const float FluidMass = 0.015625f; // (2 r)^3 of water: 15.6 mL
 
-    private static Box3DSoaWorld FluidWorld(int particles, int bodies = 8, float gravityY = -10f, int materials = 2) =>
-        new(bodies, gravityY: gravityY, particles: new Box3DSoaParticleCapacities(particles, 16, 16, 16, 64, materials, particles));
+    private static Box3DSoaWorld FluidWorld(int particles, int bodies = 8, float gravityY = -10f, int materials = 2, int wets = 0) =>
+        new(bodies, gravityY: gravityY, particles: new Box3DSoaParticleCapacities(particles, 16, 16, 16, 64, materials, particles, wets));
 
     /// <summary>A floor and four walls: an open well of interior half-width <paramref name="half"/> centred on the y axis.</summary>
     private static void Well(Box3DSoaWorld world, float half)
