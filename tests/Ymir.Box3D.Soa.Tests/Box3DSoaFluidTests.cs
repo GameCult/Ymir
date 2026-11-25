@@ -357,7 +357,8 @@ public sealed partial class Box3DSoaFluidTests
     }
 
     // The pour is read, not judged: at the scene's own 4 substeps its sheet stretches under the block's weight until a particle the sheet's own size
-    // passes between the pins (the sieve, lodur:question:ymir-sheet-sieve-at-budget-substeps), and the same block flagged solid tunnels worse, so no count of it
+    // passes between the pins (the sieve, a limit of loose cloth pinned at few points: lodur:ruling:ymir-sheet-sieve-at-budget-substeps; a skin attached along a
+    // bone holds, Skin_on_a_bone_holds_under_pour_and_drop), and the same block flagged solid tunnels worse, so no count of it
     // claims a mutant of the fluid. What fluid owns is pinned by Fluid_holds_on_a_solid_floor; this test runs the scene and prints both readings.
     private static (string Line, int Overflow) PourReading(bool solid)
     {
@@ -405,6 +406,134 @@ public sealed partial class Box3DSoaFluidTests
             Readings.Add(line);
             Assert.Equal(0, overflow);
         }
+    }
+
+    // Probe sieve.c (lodur flesh-bones-map.probe-skin-sieve) as a test: a skin sheet attached along its length to a bone, under a pour and a drop.
+    private const float SkinBone = 0.07f, SkinHalf = 0.18f, SkinY = 0.5f;
+
+    /// <summary>
+    /// A capsule (r 7 cm, half 18 cm, local Y laid along world X) welded to an anchor over a static floor, wrapped by 5 rings of 6 skin particles
+    /// (staggered, centres on the capsule surface, no self-collision) with ring and diagonal distances, ring bends and a body attachment on every
+    /// particle, and a load block 25 cm above the capsule: 7 x 7 x 7 fluid at 2.5 cm, or 4 x 4 x 4 solids at 4 cm.
+    /// </summary>
+    private static (Box3DSoaWorld World, int Bone, Box3DSoaParticleHandle[] Skin, Box3DSoaConstraintHandle[] Edges, Box3DSoaParticleHandle[] Load) SkinScene(bool solid, float attach)
+    {
+        var world = new Box3DSoaWorld(4, gravityY: -9.81f, jointCapacity: 2, particles: new Box3DSoaParticleCapacities(512, 128, 64, 64, 64, 2, 512));
+        world.AddStaticBox(1, (0f, -0.5f, 0f), (5f, 0.5f, 5f));
+        world.SetMaterial(1, 0.3f, 0, 0.01f); // the pour's XSPH coefficient
+        var q = (0f, 0f, MathF.Sin(-MathF.PI / 4f), MathF.Cos(-MathF.PI / 4f)); // local Y onto world X
+        var bone = world.AddCapsule(2, (0f, SkinY, 0f), SkinBone, SkinHalf, 1000f, q);
+        var anchor = world.AddAnchor(3, (0f, SkinY, 0f));
+        world.AddJoint(Box3DSoaJointKind.Weld, anchor, bone, (0f, SkinY, 0f), (0f, 0f, 1f));
+        const int rings = 5, per = 6;
+        const float spacing = 2 * SkinHalf / (rings - 1);
+        var rest = new (float X, float Y, float Z)[rings * per];
+        var desc = new Box3DSoaParticleDesc[rings * per];
+        for (var i = 0; i < rings; i++)
+            for (var j = 0; j < per; j++)
+            {
+                var a = 2f * MathF.PI * (j + 0.5f * (i & 1)) / per;
+                var at = (-SkinHalf + spacing * i, SkinY + SkinBone * MathF.Cos(a), SkinBone * MathF.Sin(a));
+                rest[i * per + j] = at;
+                desc[i * per + j] = new Box3DSoaParticleDesc(at, 0.012f, 0.036f, Box3DSoaPhase.Of(4));
+            }
+        var skin = new Box3DSoaParticleHandle[desc.Length];
+        world.CreateParticles(desc, skin);
+        var d = new List<Box3DSoaDistanceDesc>();
+        var ringAt = new int[rings, per];
+        for (var i = 0; i < rings; i++)
+            for (var j = 0; j < per; j++)
+            {
+                ringAt[i, j] = d.Count;
+                d.Add(new(skin[i * per + j], skin[i * per + (j + 1) % per], 2e-4f));
+                if (i + 1 == rings) continue;
+                var odd = (i & 1) == 1;
+                d.Add(new(skin[i * per + j], skin[(i + 1) * per + (odd ? (j + 1) % per : j)], 2e-4f));
+                d.Add(new(skin[i * per + j], skin[(i + 1) * per + (odd ? j : (j + per - 1) % per)], 2e-4f));
+            }
+        var edges = new Box3DSoaConstraintHandle[d.Count];
+        world.CreateDistances(d.ToArray(), edges);
+        var b = new List<Box3DSoaBendDesc>();
+        for (var i = 0; i < rings; i++)
+            for (var j = 0; j < per; j++) b.Add(new(edges[ringAt[i, (j + per - 1) % per]], edges[ringAt[i, j]], 1e-3f));
+        world.CreateBends(b.ToArray(), new Box3DSoaConstraintHandle[b.Count]);
+        for (var k = 0; k < skin.Length; k++) // the body frame of the rotation above: local = (-dy, dx, dz)
+            world.Attach(Box3DSoaAttachKind.Body, skin[k], bone, (-(rest[k].Y - SkinY), rest[k].X, rest[k].Z), attach);
+        var side = solid ? 4 : 7;
+        var pitch = solid ? 0.04f : 0.025f;
+        var r = pitch / 2f;
+        var load = new Box3DSoaParticleHandle[side * side * side];
+        var l = new Box3DSoaParticleDesc[load.Length];
+        for (var x = 0; x < side; x++) for (var y = 0; y < side; y++) for (var z = 0; z < side; z++)
+            l[(x * side + y) * side + z] = new Box3DSoaParticleDesc(
+                ((x - 0.5f * (side - 1)) * pitch, SkinY + SkinBone + 0.25f + y * pitch, (z - 0.5f * (side - 1)) * pitch),
+                solid ? 0.06f : 0.015625f, r, solid ? Box3DSoaPhase.Of(6, true) : Box3DSoaPhase.Of(6, fluid: true), 1);
+        world.CreateParticles(l, load);
+        return (world, bone, skin, edges, load);
+    }
+
+    private static string SkinReading(bool solid, int hz, float attach, out float stretch, out int inside, out float place)
+    {
+        var (world, bone, skin, edges, load) = SkinScene(solid, attach);
+        using (world)
+        {
+            stretch = 0f; inside = 0;
+            var reached = new bool[load.Length];
+            for (var tick = 0; tick < 3 * hz; tick++)
+            {
+                world.Step(1f / hz, 4);
+                var v = world.View;
+                foreach (var e in edges)
+                    stretch = MathF.Max(stretch, Graph.Dist(v, v.DistanceA[e.Lane], v.DistanceB[e.Lane]) / v.DistanceRest[e.Lane] - 1f);
+                for (var k = 0; k < load.Length; k++)
+                {
+                    var f = load[k].Lane;
+                    if (MathF.Abs(v.ParticleX[f] - v.PositionX[bone]) >= SkinHalf) continue; // over the shaft only: the open ends are not the skin's to close
+                    var radial = MathF.Sqrt(Sq(v.ParticleY[f] - v.PositionY[bone]) + Sq(v.ParticleZ[f] - v.PositionZ[bone]));
+                    if (radial < SkinBone) inside++;
+                    if (radial < SkinBone + 1.5f * v.ParticleRadius[f]) reached[k] = true;
+                }
+            }
+            var w = world.View;
+            double sum = 0;
+            foreach (var h in skin)
+            {
+                var dx = MathF.Max(0f, MathF.Abs(w.ParticleX[h.Lane] - w.PositionX[bone]) - SkinHalf);
+                sum += MathF.Sqrt(dx * dx + Sq(w.ParticleY[h.Lane] - w.PositionY[bone]) + Sq(w.ParticleZ[h.Lane] - w.PositionZ[bone]));
+            }
+            var mean = (float)(sum / skin.Length);
+            place = MathF.Abs(mean - SkinBone);
+            return $"SKIN_SIEVE {(solid ? "solid" : "fluid")} {hz} Hz at attach compliance {attach:E0}: worst skin edge stretch {stretch:F4}, place off {place:E2}, load particles inside the bone {inside}, " +
+                   $"skin mean axis distance {mean:F5} (bone {SkinBone}), load reaching the bone surface {reached.Count(x => x)} of {load.Length}";
+        }
+    }
+
+    // Bounds follow lodur:ruling:deterministic-bound-margin and lodur:ruling:deterministic-bound-zero-reading. Worst edge stretch over the four rows: shipped 0.0214
+    // (fluid 0.0156 / 0.0204, solid 0.0196 / 0.0214 at 60 / 120 Hz). Ma (solve_attachments returns at entry) 0.0560 (120 Hz) to 0.1475 (60 Hz), and Mc (the skin's
+    // attachment compliance x 1e6 here, not in the solver) 0.0559 to 0.1465: the skin free-falls past the bone before the load arrives, so both read alike on every
+    // row. Bound sqrt(0.0214 x 0.0559) = 0.0346, separation 2.6, both mutants claimed. The place bound is |skin mean axis distance - 0.07| at 3 s: shipped reads 0
+    // to the print's 1e-5 (raw 6e-8 to 2.7e-7, float32 noise), half a unit 5e-6 by the zero-reading rule; Ma 0.331 to 0.350 (axis distance 0.402 to 0.420), Mc 0.331 to
+    // 0.349: bound sqrt(5e-6 x 0.331) = 1.29e-3, separation 6.6e4. Inside the bone is exact zero in every row, shipped and Ma and Mc alike: the capsule
+    // body itself stops a particle, so the count claims no mutant of the attachment and guards the weld and body contact. The load reaching the bone surface (a centre
+    // within the bone radius + 1.5 r) reads 103 to 174 of 343 fluid and 33 to 41 of 64 solid shipped: the load rests between the skin's particles on the bone, as a
+    // skin of six particles a ring leaves it, and is printed, not asserted.
+    private const float SkinStretch = 0.0346f;
+    private const float SkinPlace = 1.29e-3f;
+
+    [Theory]
+    [InlineData(false, 60)]
+    [InlineData(false, 120)]
+    [InlineData(true, 60)]
+    [InlineData(true, 120)]
+    public void Skin_on_a_bone_holds_under_pour_and_drop(bool solid, int hz)
+    {
+        // The case the corner-pinned sheet above is not: skin attached along its length to a bone (lodur:ruling:ymir-sheet-sieve-at-budget-substeps,
+        // lodur:ruling:bds-body-skeleton-particle-flesh-rough). 3 s at 4 substeps under a pour or a drop of solids from 25 cm; nothing may enter the bone.
+        var line = SkinReading(solid, hz, 1e-3f, out var stretch, out var inside, out var place);
+        Readings.Add(line);
+        Assert.Equal(0, inside);
+        Assert.True(stretch <= SkinStretch, $"{line}: stretch over {SkinStretch}");
+        Assert.True(place <= SkinPlace, $"{line}: place off the bone by over {SkinPlace}");
     }
 
     // A fluid block dropped 15 cm onto a floor of immovable solid particles (mass 0). Two readings, both over the 4 s at 4 substeps:
