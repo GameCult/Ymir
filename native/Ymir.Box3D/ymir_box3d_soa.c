@@ -58,7 +58,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a destroyed joint's lane: never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 14u
+#define YMIR_SOA_ABI_VERSION 15u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -139,6 +139,7 @@ typedef struct ymir_box3d_soa_view
     int32_t tether_capacity;
     int32_t material_capacity;
     int32_t wet_count; // wet patch lanes: the high-water mark
+    int32_t sensor_count; // liquid sensor lanes: the high-water mark
     // bodies
     const uint64_t* stable_id;
     const uint32_t* kind;
@@ -295,6 +296,18 @@ typedef struct ymir_box3d_soa_view
     const uint64_t* wet_removed_at;
     const float* body_wet_volume;
     const float* material_wet_friction;
+    // Liquid sensors, indexed up to sensor_count: a sphere (point in the body's frame, radius m) fixed in body lane sensor_body; a free lane reads live 0, body -1 and 0 elsewhere.
+    // liquid_volume (m^3) is the sum of (2 r)^3 over the live fluid particles whose centre was inside it at the end of the last step, 0 with no liquid: a sensor, the
+    // step writes it and nothing reads it back.
+    const int32_t* sensor_body;
+    const float* sensor_x;
+    const float* sensor_y;
+    const float* sensor_z;
+    const float* sensor_radius;
+    const float* sensor_liquid_volume;
+    const uint32_t* sensor_live;
+    const uint32_t* sensor_generation;
+    const uint64_t* sensor_removed_at;
 } ymir_box3d_soa_view;
 
 // A begin or end of touch between two bodies: their lane indices and the shapes' stable ids.
@@ -577,7 +590,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
         !ymir_soa_finite(gravity_y) || !ymir_soa_finite(gravity_z) || !ymir_soa_finite(hit_threshold) ||
         hit_threshold < 0.0f || (particle_capacities != NULL && (particle_capacities->particles < 0 || particle_capacities->distances < 0 ||
                                  particle_capacities->bends < 0 || particle_capacities->attachments < 0 || particle_capacities->tethers < 0 ||
-                                 particle_capacities->materials < 0 || particle_capacities->fluid < 0)))
+                                 particle_capacities->materials < 0 || particle_capacities->fluid < 0 || particle_capacities->sensors < 0)))
     {
         return YMIR_SOA_INVALID_ARGUMENT;
     }
@@ -1368,7 +1381,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_cast_ray_closest(
 // world made without particle capacity refuses them all.
 
 // Sizes of the native descriptors, for the managed layout check: 0 particle, 1 distance, 2 bend, 3 attachment,
-// 4 material, 5 capacities, 6 handle.
+// 4 material, 5 capacities, 6 handle, 7 sensor.
 YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_soa_get_particle_desc_size(uint32_t which)
 {
     switch (which)
@@ -1380,6 +1393,7 @@ YMIR_EXPORT uint32_t YMIR_CALL ymir_box3d_soa_get_particle_desc_size(uint32_t wh
         case 4: return (uint32_t)sizeof(ymir_material_desc);
         case 5: return (uint32_t)sizeof(ymir_particle_capacities);
         case 6: return (uint32_t)sizeof(ymir_handle);
+        case 7: return (uint32_t)sizeof(ymir_sensor_desc);
         default: return 0;
     }
 }
@@ -1462,7 +1476,17 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_settle(ymir_box3d_soa_world* world,
     return ymir_particles_settle(world->particles, n, h, world->step_count, out);
 }
 
-// Lanes a new particle (0), distance (1), bend (2), attachment (3) or wet patch (4) could take right now.
+// Creates liquid sensors (see ymir_particles_create_sensors); a body must already exist.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create_sensors(ymir_box3d_soa_world* world, int32_t n, const ymir_sensor_desc* d, ymir_handle* out)
+{
+    if (world == NULL || world->particles == NULL)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    return ymir_particles_create_sensors(world->particles, n, d, world->count, world->step_count, out);
+}
+
+// Lanes a new particle (0), distance (1), bend (2), attachment (3), wet patch (4) or sensor (5) could take right now.
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_free_slots(const ymir_box3d_soa_world* world, uint32_t lane_set)
 {
     return world == NULL || world->particles == NULL ? 0 : ymir_particles_free_slots(world->particles, lane_set, world->step_count);
@@ -1499,6 +1523,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         .tether_capacity = pt != NULL ? pt->tether_capacity : 0,
         .material_capacity = pt != NULL ? pt->material_capacity : 0,
         .wet_count = pt != NULL ? pt->wet_count : 0,
+        .sensor_count = pt != NULL ? pt->sensor_count : 0,
         .stable_id = world->stable_id,
         .kind = world->kind,
         .parent = world->parent,
@@ -1627,6 +1652,15 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         view->wet_removed_at = pt->wet_removed_at;
         view->body_wet_volume = pt->wet_volume_body;
         view->material_wet_friction = pt->mat_wet_friction;
+        view->sensor_body = pt->sensor_body;
+        view->sensor_x = pt->sensor_x;
+        view->sensor_y = pt->sensor_y;
+        view->sensor_z = pt->sensor_z;
+        view->sensor_radius = pt->sensor_radius;
+        view->sensor_liquid_volume = pt->sensor_liquid_volume;
+        view->sensor_live = pt->sensor_live;
+        view->sensor_generation = pt->sensor_generation;
+        view->sensor_removed_at = pt->sensor_removed_at;
     }
     return YMIR_SOA_OK;
 }

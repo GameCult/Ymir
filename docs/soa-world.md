@@ -8,12 +8,12 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 14) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 15) so the Aetheria session's contract is untouched.
 
 ## Contract
 
-- Native (ABI 14): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
-  create_particles / destroy_particles / create_distances / create_bends / attach / remove / set_material / free_slots /
+- Native (ABI 15): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
+  create_particles / destroy_particles / create_distances / create_bends / create_sensors / attach / remove / set_material / free_slots /
   add_body / add_joint / step / get_view / get_facts / set_anchor_target / destroy_joint / free_joint_slots / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
   so lane pointers never move.
@@ -222,6 +222,14 @@ separate native object (`ymir_box3d_soa.c`, ABI 14) so the Aetheria session's co
     never in `rederive_topology`; `destroy_particles` kills the patches on the solid particles it destroys. `settle` and `remove` return the patch handles to read. Material `wet_friction` (>= 0) is stored
     and viewed (`MaterialWetFriction`), and lowers friction where the liquid lies (below). Which particles settle, and when, is the caller's policy
     (speed, age, film depth: `lodur:follow_up:bds-blood-settle-policy`); Ymir holds the data and the command.
+  - Sensors (ABI 15). A liquid sensor is a sphere fixed in a body that reads the liquid volume inside it: `create_sensors(n, desc{body, point, radius})` (`Box3DSoaWorld.CreateSensors`; `point` in the body's frame, `radius` m,
+    capacity `sensors`, `YMIR_LANES_SENSOR` = 5 for `remove` and `free_slots`, lanes tombstoned and reused as the others) refuses the whole batch, changing nothing, for a body outside the world's body count, a radius that is not
+    finite and > 0, a non-finite point, or too few free lanes. Lanes `sensor_body sensor_x sensor_y sensor_z sensor_radius sensor_liquid_volume sensor_live sensor_generation sensor_removed_at`; a free lane reads
+    live 0, body -1 and 0 elsewhere. At the end of every step `ymir_particles_end` writes `sensor_liquid_volume` (m^3): for each live sensor in lane order, the sum in lane order of `(2 r)^3` over the live fluid
+    particles whose centre lies within `radius` (distance squared <= radius squared) of the sensor's centre, the body's proxy position plus the proxy rotation applied to `point`, in the pose the last substep left the
+    proxy in; 0 when no fluid is live. The pass runs before `ymir_particles_end`'s early return for no live particle, so a sensor never keeps a reading once the liquid is gone. The reading is a sensor: the step
+    writes it and no pass reads it back, so a world with sensors steps byte for byte as one without, and a world with none steps as ABI 14. `remove(SENSOR)` ends in no topology derivation. Ymir names no organ
+    (a head's airway, a lung): the consumer places a sensor and maps the volume (`lodur:follow_up:lodur-airway-liquid`). Gives up: a sphere only, not a shape-exact volume, and no per-liquid split.
   - Wet friction. Settled liquid lowers friction where it lands, per contact, never per shape: `wet_mu(body, point, mu)` is `min(mu, wet_friction)` of the lowest live patch on that body whose
     disc holds the point (the point in the body's frame, as `wet_x wet_y wet_z` are), and `mu` at once when the body's `wet_volume` is 0. It is the one patch test. A particle that touches a body
     uses it at the nearest surface point for a solid particle (also `min` with `particle_wet_mu[i]`, the wet friction of the lowest live patch on that solid particle, +inf when dry, derived by

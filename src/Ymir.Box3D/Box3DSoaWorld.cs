@@ -85,7 +85,9 @@ public enum Box3DSoaConstraintType : uint
     Bend = 2,
     Attachment = 3,
     /// <summary>A wet patch: settled liquid on a body or a solid particle.</summary>
-    Wet = 4
+    Wet = 4,
+    /// <summary>A liquid sensor: a sphere fixed in a body that reads the liquid volume inside it each step.</summary>
+    Sensor = 5
 }
 
 /// <summary>A constraint's identity: its type, lane and the slot's generation when it was made.</summary>
@@ -111,7 +113,7 @@ public static class Box3DSoaPhase
 
 /// <summary>Capacities of the particle state; <c>null</c> or all zero is a world without particles (ABI 8 behaviour).</summary>
 [StructLayout(LayoutKind.Sequential)]
-public readonly record struct Box3DSoaParticleCapacities(int Particles, int Distances, int Bends, int Attachments, int Tethers, int Materials, int Fluid = 0, int Wets = 0);
+public readonly record struct Box3DSoaParticleCapacities(int Particles, int Distances, int Bends, int Attachments, int Tethers, int Materials, int Fluid = 0, int Wets = 0, int Sensors = 0);
 
 /// <summary>Native layout of <c>ymir_particle_desc</c>: a particle to create. Mass kg (0 = immovable); rest is its place in the rest pose.</summary>
 [StructLayout(LayoutKind.Sequential)]
@@ -178,6 +180,15 @@ internal struct Box3DSoaAttachmentDesc
     public uint Reserved;
 }
 
+/// <summary>Native layout of <c>ymir_sensor_desc</c>: a sphere of <c>Radius</c> m (&gt; 0) centred on <c>Point</c> in the frame of body lane <c>Body</c>.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct Box3DSoaSensorDesc
+{
+    public int Body;
+    public float PointX, PointY, PointZ;
+    public float Radius;
+}
+
 /// <summary>Native layout of <c>ymir_material_desc</c>.</summary>
 [StructLayout(LayoutKind.Sequential)]
 internal struct Box3DSoaMaterialDesc
@@ -236,6 +247,7 @@ internal unsafe struct Box3DSoaViewNative
     public int TetherCapacity;
     public int MaterialCapacity;
     public int WetCount;
+    public int SensorCount;
     public ulong* StableId;
     public uint* Kind;
     public int* Parent;
@@ -361,6 +373,15 @@ internal unsafe struct Box3DSoaViewNative
     public ulong* WetRemovedAt;
     public float* BodyWetVolume;
     public float* MaterialWetFriction;
+    public int* SensorBody;
+    public float* SensorX;
+    public float* SensorY;
+    public float* SensorZ;
+    public float* SensorRadius;
+    public float* SensorLiquidVolume;
+    public uint* SensorLive;
+    public uint* SensorGeneration;
+    public ulong* SensorRemovedAt;
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_facts</c>: counts, dropped counters, then three pointers.</summary>
@@ -547,6 +568,10 @@ internal static unsafe partial class Box3DSoaNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ymir_box3d_soa_attach(nint world, in Box3DSoaAttachmentDesc desc, out Box3DSoaParticleHandle handle);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_create_sensors(nint world, int n, Box3DSoaSensorDesc* desc, Box3DSoaParticleHandle* output);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -787,6 +812,21 @@ public readonly unsafe struct Box3DSoaView
     /// <summary>The wet friction of each material (stored for the friction cut; nothing here reads it).</summary>
     public ReadOnlySpan<float> MaterialWetFriction => Lane(_v.MaterialWetFriction, MaterialCapacity);
 
+    /// <summary>Liquid sensor lanes (see <see cref="Box3DSoaWorld.CreateSensors"/>), indexed up to <see cref="SensorCount"/>. A free lane reads live 0, body -1 and 0 elsewhere (generation and removed-at kept).</summary>
+    public int SensorCount => _v.SensorCount;
+    /// <summary>The body lane a sensor is fixed in; its point is in that body's frame.</summary>
+    public ReadOnlySpan<int> SensorBody => Lane(_v.SensorBody, SensorCount);
+    public ReadOnlySpan<float> SensorX => Lane(_v.SensorX, SensorCount);
+    public ReadOnlySpan<float> SensorY => Lane(_v.SensorY, SensorCount);
+    public ReadOnlySpan<float> SensorZ => Lane(_v.SensorZ, SensorCount);
+    /// <summary>m</summary>
+    public ReadOnlySpan<float> SensorRadius => Lane(_v.SensorRadius, SensorCount);
+    /// <summary>m^3 of liquid inside each sensor at the end of the last step: the sum of (2 r)^3 over the live fluid particles whose centre was inside, 0 with none. A sensor: the step writes it and nothing reads it back.</summary>
+    public ReadOnlySpan<float> SensorLiquidVolume => Lane(_v.SensorLiquidVolume, SensorCount);
+    public ReadOnlySpan<uint> SensorLive => Lane(_v.SensorLive, SensorCount);
+    public ReadOnlySpan<uint> SensorGeneration => Lane(_v.SensorGeneration, SensorCount);
+    public ReadOnlySpan<ulong> SensorRemovedAt => Lane(_v.SensorRemovedAt, SensorCount);
+
     /// <summary>N s, world: the impulse the particle phase delivered to each body over the last step (0 for a body it did not touch). Box3D has already applied it; this is notification only.</summary>
     public ReadOnlySpan<float> ParticleImpulseX => Lane(_v.ParticleImpulseX, Count);
     public ReadOnlySpan<float> ParticleImpulseY => Lane(_v.ParticleImpulseY, Count);
@@ -804,7 +844,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 14;
+    private const uint ExpectedAbi = 15;
     private nint _handle;
 
     /// <summary>
@@ -830,7 +870,8 @@ public sealed class Box3DSoaWorld : IDisposable
             Size(3) != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaAttachmentDesc>() ||
             Size(4) != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaMaterialDesc>() ||
             Size(5) != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaParticleCapacities>() ||
-            Size(6) != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaParticleHandle>())
+            Size(6) != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaParticleHandle>() ||
+            Size(7) != (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<Box3DSoaSensorDesc>())
         {
             throw new InvalidOperationException("The native Ymir Box3D SoA ABI does not match this build.");
         }
@@ -1175,6 +1216,26 @@ public sealed class Box3DSoaWorld : IDisposable
             patches[i] = new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Wet, native[i].Lane, native[i].Generation);
     }
 
+    /// <summary>
+    /// Creates liquid sensors in the lowest free lanes: each is a sphere of <c>radius</c> m (&gt; 0) centred on <c>point</c> in the frame of body lane <c>body</c>,
+    /// and reads <see cref="Box3DSoaView.SensorLiquidVolume"/> at the end of every step. Refuses the whole batch, changing nothing, for a body that does not exist,
+    /// a radius that is not finite and positive, a non-finite point, or too few free lanes. Remove one with <see cref="Remove(Box3DSoaConstraintHandle)"/>.
+    /// </summary>
+    public unsafe void CreateSensors(ReadOnlySpan<(int Body, (float X, float Y, float Z) Point, float Radius)> sensors, Span<Box3DSoaConstraintHandle> handles = default)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        if (!handles.IsEmpty && handles.Length < sensors.Length) throw new ArgumentException("One handle per sensor.", nameof(handles));
+        var desc = new Box3DSoaSensorDesc[sensors.Length];
+        for (var i = 0; i < desc.Length; i++)
+            desc[i] = new Box3DSoaSensorDesc { Body = sensors[i].Body, PointX = sensors[i].Point.X, PointY = sensors[i].Point.Y, PointZ = sensors[i].Point.Z, Radius = sensors[i].Radius };
+        var native = new Box3DSoaParticleHandle[sensors.Length];
+        fixed (Box3DSoaSensorDesc* d = desc)
+        fixed (Box3DSoaParticleHandle* o = native)
+            Check(Box3DSoaNative.ymir_box3d_soa_create_sensors(_handle, desc.Length, d, handles.IsEmpty ? null : o));
+        for (var i = 0; i < handles.Length && i < native.Length; i++)
+            handles[i] = new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Sensor, native[i].Lane, native[i].Generation);
+    }
+
     /// <summary>Removes one constraint.</summary>
     public void Remove(Box3DSoaConstraintHandle constraint) => Remove([constraint]);
 
@@ -1194,6 +1255,7 @@ public sealed class Box3DSoaWorld : IDisposable
     public int FreeBendSlots => FreeSlots(Box3DSoaConstraintType.Bend);
     public int FreeAttachmentSlots => FreeSlots(Box3DSoaConstraintType.Attachment);
     public int FreeWetSlots => FreeSlots(Box3DSoaConstraintType.Wet);
+    public int FreeSensorSlots => FreeSlots(Box3DSoaConstraintType.Sensor);
 
     private int FreeSlots(Box3DSoaConstraintType type)
     {

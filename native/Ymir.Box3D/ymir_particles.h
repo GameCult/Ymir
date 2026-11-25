@@ -50,7 +50,8 @@ enum
     YMIR_LANES_DISTANCE = 1,
     YMIR_LANES_BEND = 2,
     YMIR_LANES_ATTACHMENT = 3,
-    YMIR_LANES_WET = 4 // a wet patch: settled liquid on a body or a solid particle
+    YMIR_LANES_WET = 4,   // a wet patch: settled liquid on a body or a solid particle
+    YMIR_LANES_SENSOR = 5 // a liquid sensor: a sphere fixed in a body that reads the liquid volume inside it
 };
 
 enum
@@ -82,7 +83,7 @@ typedef struct ymir_handle
 
 typedef struct ymir_particle_capacities
 {
-    int32_t particles, distances, bends, attachments, tethers, materials, fluid, wets; // fluid: the most live particles with the FLUID phase; wets: the most wet patches
+    int32_t particles, distances, bends, attachments, tethers, materials, fluid, wets, sensors; // fluid: the most live particles with the FLUID phase; wets: the most wet patches; sensors: the most liquid sensors
 } ymir_particle_capacities;
 
 // A particle to create. `mass` kg (0 = immovable); `velocity` m/s; `rest` is its place in the rest pose (rest lengths, bends and
@@ -128,6 +129,14 @@ typedef struct ymir_attachment_desc
     uint32_t reserved;
 } ymir_attachment_desc;
 
+// A liquid sensor to create: a sphere of `radius` m (> 0) centred on `point` in the frame of body lane `body`.
+typedef struct ymir_sensor_desc
+{
+    int32_t body;
+    float point[3];
+    float radius;
+} ymir_sensor_desc;
+
 typedef struct ymir_material_desc
 {
     float friction;  // >= 0
@@ -166,6 +175,7 @@ typedef struct ymir_particles
     int32_t fluid_rings;    // derived by fluid_density: rings of kernel cells (4 rfmax) that hold a kernel pair, 0 without fluid
     int32_t fluid_overflow; // kernel neighbours past a fluid particle's list in the last step, summed over substeps: a sensor
     int32_t wet_capacity, wet_count; // wet patches: the capacity and the high-water mark
+    int32_t sensor_capacity, sensor_count; // liquid sensors: the capacity and the high-water mark
     int32_t live_fluid; // derived: the live particles with the FLUID phase bit; the create and destroy commands are its only writers
     ymir_particle_proxy* proxies;
 
@@ -191,6 +201,13 @@ typedef struct ymir_particles
     float* wet_volume_body; // derived, per body lane: the sum of the live patches on it in wet lane order (rederive_wet, at command time only)
     int32_t* wu_code; // settle's undo log, one entry per distinct drop: a patch lane (merged: its old lanes below) or -(lane + 1) (created)
     float *wu_x, *wu_y, *wu_z, *wu_volume;
+
+    // sensor lanes: a sphere fixed in a body; a free lane reads live 0, body -1 and 0 elsewhere except generation and removed_at. Written by create_sensors and
+    // remove; sensor_liquid_volume is written by end alone (m^3: the sum of (2 r)^3 over the live fluid particles whose centre is inside, at the step's end)
+    int32_t* sensor_body;
+    float *sensor_x, *sensor_y, *sensor_z, *sensor_radius, *sensor_liquid_volume;
+    uint32_t *sensor_live, *sensor_generation;
+    uint64_t* sensor_removed_at;
 
     // distance lanes
     int32_t *dist_a, *dist_b;
@@ -258,6 +275,9 @@ int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const
 // (INVALID_ARGUMENT) a dead or non-fluid particle or one with no support, FULL when a drop finds no lane and no patch to merge into, before any
 // change. `out` (NULL or n handles) receives the patch each drop landed in.
 int32_t ymir_particles_settle(ymir_particles* p, int32_t n, const ymir_handle* h, uint64_t step_count, ymir_handle* out);
+// Creates liquid sensors in the lowest free lanes. Refuses whole (INVALID_ARGUMENT) a body outside [0, body_count), a radius that is not finite and > 0, or a
+// non-finite point; FULL when there are not n free lanes; nothing changes. A sensor only reads: its volume moves nothing.
+int32_t ymir_particles_create_sensors(ymir_particles* p, int32_t n, const ymir_sensor_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out);
 int32_t ymir_particles_set_material(ymir_particles* p, int32_t index, const ymir_material_desc* d);
 int32_t ymir_particles_free_slots(const ymir_particles* p, uint32_t lane_set, uint64_t step_count);
 

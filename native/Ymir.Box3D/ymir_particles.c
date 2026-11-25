@@ -90,7 +90,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
 {
     size_t off = 0;
     int64_t np = p->particle_capacity, nd = p->distance_capacity, nb = p->bend_capacity, na = p->attachment_capacity,
-            nt = p->tether_capacity, nm = p->material_capacity, nx = p->body_capacity, nw = p->wet_capacity, nf = p->fluid_capacity;
+            nt = p->tether_capacity, nm = p->material_capacity, nx = p->body_capacity, nw = p->wet_capacity, nf = p->fluid_capacity, ns = p->sensor_capacity;
     int64_t heap = 2 * nd + na + 1; // every directed edge relaxes once, and every attachment seeds one
     size_t table = (size_t)p->table_mask + 1;
 #define CARVE(field, type, count)                                                                                      \
@@ -114,6 +114,8 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(wet_radius, float, nw); CARVE(wet_volume, float, nw); CARVE(wet_material, uint32_t, nw); CARVE(wet_live, uint32_t, nw);
     CARVE(wet_generation, uint32_t, nw); CARVE(wet_removed_at, uint64_t, nw); CARVE(wet_volume_body, float, nx); CARVE(particle_wet_mu, float, np);
     CARVE(wet_order, int32_t, nw); CARVE(wet_body_start, int32_t, nx); CARVE(wet_body_count, int32_t, nx); CARVE(wet_body_box, float, (int64_t)nx * 7);
+    CARVE(sensor_body, int32_t, ns); CARVE(sensor_x, float, ns); CARVE(sensor_y, float, ns); CARVE(sensor_z, float, ns); CARVE(sensor_radius, float, ns);
+    CARVE(sensor_liquid_volume, float, ns); CARVE(sensor_live, uint32_t, ns); CARVE(sensor_generation, uint32_t, ns); CARVE(sensor_removed_at, uint64_t, ns);
     CARVE(wu_code, int32_t, nf); CARVE(wu_x, float, nf); CARVE(wu_y, float, nf); CARVE(wu_z, float, nf); CARVE(wu_volume, float, nf);
     CARVE(dist_a, int32_t, nd); CARVE(dist_b, int32_t, nd); CARVE(dist_rest, float, nd); CARVE(dist_compliance, float, nd);
     CARVE(dist_tension, float, nd); CARVE(dist_live, uint32_t, nd); CARVE(dist_generation, uint32_t, nd);
@@ -150,7 +152,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
 ymir_particles* ymir_particles_create(const ymir_particle_capacities* c, int32_t body_capacity)
 {
     if (c == NULL || c->particles < 0 || c->distances < 0 || c->bends < 0 || c->attachments < 0 || c->tethers < 0 ||
-        c->materials < 0 || c->fluid < 0 || c->wets < 0 || body_capacity < 0)
+        c->materials < 0 || c->fluid < 0 || c->wets < 0 || c->sensors < 0 || body_capacity < 0)
     {
         return NULL;
     }
@@ -168,6 +170,7 @@ ymir_particles* ymir_particles_create(const ymir_particle_capacities* c, int32_t
     p->body_capacity = body_capacity;
     p->fluid_capacity = c->fluid;
     p->wet_capacity = c->wets;
+    p->sensor_capacity = c->sensors;
     uint32_t table = 16;
     while (table < 2u * (uint32_t)c->particles)
     {
@@ -185,6 +188,10 @@ ymir_particles* ymir_particles_create(const ymir_particle_capacities* c, int32_t
     for (int32_t w = 0; w < p->wet_capacity; ++w)
     {
         p->wet_body[w] = p->wet_particle[w] = -1; // a free patch lane holds -1 on both supports
+    }
+    for (int32_t s = 0; s < p->sensor_capacity; ++s)
+    {
+        p->sensor_body[s] = -1; // a free sensor lane holds -1 on its body
     }
     for (int32_t i = 0; i < p->particle_capacity; ++i)
     {
@@ -267,6 +274,8 @@ int32_t ymir_particles_free_slots(const ymir_particles* p, uint32_t lane_set, ui
             return free_count(p->att_kind, YMIR_ATTACH_REMOVED, p->att_removed_at, p->attachment_count, p->attachment_capacity, step_count);
         case YMIR_LANES_WET:
             return free_count(p->wet_live, 0, p->wet_removed_at, p->wet_count, p->wet_capacity, step_count);
+        case YMIR_LANES_SENSOR:
+            return free_count(p->sensor_live, 0, p->sensor_removed_at, p->sensor_count, p->sensor_capacity, step_count);
         default:
             return 0;
     }
@@ -335,6 +344,21 @@ static void kill_attachment(ymir_particles* p, int32_t a, uint64_t step_count)
 static int wet_ok(const ymir_particles* p, int32_t lane, uint32_t generation)
 {
     return lane >= 0 && lane < p->wet_count && p->wet_live[lane] && p->wet_generation[lane] == generation;
+}
+
+static int sensor_ok(const ymir_particles* p, int32_t lane, uint32_t generation)
+{
+    return lane >= 0 && lane < p->sensor_count && p->sensor_live[lane] && p->sensor_generation[lane] == generation;
+}
+
+static void kill_sensor(ymir_particles* p, int32_t s, uint64_t step_count)
+{
+    p->sensor_live[s] = 0;
+    p->sensor_body[s] = -1;
+    p->sensor_x[s] = p->sensor_y[s] = p->sensor_z[s] = 0.0f;
+    p->sensor_radius[s] = p->sensor_liquid_volume[s] = 0.0f;
+    p->sensor_removed_at[s] = step_count;
+    p->sensor_generation[s] += 1;
 }
 
 static void wet_reset(ymir_particles* p, int32_t w)
@@ -1153,7 +1177,8 @@ int32_t ymir_particles_attach(ymir_particles* p, const ymir_attachment_desc* d, 
 int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const ymir_handle* h, uint64_t step_count)
 {
     if (p == NULL || n < 0 || (n > 0 && h == NULL) ||
-        (type != YMIR_LANES_DISTANCE && type != YMIR_LANES_BEND && type != YMIR_LANES_ATTACHMENT && type != YMIR_LANES_WET))
+        (type != YMIR_LANES_DISTANCE && type != YMIR_LANES_BEND && type != YMIR_LANES_ATTACHMENT && type != YMIR_LANES_WET &&
+         type != YMIR_LANES_SENSOR))
     {
         return YMIR_PARTICLES_INVALID_ARGUMENT;
     }
@@ -1162,11 +1187,23 @@ int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const
         int ok = type == YMIR_LANES_DISTANCE   ? distance_ok(p, h[k].lane, h[k].generation)
                  : type == YMIR_LANES_BEND     ? bend_ok(p, h[k].lane, h[k].generation)
                  : type == YMIR_LANES_WET      ? wet_ok(p, h[k].lane, h[k].generation)
+                 : type == YMIR_LANES_SENSOR   ? sensor_ok(p, h[k].lane, h[k].generation)
                                                : attachment_ok(p, h[k].lane, h[k].generation);
         if (!ok)
         {
             return YMIR_PARTICLES_INVALID_ARGUMENT;
         }
+    }
+    if (type == YMIR_LANES_SENSOR)
+    {
+        for (int32_t k = 0; k < n; ++k)
+        {
+            if (p->sensor_live[h[k].lane])
+            {
+                kill_sensor(p, h[k].lane, step_count);
+            }
+        }
+        return YMIR_PARTICLES_OK; // a sensor is in no graph: never rederive_topology
     }
     if (type == YMIR_LANES_WET)
     {
@@ -2322,9 +2359,48 @@ void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, floa
     }
 }
 
+// Each live sensor reads the liquid inside it: the sum, in lane order, of (2 r)^3 over the live fluid particles whose centre lies within its sphere, against the
+// pose the last substep left each proxy in. It runs whether or not any particle is live, so a sensor never keeps a reading once the liquid is gone.
+static void read_sensors(ymir_particles* p)
+{
+    for (int32_t s = 0; s < p->sensor_count; ++s)
+    {
+        if (!p->sensor_live[s])
+        {
+            continue;
+        }
+        float volume = 0.0f;
+        if (p->live_fluid > 0 && p->sensor_body[s] < p->body_count)
+        {
+            const ymir_particle_proxy* b = p->proxies + p->sensor_body[s];
+            v3 c = vadd((v3){b->position[0], b->position[1], b->position[2]}, qrot(b->rotation, (v3){p->sensor_x[s], p->sensor_y[s], p->sensor_z[s]}));
+            float r2 = p->sensor_radius[s] * p->sensor_radius[s];
+            for (int32_t i = 0; i < p->particle_count; ++i)
+            {
+                if (!p->particle_live[i] || !(p->phase[i] & YMIR_PHASE_FLUID))
+                {
+                    continue;
+                }
+                v3 d = vsub(P(p, p->pos_x, p->pos_y, p->pos_z, i), c);
+                if (vdot(d, d) <= r2)
+                {
+                    float side = 2.0f * p->radius[i];
+                    volume += side * side * side;
+                }
+            }
+        }
+        p->sensor_liquid_volume[s] = volume;
+    }
+}
+
 void ymir_particles_end(ymir_particles* p, int32_t substeps)
 {
-    if (p == NULL || p->live_particles == 0)
+    if (p == NULL)
+    {
+        return;
+    }
+    read_sensors(p);
+    if (p->live_particles == 0)
     {
         return;
     }
@@ -2495,4 +2571,45 @@ int32_t ymir_particles_settle(ymir_particles* p, int32_t n, const ymir_handle* h
     }
     rederive_wet(p);
     return ymir_particles_destroy_particles(p, n, h, step_count);
+}
+
+int32_t ymir_particles_create_sensors(ymir_particles* p, int32_t n, const ymir_sensor_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out)
+{
+    if (p == NULL || n < 0 || (n > 0 && d == NULL))
+    {
+        return YMIR_PARTICLES_INVALID_ARGUMENT;
+    }
+    for (int32_t k = 0; k < n; ++k)
+    {
+        if (d[k].body < 0 || d[k].body >= body_count || !finite3(d[k].point) || !isfinite(d[k].radius) || d[k].radius <= 0.0f)
+        {
+            return YMIR_PARTICLES_INVALID_ARGUMENT;
+        }
+    }
+    if (n > free_count(p->sensor_live, 0, p->sensor_removed_at, p->sensor_count, p->sensor_capacity, step_count))
+    {
+        return YMIR_PARTICLES_FULL;
+    }
+    int32_t from = 0;
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t s = next_lane(p->sensor_live, 0, p->sensor_removed_at, p->sensor_count, p->sensor_capacity, from, step_count);
+        from = s + 1;
+        p->sensor_live[s] = 1;
+        p->sensor_body[s] = d[k].body;
+        p->sensor_x[s] = d[k].point[0];
+        p->sensor_y[s] = d[k].point[1];
+        p->sensor_z[s] = d[k].point[2];
+        p->sensor_radius[s] = d[k].radius;
+        p->sensor_liquid_volume[s] = 0.0f; // the first step's end reads it
+        if (s >= p->sensor_count)
+        {
+            p->sensor_count = s + 1;
+        }
+        if (out != NULL)
+        {
+            out[k] = (ymir_handle){s, p->sensor_generation[s]};
+        }
+    }
+    return YMIR_PARTICLES_OK;
 }
