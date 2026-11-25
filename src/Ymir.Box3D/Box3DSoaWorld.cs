@@ -53,6 +53,7 @@ internal struct Box3DSoaJointDesc
     public float AxisX, AxisY, AxisZ;
     public float Lower, Upper, ConeAngle;
     public float LinearHertz, LinearDamping, MaxForce, AngularHertz, AngularDamping, MaxTorque;
+    public float ForceThreshold, TorqueThreshold;
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_ray_hit</c>.</summary>
@@ -295,6 +296,12 @@ internal unsafe struct Box3DSoaViewNative
     public float* JointOriginX;
     public float* JointOriginY;
     public float* JointOriginZ;
+    public float* JointConstraintForceX;
+    public float* JointConstraintForceY;
+    public float* JointConstraintForceZ;
+    public float* JointConstraintTorqueX;
+    public float* JointConstraintTorqueY;
+    public float* JointConstraintTorqueZ;
     public float* ContactImpulse;
     public int* ContactCount;
     public ulong* MaterialId;
@@ -403,6 +410,19 @@ internal unsafe struct Box3DSoaFactsNative
     public Box3DSoaTouch* Begin;
     public Box3DSoaTouch* End;
     public Box3DSoaHit* Hit;
+    public Box3DSoaOverload* Overload;
+    public uint OverloadCount;
+    public uint Reserved2;
+}
+
+/// <summary>A joint whose load reached its threshold in the step just taken, with the load (world frame; N and N m) Box3D reports for it after the step. The joint stays: Ymir never removes on a threshold.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public readonly struct Box3DSoaOverload
+{
+    public readonly int JointLane;
+    public readonly uint JointGeneration;
+    public readonly float ForceX, ForceY, ForceZ;
+    public readonly float TorqueX, TorqueY, TorqueZ;
 }
 
 /// <summary>A begin or end of touch: the two bodies' lane indices and the two shapes' stable ids.</summary>
@@ -461,6 +481,8 @@ public readonly unsafe ref struct Box3DSoaFacts
     public ReadOnlySpan<Box3DSoaTouch> Begin => Facts(_f.Begin, _f.BeginCount);
     public ReadOnlySpan<Box3DSoaTouch> End => Facts(_f.End, _f.EndCount);
     public ReadOnlySpan<Box3DSoaHit> Hit => Facts(_f.Hit, _f.HitCount);
+    /// <summary>Joints that reached a force or torque threshold in the last step (at most once each), in Box3D's joint order.</summary>
+    public ReadOnlySpan<Box3DSoaOverload> Overloads => Facts(_f.Overload, _f.OverloadCount);
     public Box3DSoaDropped Dropped => new(_f.BeginDropped, _f.EndDropped, _f.HitDropped);
     public int Capacity => (int)_f.FactCapacity;
 }
@@ -532,6 +554,10 @@ internal static unsafe partial class Box3DSoaNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ymir_box3d_soa_destroy_joint(nint world, int joint, uint generation);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_set_joint_thresholds(nint world, int joint, uint generation, float forceThreshold, float torqueThreshold);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -701,6 +727,14 @@ public readonly unsafe struct Box3DSoaView
     /// <summary>World position of the joint frame origin on body A (the joint anchor); at creation it is the anchor add_joint was given.</summary>
     public ReadOnlySpan<float> JointOriginX => Lane(_v.JointOriginX, JointCount);
     public ReadOnlySpan<float> JointOriginY => Lane(_v.JointOriginY, JointCount);
+    /// <summary>The load the joint carries, world frame, from Box3D's constraint solution at the end of the last step (N); a removed lane reads 0. A joint hanging a mass m at rest reads m g. A sensor: Ymir never removes a joint on it.</summary>
+    public ReadOnlySpan<float> JointConstraintForceX => Lane(_v.JointConstraintForceX, JointCount);
+    public ReadOnlySpan<float> JointConstraintForceY => Lane(_v.JointConstraintForceY, JointCount);
+    public ReadOnlySpan<float> JointConstraintForceZ => Lane(_v.JointConstraintForceZ, JointCount);
+    /// <summary>The torque (N m) the joint carries, as the force lanes.</summary>
+    public ReadOnlySpan<float> JointConstraintTorqueX => Lane(_v.JointConstraintTorqueX, JointCount);
+    public ReadOnlySpan<float> JointConstraintTorqueY => Lane(_v.JointConstraintTorqueY, JointCount);
+    public ReadOnlySpan<float> JointConstraintTorqueZ => Lane(_v.JointConstraintTorqueZ, JointCount);
     public ReadOnlySpan<float> JointOriginZ => Lane(_v.JointOriginZ, JointCount);
 
     // Particle lanes: read-only, changed only by Step and by the particle and constraint commands. Lanes are indexed up to
@@ -971,7 +1005,8 @@ public sealed class Box3DSoaWorld : IDisposable
     /// </summary>
     public Box3DSoaJointHandle AddJoint(
         Box3DSoaJointKind kind, int bodyA, int bodyB, (float X, float Y, float Z) anchor,
-        (float X, float Y, float Z) axis, bool limit = false, float lower = 0f, float upper = 0f, float coneAngle = 0f)
+        (float X, float Y, float Z) axis, bool limit = false, float lower = 0f, float upper = 0f, float coneAngle = 0f,
+        float forceThreshold = float.PositiveInfinity, float torqueThreshold = float.PositiveInfinity)
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         var desc = new Box3DSoaJointDesc
@@ -979,6 +1014,7 @@ public sealed class Box3DSoaWorld : IDisposable
             Kind = (uint)kind, BodyA = bodyA, BodyB = bodyB, EnableLimit = limit ? 1u : 0u,
             AnchorX = anchor.X, AnchorY = anchor.Y, AnchorZ = anchor.Z,
             AxisX = axis.X, AxisY = axis.Y, AxisZ = axis.Z, Lower = lower, Upper = upper, ConeAngle = coneAngle,
+            ForceThreshold = forceThreshold, TorqueThreshold = torqueThreshold,
         };
         Check(Box3DSoaNative.ymir_box3d_soa_add_joint(_handle, desc, out var index));
         return HandleOf(index);
@@ -994,7 +1030,8 @@ public sealed class Box3DSoaWorld : IDisposable
     /// </summary>
     public Box3DSoaJointHandle AddMotorJoint(
         int bodyA, int bodyB, (float X, float Y, float Z) anchor,
-        (float Hertz, float Damping, float MaxForce) linear, (float Hertz, float Damping, float MaxTorque) angular)
+        (float Hertz, float Damping, float MaxForce) linear, (float Hertz, float Damping, float MaxTorque) angular,
+        float forceThreshold = float.PositiveInfinity, float torqueThreshold = float.PositiveInfinity)
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         var desc = new Box3DSoaJointDesc
@@ -1003,6 +1040,7 @@ public sealed class Box3DSoaWorld : IDisposable
             AnchorX = anchor.X, AnchorY = anchor.Y, AnchorZ = anchor.Z, AxisZ = 1f,
             LinearHertz = linear.Hertz, LinearDamping = linear.Damping, MaxForce = linear.MaxForce,
             AngularHertz = angular.Hertz, AngularDamping = angular.Damping, MaxTorque = angular.MaxTorque,
+            ForceThreshold = forceThreshold, TorqueThreshold = torqueThreshold,
         };
         Check(Box3DSoaNative.ymir_box3d_soa_add_joint(_handle, desc, out var index));
         return HandleOf(index);
@@ -1019,6 +1057,17 @@ public sealed class Box3DSoaWorld : IDisposable
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         Check(Box3DSoaNative.ymir_box3d_soa_destroy_joint(_handle, joint.Lane, joint.Generation));
+    }
+
+    /// <summary>
+    /// Sets a live joint's thresholds: in a step where its force (N) or torque (N m) reaches one, the joint appears in
+    /// <see cref="Box3DSoaFacts.Overloads"/>; <c>+inf</c> is never. The joint is never removed on a threshold. Throws for NaN or a
+    /// negative value, a lane that is not a live joint, or a stale handle; a refusal changes nothing.
+    /// </summary>
+    public void SetJointThresholds(Box3DSoaJointHandle joint, float forceThreshold, float torqueThreshold)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        Check(Box3DSoaNative.ymir_box3d_soa_set_joint_thresholds(_handle, joint.Lane, joint.Generation, forceThreshold, torqueThreshold));
     }
 
     private unsafe Box3DSoaJointHandle HandleOf(int lane)
