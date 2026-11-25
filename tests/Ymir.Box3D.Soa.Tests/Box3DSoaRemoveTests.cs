@@ -66,7 +66,17 @@ public sealed class Box3DSoaRemoveTests
         Assert.Throws<InvalidOperationException>(() => world.RemoveBody(new Box3DSoaBodyHandle(8, 0))); // out of range
         Assert.Throws<InvalidOperationException>(() => world.RemoveBody(new Box3DSoaBodyHandle(-1, 0)));
 
-        Run(world, 30); // the world steps on, the removed lane stays a tombstone, the orphan falls free
+        world.Step(Dt); // the removals are published by the next step, in removal order
+        var bodies = world.Facts.BodiesRemoved;
+        Assert.Equal(1, bodies.Length);
+        Assert.Equal((upper.Lane, upper.Generation, 2ul, 0u, 0f), (bodies[0].Lane, bodies[0].Generation, bodies[0].StableId, bodies[0].WetPatches, bodies[0].WetVolume));
+        var joints = world.Facts.JointsRemoved;
+        Assert.Equal(2, joints.Length);
+        Assert.Equal((j1.Lane, j1.Generation, pin.Lane, upper.Lane, 1u), (joints[0].Lane, joints[0].Generation, joints[0].BodyA, joints[0].BodyB, joints[0].WithBody));
+        Assert.Equal((j2.Lane, j2.Generation, upper.Lane, lower.Lane, 1u), (joints[1].Lane, joints[1].Generation, joints[1].BodyA, joints[1].BodyB, joints[1].WithBody));
+        world.Step(Dt);
+        Assert.Equal(0, world.Facts.BodiesRemoved.Length + world.Facts.JointsRemoved.Length); // facts last one step
+        Run(world, 29); // the world steps on, the removed lane stays a tombstone, the orphan falls free
         Assert.Equal((uint)Box3DSoaKind.Removed, view.Kind[upper]);
         Assert.Equal(0f, view.PositionY[upper]);
         Assert.True(view.PositionY[lower] < 3.5f - 0.5f, "the child of a removed body is free");
@@ -166,7 +176,14 @@ public sealed class Box3DSoaRemoveTests
         Assert.True(view.WetVolume[a.Lane] > 0f && volumeB > 0f);
         var generationsA = onA.Select(w => view.WetGeneration[w]).ToArray();
 
+        var volumeA = 0f;
+        foreach (var w in onA) volumeA += view.WetPatchVolume[w];
         world.RemoveBody(a);
+        world.Step(Dt);
+        var removed = world.Facts.BodiesRemoved;
+        Assert.Equal(1, removed.Length);
+        Assert.Equal(3u, removed[0].WetPatches);
+        Assert.Equal(volumeA, removed[0].WetVolume, volumeA * 1e-5f);
         for (var k = 0; k < onA.Length; k++)
         {
             Assert.Equal(0u, view.WetLive[onA[k]]);
@@ -179,6 +196,55 @@ public sealed class Box3DSoaRemoveTests
             Assert.Equal(1u, view.WetLive[onB[k]]);
             Assert.Equal(generationsB[k], view.WetGeneration[onB[k]]);
         }
+    }
+
+    [Fact]
+    public void A_removed_toucher_ends_its_touch_by_name()
+    {
+        using var world = World();
+        var floor = world.AddStaticBox(1, (0f, -0.5f, 0f), (2f, 0.5f, 2f));
+        var ball = world.AddSphere(77, (0f, 0.12f, 0f), 0.1f, 1000f);
+        var other = world.AddSphere(78, (1f, 0.12f, 0f), 0.1f, 1000f);
+        Run(world, 40);
+        Assert.True(world.View.ContactCount[ball] > 0);
+        world.RemoveBody(ball);
+        world.Step(Dt);
+        var ends = world.Facts.End;
+        Assert.Equal(1, ends.Length);
+        Assert.Equal(new[] { (ball.Lane, 77ul), (floor.Lane, 1ul) }.OrderBy(x => x.Item1), new[] { (ends[0].LaneA, ends[0].StableIdA), (ends[0].LaneB, ends[0].StableIdB) }.OrderBy(x => x.Item1));
+        world.Step(Dt);
+        Assert.Equal(0, world.Facts.End.Length);
+        _ = other;
+    }
+
+    [Fact]
+    public void Destroying_a_joint_is_a_removal_fact_too()
+    {
+        using var world = World();
+        var pin = world.AddStaticBox(1, (0f, 5f, 0f), (0.1f, 0.1f, 0.1f));
+        var bob = world.AddSphere(2, (0f, 4f, 0f), 0.1f, 1000f);
+        var joint = world.AddJoint(Box3DSoaJointKind.Weld, pin, bob, (0f, 5f, 0f), (0f, 0f, 1f));
+        world.Step(Dt);
+        world.DestroyJoint(joint);
+        world.Step(Dt);
+        var joints = world.Facts.JointsRemoved;
+        Assert.Equal(1, joints.Length);
+        Assert.Equal((joint.Lane, joint.Generation, pin.Lane, bob.Lane, 0u), (joints[0].Lane, joints[0].Generation, joints[0].BodyA, joints[0].BodyB, joints[0].WithBody));
+        Assert.Equal(0, world.Facts.BodiesRemoved.Length);
+    }
+
+    [Fact]
+    public void A_refused_step_publishes_nothing_and_keeps_the_removal_for_the_next()
+    {
+        using var world = World();
+        var ball = world.AddSphere(1, (0f, 5f, 0f), 0.1f, 1000f);
+        var other = world.AddSphere(2, (1f, 5f, 0f), 0.1f, 1000f);
+        world.RemoveBody(ball);
+        world.View.ForceX[other] = float.NaN;
+        Assert.Throws<InvalidOperationException>(() => world.Step(Dt)); // a non-finite write lane refuses the whole step
+        world.View.ForceX[other] = 0f;
+        world.Step(Dt);
+        Assert.Equal(1, world.Facts.BodiesRemoved.Length);
     }
 
     [Fact]
