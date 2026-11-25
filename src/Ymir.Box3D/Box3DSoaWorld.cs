@@ -1160,16 +1160,18 @@ public sealed class Box3DSoaWorld : IDisposable
     /// <summary>
     /// Ties <paramref name="particle"/> to a body point (kind Body: <paramref name="target"/> is the body lane, <paramref name="point"/> in
     /// its frame) or a world point (Static). With <paramref name="tether"/> the point also bounds every particle of the component by
-    /// the rest path. <paramref name="compliance"/> is m/N, 0 for rigid. Attach where the particle already is.
+    /// the rest path. With <paramref name="limb"/> (Body only) the particle is flesh of the body's limb tree: contact skips every body
+    /// that shares the attached body's limb-tree root, not just the attached body. <paramref name="compliance"/> is m/N, 0 for rigid.
+    /// Attach where the particle already is.
     /// </summary>
     public Box3DSoaConstraintHandle Attach(
         Box3DSoaAttachKind kind, Box3DSoaParticleHandle particle, int target = -1, (float X, float Y, float Z) point = default,
-        float compliance = 0f, bool tether = false)
+        float compliance = 0f, bool tether = false, bool limb = false)
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         var desc = new Box3DSoaAttachmentDesc
         {
-            Kind = (uint)kind, Flags = tether ? 1u : 0u, Particle = particle, Body = target,
+            Kind = (uint)kind, Flags = (tether ? 1u : 0u) | (limb ? 2u : 0u), Particle = particle, Body = target,
             PointX = point.X, PointY = point.Y, PointZ = point.Z, Compliance = compliance,
         };
         Check(Box3DSoaNative.ymir_box3d_soa_attach(_handle, desc, out var handle));

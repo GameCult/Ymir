@@ -108,6 +108,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(rest_x, float, np); CARVE(rest_y, float, np); CARVE(rest_z, float, np);
     CARVE(phase, uint32_t, np); CARVE(material, uint32_t, np); CARVE(particle_live, uint32_t, np);
     CARVE(particle_generation, uint32_t, np); CARVE(particle_removed_at, uint64_t, np); CARVE(component, int32_t, np);
+    CARVE(held_start, int32_t, np); CARVE(held_count, int32_t, np); CARVE(limb_body, int32_t, np); CARVE(held_body, int32_t, na);
     CARVE(density, float, np); CARVE(support_body, int32_t, np); CARVE(support_particle, int32_t, np);
     CARVE(nbr, int32_t, (int64_t)p->fluid_capacity * YMIR_FLUID_NEIGHBOURS); CARVE(nbr_start, int32_t, np); CARVE(nbr_count, int32_t, np);
     CARVE(wet_body, int32_t, nw); CARVE(wet_particle, int32_t, nw); CARVE(wet_x, float, nw); CARVE(wet_y, float, nw); CARVE(wet_z, float, nw);
@@ -616,7 +617,8 @@ static int has_pair(const ymir_particles* p, int32_t a, const int32_t* label)
 // refused with every lane as it was.
 // ISOLATED is for a command that changed no distance and no attachment, only which lanes are live: the graph, so every
 // tether and every other lane's component, is as it was. It writes the component of the `n` lanes in `lanes` (each
-// just created, which is its own component, or just destroyed, which reads 0) and returns.
+// just created, which is its own component, or just destroyed, which reads 0), their held list (empty) and limb body (-1),
+// and returns.
 enum
 {
     TOPO_FULL = 0,
@@ -630,6 +632,8 @@ static int32_t rederive_topology(ymir_particles* p, int mode, const int32_t* lan
         for (int32_t k = 0; k < n; ++k)
         {
             p->component[lanes[k]] = p->particle_live[lanes[k]] ? lanes[k] : 0;
+            p->held_count[lanes[k]] = 0;
+            p->limb_body[lanes[k]] = -1;
         }
         return YMIR_PARTICLES_OK;
     }
@@ -793,6 +797,34 @@ static int32_t rederive_topology(ymir_particles* p, int mode, const int32_t* lan
     for (int32_t i = 0; i < np; ++i)
     {
         p->component[i] = p->tether_of[i] >= 0 ? p->tether_of[i] : 0;
+        p->held_count[i] = 0;
+        p->limb_body[i] = -1;
+    }
+    // The held lists: held_start first holds each particle's slice end, then the attachments are walked from the highest
+    // lane down, each taking the slot below, so a slice ends up in ascending attachment lane order and starts at held_start.
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        if (p->att_kind[a] == YMIR_ATTACH_BODY)
+        {
+            p->held_count[p->att_particle[a]]++;
+        }
+    }
+    for (int32_t i = 0, end = 0; i < np; ++i)
+    {
+        end += p->held_count[i];
+        p->held_start[i] = end;
+    }
+    for (int32_t a = p->attachment_count - 1; a >= 0; --a)
+    {
+        if (p->att_kind[a] == YMIR_ATTACH_BODY)
+        {
+            int32_t i = p->att_particle[a];
+            p->held_body[--p->held_start[i]] = p->att_body[a];
+            if (p->att_flags[a] & YMIR_ATTACH_FLAG_LIMB)
+            {
+                p->limb_body[i] = p->att_body[a]; // descending: the lowest lane's body is the last written
+            }
+        }
     }
     int32_t nt = 0;
     for (int32_t a = 0; a < p->attachment_count; ++a)
@@ -1129,7 +1161,8 @@ int32_t ymir_particles_create_bends(ymir_particles* p, int32_t n, const ymir_ben
 int32_t ymir_particles_attach(ymir_particles* p, const ymir_attachment_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out)
 {
     if (p == NULL || d == NULL || (d->kind != YMIR_ATTACH_BODY && d->kind != YMIR_ATTACH_STATIC) ||
-        (d->flags & ~(uint32_t)YMIR_ATTACH_FLAG_TETHER) != 0 || !particle_ok(p, d->particle.lane, d->particle.generation) ||
+        (d->flags & ~(uint32_t)(YMIR_ATTACH_FLAG_TETHER | YMIR_ATTACH_FLAG_LIMB)) != 0 ||
+        (d->kind == YMIR_ATTACH_STATIC && (d->flags & YMIR_ATTACH_FLAG_LIMB) != 0) || !particle_ok(p, d->particle.lane, d->particle.generation) ||
         !finite3(d->point) || !isfinite(d->compliance) || d->compliance < 0.0f ||
         (p->phase[d->particle.lane] & YMIR_PHASE_FLUID) != 0) // fluid holds no constraint
     {
@@ -1936,11 +1969,12 @@ static float proxy_reach(const ymir_particle_proxy* b)
 }
 
 // 1 when particle i is held to body k by an attachment: such a particle is the body's own point, so contact skips that body.
+// Reads the list rederive_topology wrote at the last command.
 static int held_by(const ymir_particles* p, int32_t i, int32_t k)
 {
-    for (int32_t a = 0; a < p->attachment_count; ++a)
+    for (int32_t s = p->held_start[i], e = s + p->held_count[i]; s < e; ++s)
     {
-        if (p->att_kind[a] == YMIR_ATTACH_BODY && p->att_particle[a] == i && p->att_body[a] == k)
+        if (p->held_body[s] == k)
         {
             return 1;
         }
@@ -1950,7 +1984,8 @@ static int held_by(const ymir_particles* p, int32_t i, int32_t k)
 
 // Each particle against each shaped body in ascending lane order. The correction is split by inverse mass between
 // the particle and the body at the contact point; Coulomb friction removes the tangential slip up to mu times the
-// push. Every body the particle is attached to is skipped: the attachment already ties them.
+// push. Every body the particle is attached to is skipped: the attachment already ties them. A LIMB attachment skips the
+// attached body's whole limb tree: flesh does not meet the bones of its own limb.
 static void body_contacts(phase* f)
 {
     ymir_particles* p = f->p;
@@ -1979,9 +2014,9 @@ static void body_contacts(phase* f)
             {
                 continue;
             }
-            if (held_by(p, i, k))
+            if ((p->limb_body[i] >= 0 && b->root == p->proxies[p->limb_body[i]].root) || held_by(p, i, k))
             {
-                continue;
+                continue; // the particle is flesh of this body's limb tree, or attached to this body
             }
             v3 n, s;
             float d = proxy_distance(b, x, &n, &s);
