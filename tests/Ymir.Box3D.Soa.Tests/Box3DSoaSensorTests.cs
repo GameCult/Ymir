@@ -100,12 +100,13 @@ public sealed partial class Box3DSoaFluidTests
     public void Sensor_follows_its_body_frame_and_the_pose_the_step_ends_in()
     {
         // Zero gravity, drops 0.5 m apart so none moves. The anchor is turned a quarter about z, so its body-frame point (0.3, 0, 0) lies at world (x, y + 0.3, z) over it,
-        // and it runs 0.5 m a tick along x: at the end of tick s it is over the drop at x 0.5 s. Decoys sit where an unrotated frame (or the pose a substep earlier) would look.
+        // and it runs 0.5 m a tick along x: at the end of tick s it is over x 0.5 s. A drop waits there for even s only, so a sensor that reads the wrong place or pose
+        // differs on the odd ticks, where a decoy lies at (x + 0.3, 0, 0) (an unrotated frame's centre) 0.42 m from the true centre (inside a radius compared unsquared).
         using var world = FluidWorld(32, 4, gravityY: 0f, sensors: 2);
         var descs = new List<Box3DSoaParticleDesc>();
-        for (var k = 0; k < 8; k++)
+        for (var k = 0; k < 10; k++)
         {
-            descs.Add(Fluid((0.5f * k, 0.3f, 0f), FluidMass, R));
+            if (k % 2 == 0) descs.Add(Fluid((0.5f * k, 0.3f, 0f), FluidMass, R));
             descs.Add(Fluid((0.5f * k + 0.3f, 0f, 0f), FluidMass, R));
         }
         world.CreateParticles(descs.ToArray());
@@ -120,9 +121,7 @@ public sealed partial class Box3DSoaFluidTests
             world.Step(Dt, Sub);
             reads[s] = world.View.SensorLiquidVolume[handle[0]];
         }
-        for (var s = 1; s <= 7; s++) Assert.Equal(DropVolume, reads[s]);
-        Assert.Equal(0f, reads[8]);
-        Assert.Equal(0f, reads[9]);
+        for (var s = 1; s <= 9; s++) Assert.Equal(s % 2 == 0 ? DropVolume : 0f, reads[s]);
     }
 
     [Fact]

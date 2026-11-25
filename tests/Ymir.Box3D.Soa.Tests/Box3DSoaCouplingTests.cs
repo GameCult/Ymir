@@ -394,10 +394,11 @@ public sealed class Box3DSoaCouplingTests
     }
 
     /// <summary>The 16 x 16 sheet cost scene with one body, plus <paramref name="fluid"/> fluid particles (r 1.25 cm) of XSPH viscosity <paramref name="viscosity"/> poured on the sheet; ms per tick at 4 substeps.</summary>
-    private static double PourCost(int fluid, float viscosity = 0f)
+    private static double PourCost(int fluid, float viscosity = 0f, int sensors = 0)
     {
-        using var world = new Box3DSoaWorld(64, gravityY: -G, particles: new Box3DSoaParticleCapacities(16 * 48 + 256 + fluid, 16 * 47 + 480, 16 * 46 + 448, 16, 600, 2, fluid));
+        using var world = new Box3DSoaWorld(64, gravityY: -G, particles: new Box3DSoaParticleCapacities(16 * 48 + 256 + fluid, 16 * 47 + 480, 16 * 46 + 448, 16, 600, 2, fluid, 0, sensors));
         world.AddStaticBox(1, (0f, -0.5f, 0f), (20f, 0.5f, 20f));
+        for (var s = 0; s < sensors; s++) world.CreateSensors([(0, (0.35f + 0.1f * s, 1.8f, 0.15f), 0.15f)]); // body-frame y 1.8 is world 1.3: over the block
         world.SetMaterial(0, 0f, 0, viscosity);
         for (var c = 0; c < 16; c++)
             Graph.Rope(world, Line((0f, 0.5f + 0.03f * c, 0.02f * (c % 4)), (Spacing, 0f, 0f), 48), ParticleMass, ParticleRadius, Box3DSoaPhase.Of((uint)(c + 1), true, true));
@@ -456,6 +457,25 @@ public sealed class Box3DSoaCouplingTests
             Array.Sort(withs);
             Array.Sort(withouts);
             var line = $"PARTICLE_COST {fluid} fluid particles r 1.25 cm viscosity {viscosity} poured on the 16 x 16 sheet scene, 4 substeps, 1 body, {pairs} interleaved pairs: median {withs[pairs / 2]:F3} ms per tick with, {withouts[pairs / 2]:F3} without; fluid increment median {increments[pairs / 2]:F3} ms per tick, IQR {increments[1] / 2 + increments[2] / 2:F3} to {increments[6] / 2 + increments[7] / 2:F3} (min {increments[0]:F3}, max {increments[pairs - 1]:F3})";
+            Console.Error.WriteLine(line);
+            Reading(line);
+            Assert.True(withs[pairs / 2] > 0);
+        }
+        // Four liquid sensors over the pour, paired the same way against the same scene without them (same binary, the order alternating): the sensors' increment.
+        {
+            var increments = new double[pairs];
+            var withs = new double[pairs];
+            var withouts = new double[pairs];
+            for (var k = 0; k < pairs; k++)
+            {
+                if (k % 2 == 0) { withouts[k] = PourCost(fluid); withs[k] = PourCost(fluid, 0f, 4); }
+                else { withs[k] = PourCost(fluid, 0f, 4); withouts[k] = PourCost(fluid); }
+                increments[k] = withs[k] - withouts[k];
+            }
+            Array.Sort(increments);
+            Array.Sort(withs);
+            Array.Sort(withouts);
+            var line = $"PARTICLE_COST {fluid} fluid particles, 4 liquid sensors r 15 cm over the pour, 4 substeps, {pairs} interleaved pairs: median {withs[pairs / 2]:F3} ms per tick with, {withouts[pairs / 2]:F3} without; sensor increment median {increments[pairs / 2]:F3} ms per tick (min {increments[0]:F3}, max {increments[pairs - 1]:F3})";
             Console.Error.WriteLine(line);
             Reading(line);
             Assert.True(withs[pairs / 2] > 0);
