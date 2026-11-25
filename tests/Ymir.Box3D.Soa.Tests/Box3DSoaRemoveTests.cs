@@ -299,6 +299,44 @@ public sealed class Box3DSoaRemoveTests
         _ = c;
     }
 
+    /// <summary>Random add/remove churn of falling spheres on a floor. Run it in Debug too: Box3D validates its broad-phase there, and a
+    /// body removed while its proxy was the only one moving left the dynamic tree flagged enlarged (fixed in box3d c790839).</summary>
+    [Fact]
+    public void Add_and_remove_churn_keeps_the_world_valid()
+    {
+        for (var seed = 1; seed <= 12; seed++)
+        {
+            using var world = World(bodies: 6, joints: 0);
+            world.AddStaticBox(1, (0f, -0.5f, 0f), (4f, 0.5f, 4f));
+            var rng = new Random(seed);
+            var live = new List<Box3DSoaBodyHandle>();
+            var next = 2ul;
+            var removals = 0;
+            for (var step = 0; step < 120; step++)
+            {
+                if (rng.Next(3) == 0)
+                {
+                    if (live.Count > 0 && (world.FreeBodySlots == 0 || rng.Next(2) == 0))
+                    {
+                        var k = rng.Next(live.Count);
+                        world.RemoveBody(live[k]);
+                        live.RemoveAt(k);
+                        removals++;
+                    }
+                    else if (world.FreeBodySlots > 0)
+                    {
+                        live.Add(world.AddSphere(next++, (4f * rng.NextSingle() - 2f, 0.2f + 2f * rng.NextSingle(), 4f * rng.NextSingle() - 2f), 0.1f, 1000f));
+                    }
+                }
+                world.Step(Dt);
+            }
+            Assert.True(removals >= 5, $"seed {seed}: {removals} removals");
+            var view = world.View;
+            Assert.All(live, h => Assert.Equal((uint)Box3DSoaKind.Sphere, view.Kind[h]));
+            Assert.All(live, h => Assert.InRange(view.PositionY[h], 0f, 2.5f)); // on or above the floor, none lost through it
+        }
+    }
+
     private static byte[] Replay()
     {
         using var world = World(bodies: 8, joints: 4);
