@@ -850,6 +850,13 @@ int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymi
         p->particle_removed_at[i] = step_count;
         p->live_particles--;
     }
+    for (int32_t i = 0; i < p->particle_count; ++i)
+    {
+        if (p->particle_live[i] && p->support_particle[i] >= 0 && !p->particle_live[p->support_particle[i]])
+        {
+            p->support_particle[i] = -1; // a drop does not keep resting on a solid destroyed under it until the next step
+        }
+    }
     return rederive_topology(p, held ? TOPO_FULL : TOPO_ISOLATED, p->queue, killed);
 }
 

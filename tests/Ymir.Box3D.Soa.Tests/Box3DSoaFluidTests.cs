@@ -473,10 +473,11 @@ public sealed class Box3DSoaFluidTests
         // resting only on other fluid reads -1 on both lanes, as does a drop in flight. A drop pinched between the floor (lane 0) and a slab 1.9 r above
         // it (lane 5) touches both: the slab, the higher lane.
         {
-            using var world = FluidWorld(128, gravityY: -9.81f);
-            Well(world, 0.05f);
+            using var world = FluidWorld(256, gravityY: -9.81f);
+            const float half = 0.1f;
+            Well(world, half);
             var slab = world.AddStaticBox(6, (1f, 1.9f * R + 0.05f, 0f), (0.1f, 0.05f, 0.1f));
-            var pool = Graph.Block(world, (-0.0375f, R + 0.005f, -0.0375f), 4, 4, 4, R, FluidMass, FluidPhase);
+            var pool = Graph.Block(world, (-0.0625f, R + 0.005f, -0.0625f), 5, 8, 5, R, FluidMass, FluidPhase);
             var pinched = new Box3DSoaParticleHandle[1];
             world.CreateParticles([Fluid((1f, R, 0f))], pinched);
             var flight = new Box3DSoaParticleHandle[1];
@@ -492,24 +493,39 @@ public sealed class Box3DSoaFluidTests
             Assert.Equal(-1, world.View.SupportBody[thrown[0].Lane]);
             for (var tick = 0; tick < 119; tick++) world.Step(1f / 60f, Sub);
             view = world.View;
-            var floor = 0; var resting = 0;
+            // Every pool particle falls in one class by its distance to the nearest face. Gravity presses the floor layer every substep, so it must read;
+            // a particle clear of every face by 5% must read -1 (resting on fluid); one in between may read either, but only a face it is within 5% of
+            // (a contact pushes a particle out to distance r exactly, where it may or may not touch again).
+            int floor = 0, resting = 0, band = 0;
             foreach (var h in pool)
             {
-                // A particle a contact pushed out ends at distance r from the face, as one that never touched may: only gravity presses the floor layer every
-                // substep, so that layer must read; a particle clear of every face by 5% must read -1; one within 5% of a wall may read either.
                 var (x, y, z) = (view.ParticleX[h.Lane], view.ParticleY[h.Lane], view.ParticleZ[h.Lane]);
-                var nearWall = MathF.Abs(x) >= 0.05f - 1.05f * R || MathF.Abs(z) >= 0.05f - 1.05f * R;
+                var near = new List<int>();
+                if (y <= 1.05f * R) near.Add(0);
+                if (half - x <= 1.05f * R) near.Add(1);
+                if (half + x <= 1.05f * R) near.Add(2);
+                if (half - z <= 1.05f * R) near.Add(3);
+                if (half + z <= 1.05f * R) near.Add(4);
                 var body = view.SupportBody[h.Lane];
-                if (y <= 1.001f * R) { floor++; Assert.True(body >= 0 && body <= 4, $"x {x:F5} y {y:F5} z {z:F5} body {body}"); }
-                else if (y > 1.05f * R && !nearWall) { resting++; Assert.Equal(-1, body); }
-                else if (body >= 0) Assert.True(nearWall || y <= 1.05f * R, $"x {x:F5} y {y:F5} z {z:F5} body {body}");
+                var where = $"x {x:F5} y {y:F5} z {z:F5} body {body}";
+                if (y <= 1.001f * R) { floor++; Assert.True(body >= 0 && body <= 4, where); }
+                else if (near.Count == 0) { resting++; Assert.Equal(-1, body); }
+                else { band++; Assert.True(body == -1 || near.Contains(body), where); }
                 Assert.Equal(-1, view.SupportParticle[h.Lane]);
             }
-            Assert.True(floor >= 8 && resting >= 2, $"{floor} on the floor, {resting} resting on fluid");
+            Assert.Equal(pool.Length, floor + resting + band);
+            Assert.True(floor >= 100 && resting >= 10, $"{floor} on the floor, {resting} resting on fluid, {band} in the band");
             Assert.Equal(5, view.SupportBody[pinched[0].Lane]);
             Assert.Equal(-1, view.SupportParticle[pinched[0].Lane]);
             Assert.Equal(-1, view.SupportBody[flight[0].Lane]);
             Assert.Equal(-1, view.SupportParticle[flight[0].Lane]);
+            // Destroy clears both lanes at once: a destroyed floor particle reads -1 before any step, not its last support.
+            var floorPick = pool.First(h => view.ParticleY[h.Lane] <= 1.001f * R);
+            Assert.True(view.SupportBody[floorPick.Lane] >= 0);
+            world.DestroyParticles([floorPick]);
+            Assert.Equal(-1, world.View.SupportBody[floorPick.Lane]);
+            Assert.Equal(-1, world.View.SupportParticle[floorPick.Lane]);
+            Readings.Add($"SUPPORT well classes: {floor} floor, {resting} resting on fluid, {band} band of {pool.Length}");
             ReadSupport("well", view, pool);
         }
         // A free box on the floor, a pool on the box: the box's lane for the layer that touches it, -1 above, never the floor's.
@@ -543,7 +559,7 @@ public sealed class Box3DSoaFluidTests
                 for (var i = 0; i < 8; i += 7)
                     world.Attach(Box3DSoaAttachKind.Static, sheet.Particles[j * 8 + i], point: (0.04f * i, 0.6f, 0.04f * j));
             var drops = new Box3DSoaParticleHandle[4];
-            world.CreateParticles([Fluid((0.12f, 0.64f, 0.12f)), Fluid((0.16f, 0.64f, 0.16f)), Fluid((0.13f, 0.7f, 0.14f)), Fluid((0.15f, 60f, 0.14f))], drops);
+            world.CreateParticles([Fluid((0.12f, 0.64f, 0.12f)), Fluid((0.16f, 0.64f, 0.16f)), Fluid((0.2f, 0.64f, 0.08f)), Fluid((0.15f, 60f, 0.14f))], drops);
             world.Step(1f / 60f, Sub);
             // a drop 4 cm above a sheet particle sits inside the kernel reach and so in its row's list, and does not touch (4 cm against 3.25): no support
             Assert.Equal(-1, world.View.SupportParticle[drops[0].Lane]);
@@ -556,15 +572,20 @@ public sealed class Box3DSoaFluidTests
             {
                 var s = view.SupportParticle[h.Lane];
                 Assert.Equal(-1, view.SupportBody[h.Lane]);
-                if (s < 0) continue;
+                Assert.True(s >= 0, $"drop at lane {h.Lane} reads no sheet particle");
                 read++;
                 Assert.Contains(s, onSheet);
                 Assert.True(Graph.Dist(view, h.Lane, s) <= 1.05f * (view.ParticleRadius[h.Lane] + view.ParticleRadius[s]), "the named particle does not touch");
             }
-            Assert.True(read >= 2, $"{read} of 3 drops read a sheet particle");
+            Assert.Equal(3, read);
             Assert.Equal(-1, view.SupportParticle[drops[3].Lane]);
             Assert.Equal(-1, view.SupportBody[drops[3].Lane]);
             ReadSupport("sheet", view, drops);
+            // A solid destroyed under a drop leaves no name behind: the drop is alive and reads -1 before any step.
+            var under = view.SupportParticle[drops[0].Lane];
+            world.DestroyParticles([sheet.Particles.Single(h => h.Lane == under)]);
+            Assert.Equal(-1, world.View.SupportParticle[drops[0].Lane]);
+            Assert.Equal(1, Math.Sign(world.View.ParticleRadius[drops[0].Lane]));
         }
     }
 
