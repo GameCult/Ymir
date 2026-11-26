@@ -173,9 +173,12 @@ public struct Box3DSoaBendDesc
     }
 }
 
-/// <summary>Native layout of <c>ymir_attachment_desc</c>.</summary>
+/// <summary>
+/// Native layout of <c>ymir_attachment_desc</c>; see <see cref="Box3DSoaWorld.Attach(Box3DSoaAttachKind, Box3DSoaParticleHandle, int, ValueTuple{float, float, float}, float, bool, bool, bool)"/>
+/// for the fields.
+/// </summary>
 [StructLayout(LayoutKind.Sequential)]
-internal struct Box3DSoaAttachmentDesc
+public struct Box3DSoaAttachmentDesc
 {
     public uint Kind;
     public uint Flags;
@@ -184,6 +187,19 @@ internal struct Box3DSoaAttachmentDesc
     public float PointX, PointY, PointZ;
     public float Compliance;
     public uint Reserved;
+
+    public Box3DSoaAttachmentDesc(
+        Box3DSoaAttachKind kind, Box3DSoaParticleHandle particle, int target = -1, (float X, float Y, float Z) point = default,
+        float compliance = 0f, bool tether = false, bool limb = false, bool oneWay = false)
+    {
+        Kind = (uint)kind;
+        Flags = (tether ? 1u : 0u) | (limb ? 2u : 0u) | (oneWay ? 4u : 0u);
+        Particle = particle;
+        Body = target;
+        PointX = point.X; PointY = point.Y; PointZ = point.Z;
+        Compliance = compliance;
+        Reserved = 0;
+    }
 }
 
 /// <summary>Native layout of <c>ymir_sensor_desc</c>: a sphere of <c>Radius</c> m (&gt; 0) centred on <c>Point</c> in the frame of body lane <c>Body</c>.</summary>
@@ -649,7 +665,7 @@ internal static unsafe partial class Box3DSoaNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
-    internal static partial int ymir_box3d_soa_attach(nint world, in Box3DSoaAttachmentDesc desc, out Box3DSoaParticleHandle handle);
+    internal static partial int ymir_box3d_soa_attach(nint world, int n, Box3DSoaAttachmentDesc* desc, Box3DSoaParticleHandle* output);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -940,7 +956,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 16;
+    private const uint ExpectedAbi = 17;
     private nint _handle;
 
     /// <summary>
@@ -1278,24 +1294,46 @@ public sealed class Box3DSoaWorld : IDisposable
     }
 
     /// <summary>
+    /// Ties each particle of <paramref name="attachments"/> to a body point or a world point, as one command ending in one derivation:
+    /// lanes are taken lowest first in order, and a refusal (a bad desc, a removed body, no free lanes, tethers past capacity) throws
+    /// with nothing changed. <paramref name="handles"/> may be empty.
+    /// </summary>
+    public unsafe void Attach(ReadOnlySpan<Box3DSoaAttachmentDesc> attachments, Span<Box3DSoaConstraintHandle> handles = default)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        if (!handles.IsEmpty && handles.Length < attachments.Length) throw new ArgumentException("One handle per attachment.", nameof(handles));
+        Box3DSoaParticleHandle[]? rented = null;
+        Span<Box3DSoaParticleHandle> native = attachments.Length <= 256 ? stackalloc Box3DSoaParticleHandle[attachments.Length] : (rented = ArrayPool<Box3DSoaParticleHandle>.Shared.Rent(attachments.Length)).AsSpan(0, attachments.Length);
+        try
+        {
+            fixed (Box3DSoaAttachmentDesc* d = attachments)
+            fixed (Box3DSoaParticleHandle* h = native)
+                Check(Box3DSoaNative.ymir_box3d_soa_attach(_handle, attachments.Length, d, h));
+            for (var i = 0; i < handles.Length && i < native.Length; i++)
+                handles[i] = new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Attachment, native[i].Lane, native[i].Generation);
+        }
+        finally
+        {
+            if (rented is not null) ArrayPool<Box3DSoaParticleHandle>.Shared.Return(rented);
+        }
+    }
+
+    /// <summary>
     /// Ties <paramref name="particle"/> to a body point (kind Body: <paramref name="target"/> is the body lane, <paramref name="point"/> in
     /// its frame) or a world point (Static). With <paramref name="tether"/> the point also bounds every particle of the component by
     /// the rest path. With <paramref name="limb"/> (Body only) the particle is flesh of the body's limb tree: contact skips every body
-    /// that shares the attached body's limb-tree root, not just the attached body. <paramref name="compliance"/> is m/N, 0 for rigid.
-    /// Attach where the particle already is.
+    /// that shares the attached body's limb-tree root, not just the attached body. With <paramref name="oneWay"/> (Body only) the body
+    /// side weighs nothing: the particle is held to the body's point and the body is never moved or loaded by it.
+    /// <paramref name="compliance"/> is m/N, 0 for rigid. Attach where the particle already is.
     /// </summary>
     public Box3DSoaConstraintHandle Attach(
         Box3DSoaAttachKind kind, Box3DSoaParticleHandle particle, int target = -1, (float X, float Y, float Z) point = default,
-        float compliance = 0f, bool tether = false, bool limb = false)
+        float compliance = 0f, bool tether = false, bool limb = false, bool oneWay = false)
     {
-        ObjectDisposedException.ThrowIf(_handle == 0, this);
-        var desc = new Box3DSoaAttachmentDesc
-        {
-            Kind = (uint)kind, Flags = (tether ? 1u : 0u) | (limb ? 2u : 0u), Particle = particle, Body = target,
-            PointX = point.X, PointY = point.Y, PointZ = point.Z, Compliance = compliance,
-        };
-        Check(Box3DSoaNative.ymir_box3d_soa_attach(_handle, desc, out var handle));
-        return new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Attachment, handle.Lane, handle.Generation);
+        var desc = new Box3DSoaAttachmentDesc(kind, particle, target, point, compliance, tether, limb, oneWay);
+        Span<Box3DSoaConstraintHandle> handle = stackalloc Box3DSoaConstraintHandle[1];
+        Attach(new ReadOnlySpan<Box3DSoaAttachmentDesc>(in desc), handle);
+        return handle[0];
     }
 
     /// <summary>Removes constraints of one type (a distance takes the bends over it with it). A stale handle is refused.</summary>

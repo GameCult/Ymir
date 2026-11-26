@@ -137,7 +137,7 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(dp_x, float, np); CARVE(dp_y, float, np); CARVE(dp_z, float, np);
     CARVE(dist_acc, float, nd); CARVE(lambda, float, np);
     CARVE(tacc_x, float, nt); CARVE(tacc_y, float, nt); CARVE(tacc_z, float, nt);
-    CARVE(lane_list, int32_t, nd); CARVE(cell_x, int32_t, np); CARVE(cell_y, int32_t, np); CARVE(cell_z, int32_t, np);
+    CARVE(lane_list, int32_t, nd > na ? nd : na); CARVE(cell_x, int32_t, np); CARVE(cell_y, int32_t, np); CARVE(cell_z, int32_t, np);
     CARVE(cell_start, int32_t, table + 1); CARVE(cell_fill, int32_t, table); CARVE(sorted, int32_t, np);
     CARVE(contacts, int32_t, np);
     CARVE(sx, float, np); CARVE(sy, float, np); CARVE(sz, float, np); CARVE(sw, float, np); CARVE(sphase, uint32_t, np);
@@ -1160,51 +1160,67 @@ int32_t ymir_particles_create_bends(ymir_particles* p, int32_t n, const ymir_ben
     return rederive_topology(p, TOPO_FULL, NULL, 0);
 }
 
-int32_t ymir_particles_attach(ymir_particles* p, const ymir_attachment_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out)
+int32_t ymir_particles_attach(ymir_particles* p, int32_t n, const ymir_attachment_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out)
 {
-    if (p == NULL || d == NULL || (d->kind != YMIR_ATTACH_BODY && d->kind != YMIR_ATTACH_STATIC) ||
-        (d->flags & ~(uint32_t)(YMIR_ATTACH_FLAG_TETHER | YMIR_ATTACH_FLAG_LIMB)) != 0 ||
-        (d->kind == YMIR_ATTACH_STATIC && (d->flags & YMIR_ATTACH_FLAG_LIMB) != 0) || !particle_ok(p, d->particle.lane, d->particle.generation) ||
-        !finite3(d->point) || !isfinite(d->compliance) || d->compliance < 0.0f ||
-        (p->phase[d->particle.lane] & YMIR_PHASE_FLUID) != 0) // fluid holds no constraint
+    if (p == NULL || n < 0 || (n > 0 && d == NULL))
     {
         return YMIR_PARTICLES_INVALID_ARGUMENT;
     }
-    if (d->kind == YMIR_ATTACH_BODY && (d->body < 0 || d->body >= body_count))
+    for (int32_t k = 0; k < n; ++k)
     {
-        return YMIR_PARTICLES_INVALID_ARGUMENT;
+        if ((d[k].kind != YMIR_ATTACH_BODY && d[k].kind != YMIR_ATTACH_STATIC) ||
+            (d[k].flags & ~(uint32_t)(YMIR_ATTACH_FLAG_TETHER | YMIR_ATTACH_FLAG_LIMB | YMIR_ATTACH_FLAG_ONE_WAY)) != 0 ||
+            (d[k].kind == YMIR_ATTACH_STATIC && (d[k].flags & (YMIR_ATTACH_FLAG_LIMB | YMIR_ATTACH_FLAG_ONE_WAY)) != 0) ||
+            !particle_ok(p, d[k].particle.lane, d[k].particle.generation) || !finite3(d[k].point) || !isfinite(d[k].compliance) ||
+            d[k].compliance < 0.0f || (p->phase[d[k].particle.lane] & YMIR_PHASE_FLUID) != 0 || // fluid holds no constraint
+            (d[k].kind == YMIR_ATTACH_BODY && (d[k].body < 0 || d[k].body >= body_count)))
+        {
+            return YMIR_PARTICLES_INVALID_ARGUMENT;
+        }
     }
-    int32_t a = next_lane(p->att_kind, YMIR_ATTACH_REMOVED, p->att_removed_at, p->attachment_count, p->attachment_capacity, 0, step_count);
-    if (a < 0)
+    if (free_count(p->att_kind, YMIR_ATTACH_REMOVED, p->att_removed_at, p->attachment_count, p->attachment_capacity, step_count) < n)
     {
         return YMIR_PARTICLES_FULL;
     }
-    int32_t old_count = p->attachment_count;
-    p->attachment_count = a + 1 > p->attachment_count ? a + 1 : p->attachment_count;
-    p->att_kind[a] = d->kind;
-    p->att_flags[a] = d->flags;
-    p->att_particle[a] = d->particle.lane;
-    p->att_body[a] = d->kind == YMIR_ATTACH_BODY ? d->body : -1;
-    p->att_point_x[a] = d->point[0];
-    p->att_point_y[a] = d->point[1];
-    p->att_point_z[a] = d->point[2];
-    p->att_compliance[a] = d->compliance;
-    p->att_force_x[a] = p->att_force_y[a] = p->att_force_z[a] = 0.0f;
+    int32_t old_count = p->attachment_count, cursor = 0;
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t a = next_lane(p->att_kind, YMIR_ATTACH_REMOVED, p->att_removed_at, p->attachment_count, p->attachment_capacity, cursor, step_count);
+        cursor = a + 1;
+        p->lane_list[k] = a;
+        p->attachment_count = a + 1 > p->attachment_count ? a + 1 : p->attachment_count;
+        p->att_kind[a] = d[k].kind;
+        p->att_flags[a] = d[k].flags;
+        p->att_particle[a] = d[k].particle.lane;
+        p->att_body[a] = d[k].kind == YMIR_ATTACH_BODY ? d[k].body : -1;
+        p->att_point_x[a] = d[k].point[0];
+        p->att_point_y[a] = d[k].point[1];
+        p->att_point_z[a] = d[k].point[2];
+        p->att_compliance[a] = d[k].compliance;
+        p->att_force_x[a] = p->att_force_y[a] = p->att_force_z[a] = 0.0f;
+    }
     int32_t status = rederive_topology(p, TOPO_FULL, NULL, 0);
     if (status != YMIR_PARTICLES_OK)
     {
-        p->att_kind[a] = a < old_count ? YMIR_ATTACH_REMOVED : 0;
-        p->att_flags[a] = 0;
-        p->att_particle[a] = a < old_count ? -1 : 0;
-        p->att_body[a] = a < old_count ? -1 : 0;
-        p->att_point_x[a] = p->att_point_y[a] = p->att_point_z[a] = 0.0f;
-        p->att_compliance[a] = 0.0f;
+        for (int32_t k = 0; k < n; ++k) // back out: the lanes read as they did before the command
+        {
+            int32_t a = p->lane_list[k];
+            p->att_kind[a] = a < old_count ? YMIR_ATTACH_REMOVED : 0;
+            p->att_flags[a] = 0;
+            p->att_particle[a] = a < old_count ? -1 : 0;
+            p->att_body[a] = a < old_count ? -1 : 0;
+            p->att_point_x[a] = p->att_point_y[a] = p->att_point_z[a] = 0.0f;
+            p->att_compliance[a] = 0.0f;
+        }
         p->attachment_count = old_count;
         return status;
     }
     if (out != NULL)
     {
-        *out = (ymir_handle){a, p->att_generation[a]};
+        for (int32_t k = 0; k < n; ++k)
+        {
+            out[k] = (ymir_handle){p->lane_list[k], p->att_generation[p->lane_list[k]]};
+        }
     }
     return YMIR_PARTICLES_OK;
 }
@@ -1405,13 +1421,13 @@ static v3 end_point(const ymir_particles* p, int32_t a)
 
 static float end_w(const ymir_particles* p, int32_t a, v3 at, v3 n)
 {
-    return p->att_kind[a] == YMIR_ATTACH_BODY ? proxy_w(p->proxies + p->att_body[a], at, n) : 0.0f;
+    return p->att_kind[a] == YMIR_ATTACH_BODY && !(p->att_flags[a] & YMIR_ATTACH_FLAG_ONE_WAY) ? proxy_w(p->proxies + p->att_body[a], at, n) : 0.0f;
 }
 
 static void end_push(const phase* f, int32_t a, v3 at, v3 imp)
 {
     ymir_particles* p = f->p;
-    if (p->att_kind[a] == YMIR_ATTACH_BODY)
+    if (p->att_kind[a] == YMIR_ATTACH_BODY && !(p->att_flags[a] & YMIR_ATTACH_FLAG_ONE_WAY))
     {
         proxy_push(f, p->proxies + p->att_body[a], at, imp);
     }

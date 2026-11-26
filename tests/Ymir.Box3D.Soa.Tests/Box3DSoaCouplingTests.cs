@@ -10,7 +10,7 @@ using Pos = (float X, float Y, float Z);
 /// momentum and energy are kept through a throw and a snap, and a release takes effect in its step. The ropes are built
 /// by a test-local builder. Every reading the tests judge is also appended to the file named by YMIR_READINGS when set.
 /// </summary>
-public sealed class Box3DSoaCouplingTests
+public sealed partial class Box3DSoaCouplingTests
 {
     private const float Dt = Box3DSoaParticleTests.Dt;
     private const int Sub = Box3DSoaParticleTests.Sub;

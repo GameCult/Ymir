@@ -193,7 +193,7 @@ public sealed class Box3DSoaRemoveTests
     }
 
     /// <summary>The retired shape table holds one step's removals (capacity: the body count); a removal every step for many steps
-    /// overruns it unless each step clears it, and every removed toucher's End still names it.</summary>
+    /// overruns it unless each step clears it, and every removed toucher's End still names it. In a Debug build the write asserts the table has room, so the never-cleared mutant (the clear deleted) aborts the run there: a Debug-only observable, as the Release build has no bounds check.</summary>
     [Fact]
     public void The_retired_table_holds_one_steps_removals()
     {

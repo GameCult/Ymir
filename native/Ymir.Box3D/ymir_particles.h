@@ -68,7 +68,8 @@ enum
 enum
 {
     YMIR_ATTACH_FLAG_TETHER = 1u, // bounds each particle by the rest path to the nearest point of its two nearest islands of tether attachments
-    YMIR_ATTACH_FLAG_LIMB = 2u    // the particle is flesh of its body's limb tree: contact skips every body whose limb-tree root is the attached body's root; refused on a STATIC attachment
+    YMIR_ATTACH_FLAG_LIMB = 2u,   // the particle is flesh of its body's limb tree: contact skips every body whose limb-tree root is the attached body's root; refused on a STATIC attachment
+    YMIR_ATTACH_FLAG_ONE_WAY = 4u // the body side weighs nothing: the attachment holds its particle to the body's point and never moves or loads the body (the bone's own mass already carries the flesh); refused on a STATIC attachment
 };
 
 enum
@@ -279,7 +280,8 @@ int32_t ymir_particles_create_particles(ymir_particles* p, int32_t n, const ymir
 int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymir_handle* h, uint64_t step_count);
 int32_t ymir_particles_create_distances(ymir_particles* p, int32_t n, const ymir_distance_desc* d, uint64_t step_count, ymir_handle* out);
 int32_t ymir_particles_create_bends(ymir_particles* p, int32_t n, const ymir_bend_desc* d, uint64_t step_count, ymir_handle* out);
-int32_t ymir_particles_attach(ymir_particles* p, const ymir_attachment_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out);
+// Attaches n particles in the lowest free lanes, by cursor, as a batch: every desc is validated, FULL when fewer than n lanes are free, one derivation, and a derivation that does not fit backs every lane out.
+int32_t ymir_particles_attach(ymir_particles* p, int32_t n, const ymir_attachment_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out);
 int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const ymir_handle* h, uint64_t step_count);
 // Settles the named fluid particles into wet patches and destroys them. Each reads its support from the last step (support_body, else
 // support_particle) and its contact point from the proxies the caller has just filled; a drop's volume is (2 r)^3. Refuses whole

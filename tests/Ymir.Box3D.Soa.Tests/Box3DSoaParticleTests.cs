@@ -1065,8 +1065,8 @@ public sealed class Box3DSoaParticleTests
         // grid_mask: the walk misses most pairs) 0.045: bound sqrt(0.759 x 0.045) = 0.185, separation 16.9. With the bit: shipped 0.126, least claimed mutant
         // Mn (the bit ignored: grid_sort, build_grid and walk_half all treat the lane as solid) 0.759: bound sqrt(0.126 x 0.759) = 0.309, separation 6.0.
         // Mw (walk_half's skip alone removed) reads 0.126 where the lane's stale cell lands on nothing, and 0.063 with its cells written (it then walks only the
-        // forward half of its pairs): it does not separate, so it is unclaimed here; the skip is what keeps a lane's stale cell out of the walk, and the
-        // source test pins it. A resting rope read 0.759, not 0.95: soft contact under the rope's weight, not this cut.
+        // forward half of its pairs): it does not separate here, so it is unclaimed in this test; the skip is what keeps a lane's stale cell out of the walk, and
+        // Flesh_lane_with_a_stale_cell_pushes_nothing claims it. A resting rope read 0.759, not 0.95: soft contact under the rope's weight, not this cut.
         var contact = RopesClosest(false);
         var through = RopesClosest(true);
         var line = $"FLESH_PASS closest cross pair in ri + rj: without the bit {contact:F3}, with it on the dropped rope {through:F3}";
@@ -1075,6 +1075,33 @@ public sealed class Box3DSoaParticleTests
         Assert.True(contact > 0.185f, "two ropes of different groups did not stop each other: " + line);
         Assert.True(through < 0.309f, "a rope with the bit did not pass through: " + line);
     }
+
+    /// <summary>Two particles of different groups 0.010 m apart (0.4 of ri + rj) in cell (0, 0, 0), no gravity, one carrying the bit. The pair's separation after 10 ticks, in ri + rj.</summary>
+    private static float StaleCellSeparation(bool fleshFirst)
+    {
+        using var world = World(gravityY: 0f);
+        var flesh = Box3DSoaPhase.Of(1, noParticleContact: true);
+        var plain = Box3DSoaPhase.Of(2);
+        var p = new Box3DSoaParticleHandle[2];
+        world.CreateParticles([new((0.001f, 0.001f, 0.001f), ParticleMass, ParticleRadius, fleshFirst ? flesh : plain), new((0.011f, 0.001f, 0.001f), ParticleMass, ParticleRadius, fleshFirst ? plain : flesh)], p);
+        Run(world, 10);
+        return Graph.Dist(world.View, p[0].Lane, p[1].Lane) / (2f * ParticleRadius);
+    }
+
+    [Fact]
+    public void A_flesh_lane_is_not_walked_by_the_particle_contact_pass()
+    {
+        // A lane with the bit is in no grid cell, so its cell lanes keep their creation value (0, 0, 0). If the walk visited it, it would find the other
+        // particle in that cell and push it. Readings: shipped (the walk skips it) 0.400 (the start, untouched); walk_half's skip removed (the lane walks
+        // its stale cell) 24.400: bound sqrt(0.400 x 24.4) = 3.12, separation 61. Lane order matters: the walk pairs a lane with higher lanes of its cell,
+        // so the flesh lane is the lower one here.
+        var line = $"FLESH_WALK separation after 10 ticks in ri + rj: flesh lane first {StaleCellSeparation(true):F3}";
+        Console.Error.WriteLine(line);
+        Readings.Add(line);
+        Assert.True(StaleCellSeparation(true) < StaleCellBound, "the flesh lane pushed a particle of another group: " + line);
+    }
+
+    private const float StaleCellBound = 3.12f;
 
     /// <summary>A 12 x 12 sheet of touching particles (pitch 2 r) carrying the flag, held at its four corners by static pins, at y 0.5.</summary>
     private static (Box3DSoaWorld World, Made Sheet) FleshSheet(int fluid)
@@ -1311,7 +1338,6 @@ public sealed class Box3DSoaParticleSourceTests
         var c = StripComments(File.ReadAllText(Path.Combine(Native(), "ymir_particles.c")));
         Assert.Equal(0, Count(Body(c, "static void grid_sort("), @"table_mask"));
         Assert.Equal(0, Count(Body(c, "YMIR_INLINE void walk_half("), @"table_mask"));
-        Assert.Contains("YMIR_PHASE_NO_PARTICLE_CONTACT", Body(c, "YMIR_INLINE void walk_half(")); // the walk skips exactly the lanes grid_sort left out
         Assert.Equal(1, Count(c, @"grid_mask\s*="));
         Assert.Contains("grid_mask =", Body(c, "static void build_grid("));
         Assert.Contains("grid_sort(p, inv_cell, 0, p->table_mask)", Body(c, "static float fluid_grid("));

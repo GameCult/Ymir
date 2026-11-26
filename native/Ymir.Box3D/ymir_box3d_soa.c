@@ -17,6 +17,7 @@
 #include "ymir_particles.h"
 #include "ymir_world_lock.h"
 
+#include <assert.h>
 #include <float.h>
 #include <math.h>
 #include <stdint.h>
@@ -61,7 +62,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a retired joint's lane (destroy_joint): never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 16u
+#define YMIR_SOA_ABI_VERSION 17u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -1211,6 +1212,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_remove_body(ymir_box3d_soa_world* w
     b3ShapeId shape;
     if (!ymir_soa_is_anchor(world->kind[lane]) && b3Body_GetShapes(world->bodies[lane], &shape, 1) == 1)
     {
+        assert(world->retired_count < (uint32_t)world->capacity); // Debug: one step's removals fit; the step clears the table
         world->retired_shapes[world->retired_count++] = (ymir_soa_retired_shape){shape, lane, world->stable_id[lane]};
     }
     world->body_removed_pending[world->body_removed_pending_count++] = (ymir_box3d_soa_body_removed_fact){
@@ -1739,18 +1741,21 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create_bends(
 }
 
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_attach(
-    ymir_box3d_soa_world* world, const ymir_attachment_desc* d, ymir_handle* out)
+    ymir_box3d_soa_world* world, int32_t n, const ymir_attachment_desc* d, ymir_handle* out)
 {
-    if (world == NULL || world->particles == NULL)
+    if (world == NULL || world->particles == NULL || n < 0 || (n > 0 && d == NULL))
     {
         return YMIR_SOA_INVALID_ARGUMENT;
     }
-    if (d != NULL && d->kind == YMIR_ATTACH_BODY && d->body >= 0 && d->body < world->count &&
-        world->kind[d->body] == YMIR_SOA_KIND_REMOVED)
+    for (int32_t k = 0; k < n; ++k)
     {
-        return YMIR_SOA_INVALID_ARGUMENT;
+        if (d[k].kind == YMIR_ATTACH_BODY && d[k].body >= 0 && d[k].body < world->count &&
+            world->kind[d[k].body] == YMIR_SOA_KIND_REMOVED)
+        {
+            return YMIR_SOA_INVALID_ARGUMENT;
+        }
     }
-    return ymir_particles_attach(world->particles, d, world->count, world->step_count, out);
+    return ymir_particles_attach(world->particles, n, d, world->count, world->step_count, out);
 }
 
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_remove(ymir_box3d_soa_world* world, uint32_t type, int32_t n, const ymir_handle* h)
