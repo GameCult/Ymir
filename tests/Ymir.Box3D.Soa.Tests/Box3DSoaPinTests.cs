@@ -449,4 +449,81 @@ public sealed class Box3DSoaPinTests
         Reading(line);
         Assert.True(Median(samples[1]) > 0);
     }
+
+    // ---- (g) attach, wake and remove against a pinned particle ----------------------------------------------
+
+    [Fact]
+    public void A_pinned_particle_takes_no_tether()
+    {
+        using var s = Chained(extra: 16);
+        var w = s.World;
+        var rope = Graph.Rope(w, Graph.Line((1f, 1f, 0f), (0.03f, 0f, 0f), 6), 0.02f, 0.0125f, Box3DSoaPhase.Of(7, noParticleContact: true));
+        w.Attach(Box3DSoaAttachKind.Body, rope.Particles[5], s.Bones[0], (0f, 0f, 0.2f));
+        s.View = w.View;
+        w.SetPinned([rope.Particles[5]], true);
+        Run(s, 3);
+        var free = w.FreeAttachmentSlots;
+        Refused(s, () => w.Attach(Box3DSoaAttachKind.Static, rope.Particles[5], point: (1f, 1f, 0f), tether: true), "a tether on a pinned particle");
+        Refused(s, () => w.Attach([new Box3DSoaAttachmentDesc(Box3DSoaAttachKind.Static, rope.Particles[0], -1, (1f, 1f, 0f), 0f, false, false, false),
+                                   new Box3DSoaAttachmentDesc(Box3DSoaAttachKind.Static, rope.Particles[5], -1, (1f, 1f, 0f), 0f, true, false, false)]), "a batch with one tether on a pinned particle");
+        Assert.Equal(free, w.FreeAttachmentSlots);
+        Assert.Equal(1u, s.View.ParticlePinned[rope.Particles[5]]);
+        w.SetPinned([rope.Particles[5]], false); // woken, it takes the tether like any particle
+        w.Attach(Box3DSoaAttachKind.Static, rope.Particles[5], point: (1f, 1f, 0f), tether: true);
+        Refused(s, () => w.SetPinned([rope.Particles[4]], true), "a tethered component");
+    }
+
+    [Fact]
+    public void An_attach_cannot_move_a_pinned_particles_anchor()
+    {
+        using var s = Chained();
+        var w = s.World;
+        var (a, b, c) = (s.P[0][0], s.P[0][1], s.P[0][2]);
+        w.SetPinned([b], true); // b's anchor is its lane Anchor[0][1] = 1, above the lane 0 that a's attachment holds
+        w.Remove(s.Anchor[0][0]);
+        Run(s, 2); // a freed lane is reused only a step later
+        Refused(s, () => w.Attach(Box3DSoaAttachKind.Static, b, point: (1f, 1f, 1f)), "an attachment that would take a lane below the anchor");
+        var free = w.Attach(Box3DSoaAttachKind.Static, c, point: (0.5f, 1.8f, 0f)); // an unpinned particle takes the lane
+        Assert.Equal(0, free.Lane);
+        w.Attach(Box3DSoaAttachKind.Static, b, point: (1f, 1f, 1f)); // now above the anchor: accepted
+        Run(s, 2);
+        w.SetPinned([b], false);
+        var v = s.View;
+        Assert.True(Dist(At(v, b), AnchorNow(s, 0, 1).Point) <= WakeAnchor, "a woken particle lands on the anchor it was pinned on");
+    }
+
+    [Fact]
+    public void Waking_a_live_particle_moves_nothing()
+    {
+        using var s = Chained();
+        var w = s.World;
+        Run(s, 10);
+        var v = s.View;
+        var live = s.P[2][7];
+        var (x, y, z, vx, vy, vz) = (v.ParticleX[live], v.ParticleY[live], v.ParticleZ[live], v.ParticleVx[live], v.ParticleVy[live], v.ParticleVz[live]);
+        w.SetPinned([live], false);
+        Assert.Equal((x, y, z, vx, vy, vz), (v.ParticleX[live], v.ParticleY[live], v.ParticleZ[live], v.ParticleVx[live], v.ParticleVy[live], v.ParticleVz[live]));
+        w.SetPinned([s.P[0][0]], true);
+        Run(s, 3);
+        (x, y, z, vx, vy, vz) = (v.ParticleX[live], v.ParticleY[live], v.ParticleZ[live], v.ParticleVx[live], v.ParticleVy[live], v.ParticleVz[live]);
+        w.SetPinned([live, s.P[0][0]], false); // a batch of a live and a pinned particle: only the pinned one is put on its anchor
+        Assert.Equal((x, y, z, vx, vy, vz), (v.ParticleX[live], v.ParticleY[live], v.ParticleZ[live], v.ParticleVx[live], v.ParticleVy[live], v.ParticleVz[live]));
+        Assert.Equal(0u, v.ParticlePinned[s.P[0][0]]);
+    }
+
+    [Fact]
+    public void A_body_that_pinned_flesh_is_attached_to_cannot_be_removed()
+    {
+        using var s = Chained();
+        var w = s.World;
+        w.SetPinned(s.P[1], true);
+        Run(s, 3);
+        var before = HashAll(s.View);
+        var bone = new Box3DSoaBodyHandle(s.Bones[1], s.View.BodyGeneration[s.Bones[1]]);
+        Assert.Throws<InvalidOperationException>(() => w.RemoveBody(bone));
+        Assert.Equal((uint)Box3DSoaKind.Capsule, s.View.Kind[s.Bones[1]]);
+        Assert.Equal(before, HashAll(s.View));
+        Run(s, 3);
+        Assert.True(s.View.PositionY[s.Bones[1]] > 1f); // the body is where it was
+    }
 }

@@ -1275,7 +1275,21 @@ int32_t ymir_particles_attach(ymir_particles* p, int32_t n, const ymir_attachmen
         p->att_compliance[a] = d[k].compliance;
         p->att_force_x[a] = p->att_force_y[a] = p->att_force_z[a] = 0.0f;
     }
-    int32_t status = rederive_topology(p, TOPO_FULL, NULL, 0);
+    // A pinned particle is drawn from its anchor, the lowest live non-TETHER lane, and holds no tether (no walk moves the lane a tether would bound): an attach
+    // that would add a tether to it, or take a lane below its anchor, is refused whole like removing the anchor. Wake it first.
+    int32_t status = YMIR_PARTICLES_OK;
+    for (int32_t k = 0; k < n && status == YMIR_PARTICLES_OK; ++k)
+    {
+        int32_t i = d[k].particle.lane, a = p->lane_list[k];
+        if (p->pinned[i] && ((d[k].flags & YMIR_ATTACH_FLAG_TETHER) != 0 || (p->anchor[i] >= 0 && a < p->anchor[i])))
+        {
+            status = YMIR_PARTICLES_INVALID_ARGUMENT;
+        }
+    }
+    if (status == YMIR_PARTICLES_OK)
+    {
+        status = rederive_topology(p, TOPO_FULL, NULL, 0);
+    }
     if (status != YMIR_PARTICLES_OK)
     {
         for (int32_t k = 0; k < n; ++k) // back out: the lanes read as they did before the command
@@ -2600,7 +2614,10 @@ static float pooled_volume(const ymir_particles* p, v3 c, float r)
     {
         if (p->wet_live[w] && p->wet_particle[w] >= 0 && p->wet_particle[w] < p->particle_count && p->particle_live[p->wet_particle[w]])
         {
-            v3 d = vsub(P(p, p->pos_x, p->pos_y, p->pos_z, p->wet_particle[w]), c);
+            int32_t i = p->wet_particle[w];
+            // a pinned particle's pos is stale: it is where its anchor holds it now
+            v3 at = p->pinned[i] && p->anchor[i] >= 0 ? end_point(p, p->anchor[i]) : P(p, p->pos_x, p->pos_y, p->pos_z, i);
+            v3 d = vsub(at, c);
             if (vdot(d, d) <= r2)
             {
                 total += p->wet_volume[w];
