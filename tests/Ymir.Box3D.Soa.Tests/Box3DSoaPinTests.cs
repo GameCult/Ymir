@@ -421,7 +421,7 @@ public sealed class Box3DSoaPinTests
     public void Dormant_flesh_cost_line()
     {
         // 76 capsules each with a 6 x 6 attached sheet (2,736 particles, about four Fellas' 2,644): live, all pinned, one sheet woken, and the bodies with no
-        // particles, alternately 5 times, milliseconds per step over 40 steps. Printed, no bound.
+        // particles, alternately 5 times, milliseconds per step over 10 steps after 3 warm-up steps (the Debug suite pays for every step of the live world). Printed, no bound.
         static double Median(double[] x) { Array.Sort(x); return x[x.Length / 2]; }
         const int n = 76;
         var names = new[] { "live", "pinned", "one woken", "bodies only" };
@@ -438,10 +438,10 @@ public sealed class Box3DSoaPinTests
                     if (mode == 3) w.DestroyParticles(all);
                     if (mode == 1 || mode == 2) w.SetPinned(all, true);
                     if (mode == 2) w.SetPinned(sheets[0], false);
-                    Box3DSoaParticleTests.Run(w, 10);
+                    Box3DSoaParticleTests.Run(w, 3);
                     var watch = System.Diagnostics.Stopwatch.StartNew();
-                    Box3DSoaParticleTests.Run(w, 40);
-                    samples[mode][r] = watch.Elapsed.TotalMilliseconds / 40.0;
+                    Box3DSoaParticleTests.Run(w, 10);
+                    samples[mode][r] = watch.Elapsed.TotalMilliseconds / 10.0;
                 }
             }
         }
