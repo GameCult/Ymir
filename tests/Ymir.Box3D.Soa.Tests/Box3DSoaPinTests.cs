@@ -381,7 +381,7 @@ public sealed class Box3DSoaPinTests
         return hashes;
     }
 
-    // Recorded on this commit's build (MSVC /fp:precise, Release and Debug agree): pin and wake commands at fixed ticks on the chain scene, one hash per 40 steps (the hash covers the pinned lane).
+    // Recorded on this commit's build (gcc 13.2, -ffp-contract=off, Release and Debug; MSVC /fp:precise gives the same bytes): pin and wake commands at fixed ticks on the chain scene, one hash per 40 steps (the hash covers the pinned lane).
     private static readonly ulong[] PinHashes = [1479169756272998701ul, 11282791371326620524ul, 7232528760214525229ul, 13136815359770158322ul, 17491214340810821373ul, 13380942627298567997ul];
 
     [Fact]
