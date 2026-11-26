@@ -8,11 +8,11 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 19) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 20) so the Aetheria session's contract is untouched.
 
 ## Contract
 
-- Native (ABI 19): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
+- Native (ABI 20): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
   create_particles / destroy_particles / create_distances / create_bends / create_sensors / attach(n, desc*) / set_pinned(n, handles, pinned) / remove / set_material / free_slots /
   add_body / add_joint / step / get_view / get_facts / set_anchor_target / destroy_joint / set_joint_thresholds / remove_body / free_joint_slots / free_body_slots / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
@@ -55,7 +55,7 @@ separate native object (`ymir_box3d_soa.c`, ABI 19) so the Aetheria session's co
   `step`, `ymir_box3d_soa_get_facts` returns pointers and counts into buffers fixed at create (`fact_capacity`
   per kind, no allocation in the step): Begin and End `{lane_a, lane_b, stable_id_a, stable_id_b}` and Hit
   those plus `point` xyz, `normal` xyz (A to B), `approach_speed` (a touch faster than `hit_threshold` m/s)
-  and `material_a`, `material_b`. Facts are in Box3D's event order and last one step: the next `step`
+  and `material_a`, `material_b`; Touching (`touching`) lists each pair touching after the step once, `lane_a < lane_b`, from the same per-body contact read as `ContactCount` (`touching_dropped` past `fact_capacity`). Facts are in Box3D's event order and last one step: the next `step`
   rewrites them. `*_dropped` counts the facts a step could not keep past `fact_capacity`. The lane in a fact
   is the body's user data (lane + 1) and the stable id is the shape's user data. The facts report; they
   decide nothing.

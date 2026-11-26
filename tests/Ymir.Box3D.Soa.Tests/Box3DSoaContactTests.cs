@@ -127,6 +127,9 @@ public sealed class Box3DSoaContactTests
         Assert.Equal(1u, facts.Dropped.Begin);
         Assert.Equal(1u, facts.Dropped.Hit);
         Assert.Equal(1, facts.Capacity);
+        for (var i = 0; i < 400 && world.Facts.Dropped.Touching == 0; i++) world.Step(Dt);
+        Assert.Equal(1, world.Facts.Touching.Length);
+        Assert.True(world.Facts.Dropped.Touching >= 1u);
 
         Assert.Throws<InvalidOperationException>(() => new Box3DSoaWorld(capacity: 8, factCapacity: 0));
     }
@@ -141,7 +144,7 @@ public sealed class Box3DSoaContactTests
         Assert.True(StepToFirstBegin(world));
         Assert.Equal(1u, world.Facts.Dropped.Begin);
         world.Step(Dt);
-        Assert.Equal(new Box3DSoaDropped(0, 0, 0), world.Facts.Dropped);
+        Assert.Equal(new Box3DSoaDropped(0, 0, 0, 1), world.Facts.Dropped); // the two resting spheres still touch the ground: one pair kept, one dropped, every step
     }
 
     private static Box3DSoaWorld Pile()
@@ -169,7 +172,8 @@ public sealed class Box3DSoaContactTests
             .Concat(MemoryMarshal.AsBytes(facts.Hit).ToArray())
             .Concat(MemoryMarshal.AsBytes(view.ContactImpulse).ToArray())
             .Concat(MemoryMarshal.AsBytes(view.ContactCount).ToArray())
-            .Concat(BitConverter.GetBytes(facts.Dropped.Begin + facts.Dropped.End + facts.Dropped.Hit))
+            .Concat(MemoryMarshal.AsBytes(facts.Touching).ToArray())
+            .Concat(BitConverter.GetBytes(facts.Dropped.Begin + facts.Dropped.End + facts.Dropped.Hit + facts.Dropped.Touching))
             .ToArray();
     }
 
@@ -189,6 +193,35 @@ public sealed class Box3DSoaContactTests
         }
         Assert.True(factsSeen > 12, "the pile produced facts, so equality is not trivially empty");
         Assert.Contains(a.View.ContactImpulse.ToArray(), f => f > 0f);
+    }
+
+    [Fact]
+    public void Touching_pairs_are_each_touch_once_and_agree_with_contact_counts()
+    {
+        using var world = Pile();
+        var pairsSeen = 0;
+        for (var step = 0; step < 300; step++)
+        {
+            world.Step(Dt);
+            var touching = world.Facts.Touching;
+            var contacts = world.View.ContactCount;
+            var count = new int[contacts.Length];
+            var seen = new HashSet<(int, int)>();
+            foreach (var t in touching)
+            {
+                Assert.True(t.LaneA < t.LaneB, $"pair {t.LaneA},{t.LaneB} is not ordered at step {step}");
+                Assert.True(seen.Add((t.LaneA, t.LaneB)), $"pair {t.LaneA},{t.LaneB} repeated at step {step}");
+                count[t.LaneA]++;
+                count[t.LaneB]++;
+            }
+            for (var lane = 0; lane < contacts.Length; lane++)
+            {
+                Assert.True(contacts[lane] == count[lane], $"lane {lane}: ContactCount {contacts[lane]} but {count[lane]} pairs at step {step}");
+            }
+            Assert.Equal(0u, world.Facts.Dropped.Touching);
+            pairsSeen += touching.Length;
+        }
+        Assert.True(pairsSeen > 50, "the pile touched, so agreement is not trivially empty");
     }
 
     [Fact]

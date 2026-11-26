@@ -62,7 +62,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a retired joint's lane (destroy_joint): never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 19u
+#define YMIR_SOA_ABI_VERSION 20u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -425,6 +425,11 @@ typedef struct ymir_box3d_soa_facts
     uint32_t joint_removed_count;
     const ymir_box3d_soa_body_removed_fact* body_removed;
     const ymir_box3d_soa_joint_removed_fact* joint_removed;
+    // The step's touching pairs, each once, lane_a < lane_b, in lane then Box3D contact order: the same per-body contact read that fills
+    // the contact lanes. `touching_dropped` counts pairs past `fact_capacity`.
+    uint32_t touching_count;
+    uint32_t touching_dropped;
+    const ymir_box3d_soa_touch_fact* touching;
 } ymir_box3d_soa_facts;
 
 // The closest hit of a ray. `hit` is 0 for a miss and every other field is then 0. `lane` and `stable_id` name
@@ -481,6 +486,7 @@ typedef struct ymir_box3d_soa_world
     ymir_box3d_soa_facts facts; // counts and dropped counters live here; the arrays below back its pointers
     ymir_box3d_soa_touch_fact* begin_facts;
     ymir_box3d_soa_touch_fact* end_facts;
+    ymir_box3d_soa_touch_fact* touching_facts;
     ymir_box3d_soa_hit_fact* hit_facts;
     ymir_box3d_soa_overload_fact* overload_facts; // `joint_capacity` entries
     ymir_box3d_soa_body_removed_fact* body_removed_facts; // `capacity` entries: what the last step published
@@ -664,6 +670,7 @@ static void ymir_soa_free(ymir_box3d_soa_world* world)
     free(world->joint_lanes);
     free(world->begin_facts);
     free(world->end_facts);
+    free(world->touching_facts);
     free(world->hit_facts);
     free(world->overload_facts);
     free(world->body_removed_facts);
@@ -737,6 +744,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     world->fact_capacity = (uint32_t)fact_capacity;
     world->begin_facts = (ymir_box3d_soa_touch_fact*)calloc((size_t)fact_capacity, sizeof(ymir_box3d_soa_touch_fact));
     world->end_facts = (ymir_box3d_soa_touch_fact*)calloc((size_t)fact_capacity, sizeof(ymir_box3d_soa_touch_fact));
+    world->touching_facts = (ymir_box3d_soa_touch_fact*)calloc((size_t)fact_capacity, sizeof(ymir_box3d_soa_touch_fact));
     world->hit_facts = (ymir_box3d_soa_hit_fact*)calloc((size_t)fact_capacity, sizeof(ymir_box3d_soa_hit_fact));
     world->overload_facts = (ymir_box3d_soa_overload_fact*)calloc(m, sizeof(ymir_box3d_soa_overload_fact));
     world->body_removed_facts = (ymir_box3d_soa_body_removed_fact*)calloc(n, sizeof(ymir_box3d_soa_body_removed_fact));
@@ -757,7 +765,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
         }
     }
     if (world->contact_count == NULL || world->material_id == NULL || world->mass == NULL || world->body_generation == NULL || world->body_removed_at == NULL || world->begin_facts == NULL ||
-        world->end_facts == NULL || world->hit_facts == NULL || world->overload_facts == NULL || world->contact_scratch == NULL ||
+        world->end_facts == NULL || world->touching_facts == NULL || world->hit_facts == NULL || world->overload_facts == NULL || world->contact_scratch == NULL ||
         world->body_removed_facts == NULL || world->body_removed_pending == NULL || world->joint_removed_facts == NULL ||
         world->joint_removed_pending == NULL || world->retired_shapes == NULL ||
         world->bodies == NULL || world->stable_id == NULL || world->kind == NULL || world->parent == NULL ||
@@ -1426,10 +1434,14 @@ static void ymir_soa_collect_facts(ymir_box3d_soa_world* world)
     }
 }
 
-// Per body: the touching contacts' count and the normal impulse they delivered over the whole step.
+// Per body: the touching contacts' count and the normal impulse they delivered over the whole step; the same read yields each
+// touching pair once, from its lower lane (a static body's lane lists its contacts too).
 static void ymir_soa_collect_contact_lanes(ymir_box3d_soa_world* world)
 {
     float* lane = ymir_soa_lane(world, YMIR_SOA_CONTACT_IMPULSE_LANE);
+    ymir_box3d_soa_facts* f = &world->facts;
+    f->touching_count = 0;
+    f->touching_dropped = 0;
     for (int i = 0; i < world->count; ++i)
     {
         if (world->kind[i] == YMIR_SOA_KIND_REMOVED)
@@ -1440,7 +1452,25 @@ static void ymir_soa_collect_contact_lanes(ymir_box3d_soa_world* world)
         float impulse = 0.0f;
         for (int c = 0; c < n; ++c)
         {
-            impulse += ymir_soa_manifold_impulse(world->contact_scratch + c);
+            const b3ContactData* data = world->contact_scratch + c;
+            impulse += ymir_soa_manifold_impulse(data);
+            b3ShapeId mine = ymir_soa_shape_lane(data->shapeIdA) == i ? data->shapeIdA : data->shapeIdB;
+            b3ShapeId other = ymir_soa_shape_lane(data->shapeIdA) == i ? data->shapeIdB : data->shapeIdA;
+            int32_t other_lane = ymir_soa_shape_lane(other);
+            if (other_lane <= i)
+            {
+                continue;
+            }
+            if (f->touching_count >= world->fact_capacity)
+            {
+                f->touching_dropped += 1;
+                continue;
+            }
+            ymir_box3d_soa_touch_fact* t = world->touching_facts + f->touching_count++;
+            t->lane_a = i;
+            t->lane_b = other_lane;
+            t->stable_id_a = (uint64_t)(uintptr_t)b3Shape_GetUserData(mine);
+            t->stable_id_b = (uint64_t)(uintptr_t)b3Shape_GetUserData(other);
         }
         world->contact_count[i] = n;
         lane[i] = impulse;
@@ -2027,6 +2057,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_facts(const ymir_box3d_soa_worl
     facts->fact_capacity = world->fact_capacity;
     facts->begin = world->begin_facts;
     facts->end = world->end_facts;
+    facts->touching = world->touching_facts;
     facts->hit = world->hit_facts;
     facts->overload = world->overload_facts;
     facts->body_removed = world->body_removed_facts;

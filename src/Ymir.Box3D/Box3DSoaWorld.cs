@@ -448,6 +448,9 @@ internal unsafe struct Box3DSoaFactsNative
     public uint JointRemovedCount;
     public Box3DSoaBodyRemoved* BodyRemoved;
     public Box3DSoaJointRemoved* JointRemoved;
+    public uint TouchingCount;
+    public uint TouchingDropped;
+    public Box3DSoaTouch* Touching;
 }
 
 /// <summary>A body removed by RemoveBody since the previous step, published by the next one. The lane and generation are the dead handle's;
@@ -484,7 +487,7 @@ public readonly struct Box3DSoaOverload
     public readonly float TorqueX, TorqueY, TorqueZ;
 }
 
-/// <summary>A begin or end of touch: the two bodies' lane indices and the two shapes' stable ids.</summary>
+/// <summary>A begin or end of touch, or a pair touching after the step: the two bodies' lane indices and the two shapes' stable ids.</summary>
 [StructLayout(LayoutKind.Sequential)]
 public readonly struct Box3DSoaTouch
 {
@@ -513,7 +516,7 @@ public readonly struct Box3DSoaHit
 }
 
 /// <summary>Facts past <see cref="Box3DSoaWorld"/>'s fact capacity that the last step could not keep.</summary>
-public readonly record struct Box3DSoaDropped(uint Begin, uint End, uint Hit);
+public readonly record struct Box3DSoaDropped(uint Begin, uint End, uint Hit, uint Touching);
 
 /// <summary>
 /// What Box3D reported for the step just taken, in Box3D's event order: spans over native buffers that
@@ -539,6 +542,8 @@ public readonly unsafe ref struct Box3DSoaFacts
 
     public ReadOnlySpan<Box3DSoaTouch> Begin => Facts(_f.Begin, _f.BeginCount);
     public ReadOnlySpan<Box3DSoaTouch> End => Facts(_f.End, _f.EndCount);
+    /// <summary>Each pair of bodies touching after the step, once, <c>LaneA &lt; LaneB</c>, in lane then Box3D contact order: the read that fills <c>ContactCount</c>.</summary>
+    public ReadOnlySpan<Box3DSoaTouch> Touching => Facts(_f.Touching, _f.TouchingCount);
     public ReadOnlySpan<Box3DSoaHit> Hit => Facts(_f.Hit, _f.HitCount);
     /// <summary>Joints that reached a force or torque threshold in the last step (at most once each), in Box3D's joint order.</summary>
     public ReadOnlySpan<Box3DSoaOverload> Overloads => Facts(_f.Overload, _f.OverloadCount);
@@ -546,7 +551,7 @@ public readonly unsafe ref struct Box3DSoaFacts
     public ReadOnlySpan<Box3DSoaBodyRemoved> BodiesRemoved => Facts(_f.BodyRemoved, _f.BodyRemovedCount);
     /// <summary>Joints retired since the previous step, in removal order: every DestroyJoint and every joint a RemoveBody took.</summary>
     public ReadOnlySpan<Box3DSoaJointRemoved> JointsRemoved => Facts(_f.JointRemoved, _f.JointRemovedCount);
-    public Box3DSoaDropped Dropped => new(_f.BeginDropped, _f.EndDropped, _f.HitDropped);
+    public Box3DSoaDropped Dropped => new(_f.BeginDropped, _f.EndDropped, _f.HitDropped, _f.TouchingDropped);
     public int Capacity => (int)_f.FactCapacity;
 }
 
@@ -969,7 +974,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 19;
+    private const uint ExpectedAbi = 20;
     private nint _handle;
 
     /// <summary>The gravity (m/s^2) this world was created with; native has no setter, so this copy cannot disagree.</summary>
