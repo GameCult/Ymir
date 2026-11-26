@@ -422,6 +422,7 @@ internal unsafe struct Box3DSoaViewNative
     public uint* SensorGeneration;
     public ulong* SensorRemovedAt;
     public uint* ParticlePinned;
+    public int* ParticleAnchor;
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_facts</c>: counts, dropped counters, then three pointers.</summary>
@@ -943,8 +944,10 @@ public readonly unsafe struct Box3DSoaView
     public ReadOnlySpan<uint> SensorLive => Lane(_v.SensorLive, SensorCount);
     public ReadOnlySpan<uint> SensorGeneration => Lane(_v.SensorGeneration, SensorCount);
     public ReadOnlySpan<ulong> SensorRemovedAt => Lane(_v.SensorRemovedAt, SensorCount);
-    /// <summary>1 for a pinned (dormant) particle, else 0; notification only. A pinned particle's position and velocity lanes are stale: draw it from its anchor (its lowest live non-tether attachment), see <see cref="Box3DSoaWorld.SetPinned"/>.</summary>
+    /// <summary>1 for a pinned (dormant) particle, else 0; notification only. A pinned particle's position and velocity lanes are stale: draw it from the attachment <see cref="ParticleAnchor"/> names, see <see cref="Box3DSoaWorld.SetPinned"/>.</summary>
     public ReadOnlySpan<uint> ParticlePinned => Lane(_v.ParticlePinned, ParticleCount);
+    /// <summary>The attachment lane each pinned particle is drawn from: its lowest live non-tether attachment when it was pinned, held while it sleeps, so no attachment added later moves it; -1 for none. Derived, read only.</summary>
+    public ReadOnlySpan<int> ParticleAnchor => Lane(_v.ParticleAnchor, ParticleCount);
 
     /// <summary>N s, world: the impulse the particle phase delivered to each body over the last step (0 for a body it did not touch). Box3D has already applied it; this is notification only.</summary>
     public ReadOnlySpan<float> ParticleImpulseX => Lane(_v.ParticleImpulseX, Count);
@@ -1302,8 +1305,8 @@ public sealed class Box3DSoaWorld : IDisposable
 
     /// <summary>
     /// Ties each particle of <paramref name="attachments"/> to a body point or a world point, as one command ending in one derivation:
-    /// lanes are taken lowest first in order, and a refusal (a bad desc, a removed body, no free lanes, tethers past capacity) throws
-    /// with nothing changed. <paramref name="handles"/> may be empty.
+    /// lanes are taken lowest first in order, and a refusal (a bad desc, a removed body, no free lanes, tethers past capacity, a tether on a particle
+    /// whose distance component holds a pinned particle) throws with nothing changed. A pinned particle's anchor is held whatever lane an attachment takes. <paramref name="handles"/> may be empty.
     /// </summary>
     public unsafe void Attach(ReadOnlySpan<Box3DSoaAttachmentDesc> attachments, Span<Box3DSoaConstraintHandle> handles = default)
     {
@@ -1369,7 +1372,7 @@ public sealed class Box3DSoaWorld : IDisposable
 
     /// <summary>
     /// Pins (<paramref name="pinned"/> true) or wakes the named particles. A pinned particle is dormant: no step walk visits it, its position and velocity
-    /// lanes are stale, and a reader draws it from its anchor (<see cref="Box3DSoaView.ParticlePinned"/> says which). A pinned particle that shares a
+    /// lanes are stale, and a reader draws it from its anchor (<see cref="Box3DSoaView.ParticlePinned"/> says which, <see cref="Box3DSoaView.ParticleAnchor"/> names the attachment). A pinned particle that shares a
     /// live distance or bend with an unpinned one is held on its anchor each substep instead. A wake puts the particle on its anchor's point at the
     /// bodies' poses now, moving as that point moves. Refuses the whole batch, changing nothing, for a stale or dead handle, a fluid particle, or pinning
     /// a particle with no non-tether attachment or whose distance component holds a tether attachment. Removing a pinned particle's anchor attachment is refused.

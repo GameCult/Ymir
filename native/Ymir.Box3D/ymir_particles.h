@@ -197,7 +197,7 @@ typedef struct ymir_particles
     // distance or bend reaches (the step sets their pos and pp from their anchor); act_dist and act_bend: the live constraints with an unpinned particle;
     // act_att: the live attachments of unpinned particles. All in lane order, so with nothing pinned they are every live lane and w is inv_mass.
     int32_t *act, *kin, *act_dist, *act_bend, *act_att;
-    int32_t* anchor; // derived: the lane of the particle's lowest live non-TETHER attachment (BODY or STATIC), -1 for none
+    int32_t* anchor; // derived: the lane of the particle's lowest live non-TETHER attachment (BODY or STATIC), -1 for none; a pinned particle keeps the one it was pinned on
     float* w;        // derived: the inverse mass the step reads: 0 for a pinned or free lane, else inv_mass
     int32_t* component; // derived: the lowest lane of the particle's distance-connected component
     int32_t *held_start, *held_count; // derived (rederive_topology): the slice of held_body that lists the bodies particle i is attached to (BODY attachments), contact skips them

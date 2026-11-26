@@ -464,6 +464,7 @@ public sealed class Box3DSoaPinTests
         Run(s, 3);
         var free = w.FreeAttachmentSlots;
         Refused(s, () => w.Attach(Box3DSoaAttachKind.Static, rope.Particles[5], point: (1f, 1f, 0f), tether: true), "a tether on a pinned particle");
+        Refused(s, () => w.Attach(Box3DSoaAttachKind.Static, rope.Particles[0], point: (1f, 1f, 0f), tether: true), "a tether on live flesh of a component that holds pinned flesh");
         Refused(s, () => w.Attach([new Box3DSoaAttachmentDesc(Box3DSoaAttachKind.Static, rope.Particles[0], -1, (1f, 1f, 0f), 0f, false, false, false),
                                    new Box3DSoaAttachmentDesc(Box3DSoaAttachKind.Static, rope.Particles[5], -1, (1f, 1f, 0f), 0f, true, false, false)]), "a batch with one tether on a pinned particle");
         Assert.Equal(free, w.FreeAttachmentSlots);
@@ -473,23 +474,35 @@ public sealed class Box3DSoaPinTests
         Refused(s, () => w.SetPinned([rope.Particles[4]], true), "a tethered component");
     }
 
-    [Fact]
-    public void An_attach_cannot_move_a_pinned_particles_anchor()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void An_attach_in_any_lane_leaves_a_pinned_particles_anchor(bool freeBelow)
     {
-        using var s = Chained();
+        using var s = Chained(extra: 4);
         var w = s.World;
-        var (a, b, c) = (s.P[0][0], s.P[0][1], s.P[0][2]);
-        w.SetPinned([b], true); // b's anchor is its lane Anchor[0][1] = 1, above the lane 0 that a's attachment holds
-        w.Remove(s.Anchor[0][0]);
-        Run(s, 2); // a freed lane is reused only a step later
-        Refused(s, () => w.Attach(Box3DSoaAttachKind.Static, b, point: (1f, 1f, 1f)), "an attachment that would take a lane below the anchor");
-        var free = w.Attach(Box3DSoaAttachKind.Static, c, point: (0.5f, 1.8f, 0f)); // an unpinned particle takes the lane
-        Assert.Equal(0, free.Lane);
-        w.Attach(Box3DSoaAttachKind.Static, b, point: (1f, 1f, 1f)); // now above the anchor: accepted
+        var (b, c) = (s.P[0][1], s.P[0][2]);
+        w.SetPinned([b], true); // b's anchor is lane Anchor[0][1] = 1
+        if (freeBelow)
+        {
+            w.Remove(s.Anchor[0][0]); // lane 0, below b's anchor
+            Run(s, 2); // a freed lane is reused only a step later
+        }
+        var v = s.View;
+        var lanes = ParticleLanes(v);
+        // a mixed batch, new flesh beside resting flesh plus a second attachment on the resting particle: accepted whatever lanes are free
+        var made = new Box3DSoaConstraintHandle[2];
+        w.Attach([new Box3DSoaAttachmentDesc(Box3DSoaAttachKind.Static, b, -1, (1f, 1f, 1f), 0f, false, false, false),
+                  new Box3DSoaAttachmentDesc(Box3DSoaAttachKind.Static, c, -1, (0.5f, 1.8f, 0f), 0f, false, false, false)], made);
+        Assert.Equal(freeBelow, made[0].Lane < s.Anchor[0][1].Lane); // b's second attachment lands below its anchor when a lane there is free
+        w.Attach(Box3DSoaAttachKind.Static, b, point: (1f, 1f, 1f)); // and alone
+        v = s.View;
+        Assert.Equal(s.Anchor[0][1].Lane, v.ParticleAnchor[b.Lane]);
+        Assert.Equal(lanes, ParticleLanes(v)); // bit for bit
         Run(s, 2);
         w.SetPinned([b], false);
-        var v = s.View;
-        Assert.True(Dist(At(v, b), AnchorNow(s, 0, 1).Point) <= WakeAnchor, "a woken particle lands on the anchor it was pinned on");
+        v = s.View;
+        Assert.True(Dist(At(v, b.Lane), AnchorNow(s, 0, 1).Point) <= WakeAnchor, "a woken particle lands on the anchor it was pinned on");
     }
 
     [Fact]

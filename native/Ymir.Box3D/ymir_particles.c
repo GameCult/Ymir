@@ -623,7 +623,8 @@ static void rederive_active(ymir_particles* p)
     int32_t np = p->particle_count;
     for (int32_t i = 0; i < np; ++i)
     {
-        p->anchor[i] = -1;
+        // a pinned particle keeps the anchor it was pinned on (remove refuses it, destroy unpins), so no lane another command takes can move its pose
+        p->anchor[i] = p->pinned[i] ? p->anchor[i] : -1;
         p->w[i] = p->particle_live[i] && !p->pinned[i] ? p->inv_mass[i] : 0.0f;
         p->done[i] = 0; // scratch: marks the kinematic
     }
@@ -1236,6 +1237,19 @@ int32_t ymir_particles_create_bends(ymir_particles* p, int32_t n, const ymir_ben
     return rederive_topology(p, TOPO_FULL, NULL, 0);
 }
 
+// 1 when a live pinned particle sits in the same distance component as lane i.
+static int component_pinned(const ymir_particles* p, int32_t i)
+{
+    for (int32_t j = 0; j < p->particle_count; ++j)
+    {
+        if (p->particle_live[j] && p->pinned[j] && p->component[j] == p->component[i])
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 int32_t ymir_particles_attach(ymir_particles* p, int32_t n, const ymir_attachment_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out)
 {
     if (p == NULL || n < 0 || (n > 0 && d == NULL))
@@ -1275,13 +1289,12 @@ int32_t ymir_particles_attach(ymir_particles* p, int32_t n, const ymir_attachmen
         p->att_compliance[a] = d[k].compliance;
         p->att_force_x[a] = p->att_force_y[a] = p->att_force_z[a] = 0.0f;
     }
-    // A pinned particle is drawn from its anchor, the lowest live non-TETHER lane, and holds no tether (no walk moves the lane a tether would bound): an attach
-    // that would add a tether to it, or take a lane below its anchor, is refused whole like removing the anchor. Wake it first.
+    // A tether loads every lane of its distance component, and no walk moves a pinned one: a TETHER on a particle whose component holds pinned flesh is
+    // refused whole, the mirror of set_pinned refusing a tethered component. Wake it first. The component lane is the one before this command: an attach joins no component.
     int32_t status = YMIR_PARTICLES_OK;
     for (int32_t k = 0; k < n && status == YMIR_PARTICLES_OK; ++k)
     {
-        int32_t i = d[k].particle.lane, a = p->lane_list[k];
-        if (p->pinned[i] && ((d[k].flags & YMIR_ATTACH_FLAG_TETHER) != 0 || (p->anchor[i] >= 0 && a < p->anchor[i])))
+        if ((d[k].flags & YMIR_ATTACH_FLAG_TETHER) != 0 && component_pinned(p, d[k].particle.lane))
         {
             status = YMIR_PARTICLES_INVALID_ARGUMENT;
         }

@@ -331,6 +331,8 @@ typedef struct ymir_box3d_soa_view
     const uint64_t* sensor_removed_at;
     // Particles: 1 for a pinned (dormant) particle, 0 else; notification only. A pinned particle's pos and vel are stale: draw it from its anchor attachment.
     const uint32_t* particle_pinned;
+    // Particles: the attachment lane a pinned particle is drawn from (held from the command that pinned it), -1 for none; derived, read only.
+    const int32_t* particle_anchor;
 } ymir_box3d_soa_view;
 
 // A begin or end of touch between two bodies: their lane indices and the shapes' stable ids.
@@ -2001,6 +2003,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         view->sensor_generation = pt->sensor_generation;
         view->sensor_removed_at = pt->sensor_removed_at;
         view->particle_pinned = pt->pinned;
+        view->particle_anchor = pt->anchor;
     }
     return YMIR_SOA_OK;
 }
