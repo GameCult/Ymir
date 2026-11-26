@@ -1261,7 +1261,7 @@ public sealed class Box3DSoaWorld : IDisposable
             Check(Box3DSoaNative.ymir_box3d_soa_destroy_particles(_handle, particles.Length, h));
     }
 
-    /// <summary>Creates distance constraints; <paramref name="handles"/> may be empty. Throws when the derived tethers would not fit the tether capacity.</summary>
+    /// <summary>Creates distance constraints; <paramref name="handles"/> may be empty. Throws, changing nothing, when the derived tethers would not fit the tether capacity or a distance component would hold both a pinned particle and a tether.</summary>
     public unsafe void CreateDistances(ReadOnlySpan<Box3DSoaDistanceDesc> distances, Span<Box3DSoaConstraintHandle> handles = default)
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
@@ -1305,8 +1305,8 @@ public sealed class Box3DSoaWorld : IDisposable
 
     /// <summary>
     /// Ties each particle of <paramref name="attachments"/> to a body point or a world point, as one command ending in one derivation:
-    /// lanes are taken lowest first in order, and a refusal (a bad desc, a removed body, no free lanes, tethers past capacity, a tether on a particle
-    /// whose distance component holds a pinned particle) throws with nothing changed. A pinned particle's anchor is held whatever lane an attachment takes. <paramref name="handles"/> may be empty.
+    /// lanes are taken lowest first in order, and a refusal (a bad desc, a removed body, no free lanes, tethers past capacity, a distance component
+    /// left holding both a pinned particle and a tether) throws with nothing changed. A pinned particle's anchor is held whatever lane an attachment takes. <paramref name="handles"/> may be empty.
     /// </summary>
     public unsafe void Attach(ReadOnlySpan<Box3DSoaAttachmentDesc> attachments, Span<Box3DSoaConstraintHandle> handles = default)
     {
@@ -1375,7 +1375,7 @@ public sealed class Box3DSoaWorld : IDisposable
     /// lanes are stale, and a reader draws it from its anchor (<see cref="Box3DSoaView.ParticlePinned"/> says which, <see cref="Box3DSoaView.ParticleAnchor"/> names the attachment). A pinned particle that shares a
     /// live distance or bend with an unpinned one is held on its anchor each substep instead. A wake puts the particle on its anchor's point at the
     /// bodies' poses now, moving as that point moves. Refuses the whole batch, changing nothing, for a stale or dead handle, a fluid particle, or pinning
-    /// a particle with no non-tether attachment or whose distance component holds a tether attachment. Removing a pinned particle's anchor attachment is refused.
+    /// a particle with no non-tether attachment or whose distance component holds a tether attachment (no command leaves a component holding both). Removing a pinned particle's anchor attachment is refused.
     /// </summary>
     public unsafe void SetPinned(ReadOnlySpan<Box3DSoaParticleHandle> particles, bool pinned)
     {

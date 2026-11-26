@@ -1274,8 +1274,12 @@ public sealed class Box3DSoaParticleSourceTests
         Assert.Equal(0, Count(rest, @"->(component|tether_att|tether_particle|tether_parent|tether_edge|tether_bound)\[[^\]]*\]\s*=[^=]|->tether_count\s*=[^=]"));
         // every call names a mode; only a command that changed no distance and no attachment may derive the isolated lanes
         Assert.Equal(0, Count(c, @"rederive_topology\(p\)"));
-        foreach (var command in new[] { "create_particles", "destroy_particles", "create_distances", "create_bends", "attach", "remove" })
+        foreach (var command in new[] { "create_particles", "destroy_particles", "create_distances", "create_bends", "attach", "remove", "set_pinned" })
             Assert.Contains("rederive_topology(p, ", Body(c, $"int32_t ymir_particles_{command}("));
+        // no pinned flesh and tether in one component has one check, in the derivation: no command asks it itself
+        Assert.Equal(1, Count(StripComments(c), @"static int pinned_meets_tether\("));
+        Assert.Equal(0, Count(StripComments(c.Replace(Body(c, "static int32_t rederive_topology("), "")), @"pinned_meets_tether\(p"));
+        Assert.DoesNotContain("rederive_active", Body(c, "int32_t ymir_particles_set_pinned("));
         foreach (var command in new[] { "create_distances", "create_bends", "attach", "remove" })
             Assert.DoesNotContain("TOPO_ISOLATED", Body(c, $"int32_t ymir_particles_{command}("));
         // emission derives the isolated lanes only (a new particle holds no constraint); destroy names both, the graph changing when a victim held one
@@ -1288,7 +1292,8 @@ public sealed class Box3DSoaParticleSourceTests
         Assert.Equal(0, Count(c + h, @"PxReal|physx"));
         // the retired owners stay gone
         var retired = string.Join("|", "create_" + "chain", "split_" + "chain", "destroy_" + "chain", "chain_" + "first", "chain_" + "size", "chain_stable_" + "id",
-            "Chain" + "Handle", "Create" + "Chain", "Split" + "Chain", "Destroy" + "Chain", "FreeChain" + "Slots", "link_" + "tension", "Link" + "Tension");
+            "Chain" + "Handle", "Create" + "Chain", "Split" + "Chain", "Destroy" + "Chain", "FreeChain" + "Slots", "link_" + "tension", "Link" + "Tension",
+            "component_" + "pinned", "component_" + "tethered");
         foreach (var dir in new[] { "native", "src", "tests", "docs" })
             foreach (var f in Directory.GetFiles(Path.Combine(Root(), dir), "*.*", SearchOption.AllDirectories).Where(f => !f.Contains("obj") && !f.Contains("bin") && (f.EndsWith(".c") || f.EndsWith(".h") || f.EndsWith(".cs") || f.EndsWith(".md"))))
                 Assert.True(Count(File.ReadAllText(f), retired) == 0, f);

@@ -283,7 +283,9 @@ float ymir_particles_wet_mu(const ymir_particles* p, int32_t body, float x, floa
 
 // Commands. `step_count` is the world's completed steps: a removed lane is reused once a step has passed, lowest
 // lane first. Every refusal happens before anything changes; a command that would need more tethers than the
-// capacity is refused whole (tether capacity: up to two per particle reached, plus the pair routes). Every topology command ends in the one rederive_topology.
+// capacity is refused whole (tether capacity: up to two per particle reached, plus the pair routes). Every topology command and set_pinned ends in
+// the one rederive_topology, which refuses whole (INVALID_ARGUMENT) a command that would leave one distance component holding both a pinned
+// particle and a live TETHER attachment (a tether loads every lane of its component, and no walk moves a pinned one): wake it first.
 int32_t ymir_particles_create_particles(ymir_particles* p, int32_t n, const ymir_particle_desc* d, uint64_t step_count, ymir_handle* out);
 int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymir_handle* h, uint64_t step_count);
 int32_t ymir_particles_create_distances(ymir_particles* p, int32_t n, const ymir_distance_desc* d, uint64_t step_count, ymir_handle* out);
@@ -293,9 +295,9 @@ int32_t ymir_particles_attach(ymir_particles* p, int32_t n, const ymir_attachmen
 int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const ymir_handle* h, uint64_t step_count);
 // Pins (1) or wakes (0) the named particles. A pinned particle is dormant: on no step walk (a particle of a live distance or bend with an
 // unpinned particle is held on its anchor each substep instead), its pos and vel stale, drawn from its anchor. Refuses whole (INVALID_ARGUMENT,
-// nothing changed) a stale or dead handle, `pinned` not 0 or 1, a fluid particle, and pinned 1 on a particle with no anchor or whose
-// distance component holds a live TETHER attachment. The wake sets pos to the anchor's point at the proxies' pose now (the caller has filled
-// them) and vel to that point's velocity. Ends in rederive_active. remove(ATTACHMENT) refuses a pinned particle's anchor.
+// nothing changed) a stale or dead handle, `pinned` not 0 or 1, a fluid particle, pinned 1 on a particle with no anchor, and what
+// rederive_topology refuses. The wake sets pos to the anchor's point at the proxies' pose now (the caller has filled
+// them) and vel to that point's velocity. Ends in rederive_topology. remove(ATTACHMENT) refuses a pinned particle's anchor.
 int32_t ymir_particles_set_pinned(ymir_particles* p, int32_t n, const ymir_handle* h, uint32_t pinned);
 // Settles the named fluid particles into wet patches and destroys them. Each reads its support from the last step (support_body, else
 // support_particle) and its contact point from the proxies the caller has just filled; a drop's volume is (2 r)^3. Refuses whole

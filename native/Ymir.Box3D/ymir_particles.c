@@ -614,8 +614,8 @@ static int has_pair(const ymir_particles* p, int32_t a, const int32_t* label)
     return 0;
 }
 
-// The only writer of the active lists, the counts, anchor and w. Called at the end of rederive_topology (every topology command) and by
-// set_pinned: the step walks only these, so what a step visits is decided at command time and never tested per lane. A distance or bend
+// The only writer of the active lists, the counts, anchor and w. Called at the end of rederive_topology (every topology command and
+// set_pinned): the step walks only these, so what a step visits is decided at command time and never tested per lane. A distance or bend
 // is active when one of its particles is unpinned; a pinned particle it reaches is kinematic (the step holds it on its anchor), and the
 // bend's three particles all count, since a bend reads b against the centroid of a and c.
 static void rederive_active(ymir_particles* p)
@@ -687,21 +687,65 @@ static void rederive_active(ymir_particles* p)
     p->kin_n = n;
 }
 
-// The only writer of the tether lanes and the component lane. Called at the end of every topology command. The
-// tether count is known from the component sizes before anything is written: a derivation that would not fit is
-// refused with every lane as it was.
+// 1 when a distance component (`label` names them by a lane) holds both a live pinned particle and a live TETHER attachment.
+// A tether loads every lane of its component and no walk moves a pinned one, so no derivation admits it. done is scratch.
+static int pinned_meets_tether(ymir_particles* p, const int32_t* label)
+{
+    int32_t np = p->particle_count;
+    memset(p->done, 0, (size_t)np);
+    for (int32_t i = 0; i < np; ++i)
+    {
+        if (p->particle_live[i] && p->pinned[i])
+        {
+            p->done[label[i]] |= 1;
+        }
+    }
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        if (is_tether(p, a))
+        {
+            p->done[label[p->att_particle[a]]] |= 2;
+        }
+    }
+    for (int32_t i = 0; i < np; ++i)
+    {
+        if (p->done[i] == 3)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// The only writer of the tether lanes and the component lane, and the one check that no component holds both pinned flesh
+// and a TETHER (pinned_meets_tether). Called at the end of every topology command and of set_pinned. The tether count and
+// the check are settled from the components before anything is written: a derivation that would not fit, or would admit a
+// pinned particle and a tether in one component, is refused (FULL, INVALID_ARGUMENT) with every lane as it was, and the
+// command backs its own lanes out.
 // ISOLATED is for a command that changed no distance and no attachment, only which lanes are live: the graph, so every
 // tether and every other lane's component, is as it was. It writes the component of the `n` lanes in `lanes` (each
 // just created, which is its own component, or just destroyed, which reads 0), their held list (empty) and limb body (-1),
-// and returns.
+// and returns. A new particle is unpinned with no attachment and a destroyed one holds nothing, so it needs no check.
+// PINNED is for a command that changed only which lanes are pinned: the graph and every component are as they were, so it
+// checks on the component lane and derives the active lists.
 enum
 {
     TOPO_FULL = 0,
-    TOPO_ISOLATED = 1
+    TOPO_ISOLATED = 1,
+    TOPO_PINNED = 2
 };
 
 static int32_t rederive_topology(ymir_particles* p, int mode, const int32_t* lanes, int32_t n)
 {
+    if (mode == TOPO_PINNED)
+    {
+        if (pinned_meets_tether(p, p->component))
+        {
+            return YMIR_PARTICLES_INVALID_ARGUMENT;
+        }
+        rederive_active(p);
+        return YMIR_PARTICLES_OK;
+    }
     if (mode == TOPO_ISOLATED)
     {
         for (int32_t k = 0; k < n; ++k)
@@ -764,6 +808,10 @@ static int32_t rederive_topology(ymir_particles* p, int mode, const int32_t* lan
             }
         }
         p->comp_size[i] = tail;
+    }
+    if (pinned_meets_tether(p, p->tether_of))
+    {
+        return YMIR_PARTICLES_INVALID_ARGUMENT; // a tether and pinned flesh in one component: wake it first
     }
     // Islands (Kim 2012 sec. 3.4): a particle holding a live TETHER attachment is a tether particle; an island is a maximal
     // set of them joined by live distances, named by its lowest TETHER attachment. isle labels tether particles, -1 elsewhere
@@ -1237,19 +1285,6 @@ int32_t ymir_particles_create_bends(ymir_particles* p, int32_t n, const ymir_ben
     return rederive_topology(p, TOPO_FULL, NULL, 0);
 }
 
-// 1 when a live pinned particle sits in the same distance component as lane i.
-static int component_pinned(const ymir_particles* p, int32_t i)
-{
-    for (int32_t j = 0; j < p->particle_count; ++j)
-    {
-        if (p->particle_live[j] && p->pinned[j] && p->component[j] == p->component[i])
-        {
-            return 1;
-        }
-    }
-    return 0;
-}
-
 int32_t ymir_particles_attach(ymir_particles* p, int32_t n, const ymir_attachment_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out)
 {
     if (p == NULL || n < 0 || (n > 0 && d == NULL))
@@ -1289,20 +1324,7 @@ int32_t ymir_particles_attach(ymir_particles* p, int32_t n, const ymir_attachmen
         p->att_compliance[a] = d[k].compliance;
         p->att_force_x[a] = p->att_force_y[a] = p->att_force_z[a] = 0.0f;
     }
-    // A tether loads every lane of its distance component, and no walk moves a pinned one: a TETHER on a particle whose component holds pinned flesh is
-    // refused whole, the mirror of set_pinned refusing a tethered component. Wake it first. The component lane is the one before this command: an attach joins no component.
-    int32_t status = YMIR_PARTICLES_OK;
-    for (int32_t k = 0; k < n && status == YMIR_PARTICLES_OK; ++k)
-    {
-        if ((d[k].flags & YMIR_ATTACH_FLAG_TETHER) != 0 && component_pinned(p, d[k].particle.lane))
-        {
-            status = YMIR_PARTICLES_INVALID_ARGUMENT;
-        }
-    }
-    if (status == YMIR_PARTICLES_OK)
-    {
-        status = rederive_topology(p, TOPO_FULL, NULL, 0);
-    }
+    int32_t status = rederive_topology(p, TOPO_FULL, NULL, 0);
     if (status != YMIR_PARTICLES_OK)
     {
         for (int32_t k = 0; k < n; ++k) // back out: the lanes read as they did before the command
@@ -2703,19 +2725,6 @@ void ymir_particles_end(ymir_particles* p, int32_t substeps)
 
 // ---- pinned: the command-owned dormancy of a particle ------------------------------------------------------------
 
-// 1 when a live TETHER attachment sits on a particle of the same distance component as lane i.
-static int component_tethered(const ymir_particles* p, int32_t i)
-{
-    for (int32_t a = 0; a < p->attachment_count; ++a)
-    {
-        if (is_tether(p, a) && p->component[p->att_particle[a]] == p->component[i])
-        {
-            return 1;
-        }
-    }
-    return 0;
-}
-
 int32_t ymir_particles_set_pinned(ymir_particles* p, int32_t n, const ymir_handle* h, uint32_t pinned)
 {
     if (p == NULL || n < 0 || (n > 0 && h == NULL) || pinned > 1)
@@ -2725,18 +2734,26 @@ int32_t ymir_particles_set_pinned(ymir_particles* p, int32_t n, const ymir_handl
     for (int32_t k = 0; k < n; ++k)
     {
         int32_t i = h[k].lane;
-        if (!particle_ok(p, i, h[k].generation) || (p->phase[i] & YMIR_PHASE_FLUID) ||
-            (pinned && (p->anchor[i] < 0 || component_tethered(p, i))))
+        if (!particle_ok(p, i, h[k].generation) || (p->phase[i] & YMIR_PHASE_FLUID) || (pinned && p->anchor[i] < 0))
         {
-            return YMIR_PARTICLES_INVALID_ARGUMENT; // a pinned particle is drawn from its anchor, and a tether would load a lane that no walk moves
+            return YMIR_PARTICLES_INVALID_ARGUMENT; // a pinned particle is drawn from its anchor
         }
     }
+    int32_t newly = 0; // the lanes this pin took 0 -> 1, in queue, to back out if the derivation refuses
     for (int32_t k = 0; k < n; ++k)
     {
         int32_t i = h[k].lane;
-        if (pinned || !p->pinned[i])
+        if (pinned)
         {
-            p->pinned[i] = pinned; // 0 -> 1 writes only the lane
+            if (!p->pinned[i])
+            {
+                p->pinned[i] = 1; // 0 -> 1 writes only the lane
+                p->queue[newly++] = i;
+            }
+            continue;
+        }
+        if (!p->pinned[i])
+        {
             continue;
         }
         // wake: on the anchor's point, moving as that point moves, at the proxies' pose now
@@ -2753,8 +2770,13 @@ int32_t ymir_particles_set_pinned(ymir_particles* p, int32_t n, const ymir_handl
         put(p->vel_x, p->vel_y, p->vel_z, i, v);
         p->pinned[i] = 0;
     }
-    rederive_active(p);
-    return YMIR_PARTICLES_OK;
+    // a wake only clears pinned lanes, so the derivation refuses only a pin, which wrote nothing but the lanes in queue
+    int32_t status = rederive_topology(p, TOPO_PINNED, NULL, 0);
+    for (int32_t k = 0; status != YMIR_PARTICLES_OK && k < newly; ++k)
+    {
+        p->pinned[p->queue[k]] = 0;
+    }
+    return status;
 }
 
 // ---- settle: liquid becomes data ----------------------------------------------------------------------------
