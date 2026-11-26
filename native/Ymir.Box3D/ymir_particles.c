@@ -1321,6 +1321,14 @@ int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const
             return YMIR_PARTICLES_INVALID_ARGUMENT;
         }
     }
+    for (int32_t k = 0; type == YMIR_LANES_ATTACHMENT && k < n; ++k)
+    {
+        int32_t i = p->att_particle[h[k].lane];
+        if (p->pinned[i] && p->anchor[i] == h[k].lane)
+        {
+            return YMIR_PARTICLES_INVALID_ARGUMENT; // a pinned particle is drawn from its anchor: wake it first
+        }
+    }
     if (type == YMIR_LANES_SENSOR)
     {
         for (int32_t k = 0; k < n; ++k)
@@ -2661,6 +2669,62 @@ void ymir_particles_end(ymir_particles* p, int32_t substeps)
         p->att_force_y[a] *= mean;
         p->att_force_z[a] *= mean;
     }
+}
+
+// ---- pinned: the command-owned dormancy of a particle ------------------------------------------------------------
+
+// 1 when a live TETHER attachment sits on a particle of the same distance component as lane i.
+static int component_tethered(const ymir_particles* p, int32_t i)
+{
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        if (is_tether(p, a) && p->component[p->att_particle[a]] == p->component[i])
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int32_t ymir_particles_set_pinned(ymir_particles* p, int32_t n, const ymir_handle* h, uint32_t pinned)
+{
+    if (p == NULL || n < 0 || (n > 0 && h == NULL) || pinned > 1)
+    {
+        return YMIR_PARTICLES_INVALID_ARGUMENT;
+    }
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t i = h[k].lane;
+        if (!particle_ok(p, i, h[k].generation) || (p->phase[i] & YMIR_PHASE_FLUID) ||
+            (pinned && (p->anchor[i] < 0 || component_tethered(p, i))))
+        {
+            return YMIR_PARTICLES_INVALID_ARGUMENT; // a pinned particle is drawn from its anchor, and a tether would load a lane that no walk moves
+        }
+    }
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t i = h[k].lane;
+        if (pinned || !p->pinned[i])
+        {
+            p->pinned[i] = pinned; // 0 -> 1 writes only the lane
+            continue;
+        }
+        // wake: on the anchor's point, moving as that point moves, at the proxies' pose now
+        int32_t a = p->anchor[i];
+        v3 at = end_point(p, a), v = {0.0f, 0.0f, 0.0f};
+        if (p->att_kind[a] == YMIR_ATTACH_BODY)
+        {
+            const ymir_particle_proxy* b = p->proxies + p->att_body[a];
+            v = vadd((v3){b->velocity[0], b->velocity[1], b->velocity[2]},
+                     vcross((v3){b->angular_velocity[0], b->angular_velocity[1], b->angular_velocity[2]},
+                            vsub(at, (v3){b->position[0], b->position[1], b->position[2]})));
+        }
+        put(p->pos_x, p->pos_y, p->pos_z, i, at);
+        put(p->vel_x, p->vel_y, p->vel_z, i, v);
+        p->pinned[i] = 0;
+    }
+    rederive_active(p);
+    return YMIR_PARTICLES_OK;
 }
 
 // ---- settle: liquid becomes data ----------------------------------------------------------------------------

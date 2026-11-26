@@ -421,6 +421,7 @@ internal unsafe struct Box3DSoaViewNative
     public uint* SensorLive;
     public uint* SensorGeneration;
     public ulong* SensorRemovedAt;
+    public uint* ParticlePinned;
 }
 
 /// <summary>Native layout of <c>ymir_box3d_soa_facts</c>: counts, dropped counters, then three pointers.</summary>
@@ -666,6 +667,10 @@ internal static unsafe partial class Box3DSoaNative
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ymir_box3d_soa_attach(nint world, int n, Box3DSoaAttachmentDesc* desc, Box3DSoaParticleHandle* output);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_set_pinned(nint world, int n, Box3DSoaParticleHandle* particles, uint pinned);
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
@@ -938,6 +943,8 @@ public readonly unsafe struct Box3DSoaView
     public ReadOnlySpan<uint> SensorLive => Lane(_v.SensorLive, SensorCount);
     public ReadOnlySpan<uint> SensorGeneration => Lane(_v.SensorGeneration, SensorCount);
     public ReadOnlySpan<ulong> SensorRemovedAt => Lane(_v.SensorRemovedAt, SensorCount);
+    /// <summary>1 for a pinned (dormant) particle, else 0; notification only. A pinned particle's position and velocity lanes are stale: draw it from its anchor (its lowest live non-tether attachment), see <see cref="Box3DSoaWorld.SetPinned"/>.</summary>
+    public ReadOnlySpan<uint> ParticlePinned => Lane(_v.ParticlePinned, ParticleCount);
 
     /// <summary>N s, world: the impulse the particle phase delivered to each body over the last step (0 for a body it did not touch). Box3D has already applied it; this is notification only.</summary>
     public ReadOnlySpan<float> ParticleImpulseX => Lane(_v.ParticleImpulseX, Count);
@@ -956,7 +963,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 17;
+    private const uint ExpectedAbi = 18;
     private nint _handle;
 
     /// <summary>
@@ -1358,6 +1365,20 @@ public sealed class Box3DSoaWorld : IDisposable
         {
             if (rented is not null) ArrayPool<Box3DSoaParticleHandle>.Shared.Return(rented);
         }
+    }
+
+    /// <summary>
+    /// Pins (<paramref name="pinned"/> true) or wakes the named particles. A pinned particle is dormant: no step walk visits it, its position and velocity
+    /// lanes are stale, and a reader draws it from its anchor (<see cref="Box3DSoaView.ParticlePinned"/> says which). A pinned particle that shares a
+    /// live distance or bend with an unpinned one is held on its anchor each substep instead. A wake puts the particle on its anchor's point at the
+    /// bodies' poses now, moving as that point moves. Refuses the whole batch, changing nothing, for a stale or dead handle, a fluid particle, or pinning
+    /// a particle with no non-tether attachment or whose distance component holds a tether attachment. Removing a pinned particle's anchor attachment is refused.
+    /// </summary>
+    public unsafe void SetPinned(ReadOnlySpan<Box3DSoaParticleHandle> particles, bool pinned)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        fixed (Box3DSoaParticleHandle* h = particles)
+            Check(Box3DSoaNative.ymir_box3d_soa_set_pinned(_handle, particles.Length, h, pinned ? 1u : 0u));
     }
 
     /// <summary>

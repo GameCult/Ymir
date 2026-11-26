@@ -62,7 +62,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a retired joint's lane (destroy_joint): never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 17u
+#define YMIR_SOA_ABI_VERSION 18u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -329,6 +329,8 @@ typedef struct ymir_box3d_soa_view
     const uint32_t* sensor_live;
     const uint32_t* sensor_generation;
     const uint64_t* sensor_removed_at;
+    // Particles: 1 for a pinned (dormant) particle, 0 else; notification only. A pinned particle's pos and vel are stale: draw it from its anchor attachment.
+    const uint32_t* particle_pinned;
 } ymir_box3d_soa_view;
 
 // A begin or end of touch between two bodies: their lane indices and the shapes' stable ids.
@@ -1787,6 +1789,17 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_settle(ymir_box3d_soa_world* world,
     return ymir_particles_settle(world->particles, n, h, world->step_count, out);
 }
 
+// Pins or wakes particles (see ymir_particles_set_pinned): the proxies are refreshed first, so a wake lands on the anchor's point at the bodies' poses now.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_set_pinned(ymir_box3d_soa_world* world, int32_t n, const ymir_handle* h, uint32_t pinned)
+{
+    if (world == NULL || world->particles == NULL)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    ymir_soa_gather_proxies(world);
+    return ymir_particles_set_pinned(world->particles, n, h, pinned);
+}
+
 // Creates liquid sensors (see ymir_particles_create_sensors); a body must already exist.
 YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create_sensors(ymir_box3d_soa_world* world, int32_t n, const ymir_sensor_desc* d, ymir_handle* out)
 {
@@ -1987,6 +2000,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         view->sensor_live = pt->sensor_live;
         view->sensor_generation = pt->sensor_generation;
         view->sensor_removed_at = pt->sensor_removed_at;
+        view->particle_pinned = pt->pinned;
     }
     return YMIR_SOA_OK;
 }

@@ -291,6 +291,12 @@ int32_t ymir_particles_create_bends(ymir_particles* p, int32_t n, const ymir_ben
 // Attaches n particles in the lowest free lanes, by cursor, as a batch: every desc is validated, FULL when fewer than n lanes are free, one derivation, and a derivation that does not fit backs every lane out.
 int32_t ymir_particles_attach(ymir_particles* p, int32_t n, const ymir_attachment_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out);
 int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const ymir_handle* h, uint64_t step_count);
+// Pins (1) or wakes (0) the named particles. A pinned particle is dormant: on no step walk (a particle of a live distance or bend with an
+// unpinned particle is held on its anchor each substep instead), its pos and vel stale, drawn from its anchor. Refuses whole (INVALID_ARGUMENT,
+// nothing changed) a stale or dead handle, `pinned` not 0 or 1, a fluid particle, and pinned 1 on a particle with no anchor or whose
+// distance component holds a live TETHER attachment. The wake sets pos to the anchor's point at the proxies' pose now (the caller has filled
+// them) and vel to that point's velocity. Ends in rederive_active. remove(ATTACHMENT) refuses a pinned particle's anchor.
+int32_t ymir_particles_set_pinned(ymir_particles* p, int32_t n, const ymir_handle* h, uint32_t pinned);
 // Settles the named fluid particles into wet patches and destroys them. Each reads its support from the last step (support_body, else
 // support_particle) and its contact point from the proxies the caller has just filled; a drop's volume is (2 r)^3. Refuses whole
 // (INVALID_ARGUMENT) a dead or non-fluid particle or one with no support, FULL when a drop finds no lane and no patch to merge into, before any
