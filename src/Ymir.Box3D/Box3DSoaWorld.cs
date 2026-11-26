@@ -332,6 +332,7 @@ internal unsafe struct Box3DSoaViewNative
     public float* ContactImpulse;
     public int* ContactCount;
     public ulong* MaterialId;
+    public float* Mass;
     public uint* BodyGeneration;
     public uint* JointGeneration;
     public float* ParticleImpulseX;
@@ -771,6 +772,8 @@ public readonly unsafe struct Box3DSoaView
     public ReadOnlySpan<int> ContactCount => Lane(_v.ContactCount, Count);
     /// <summary>The material id the body was added with (0 by default).</summary>
     public ReadOnlySpan<ulong> MaterialId => Lane(_v.MaterialId, Count);
+    /// <summary>kg, from Box3D at create (density and shape); 0 for static, kinematic, anchor and removed lanes.</summary>
+    public ReadOnlySpan<float> Mass => Lane(_v.Mass, Count);
     /// <summary>Per body lane, the number of times it has been removed. A body's handle is its lane and the generation read when it was added;
     /// <see cref="Box3DSoaWorld.RemoveBody"/> refuses a handle from an earlier occupant of the lane. <see cref="Count"/> is the high-water mark of lanes
     /// ever used: a lane with kind <see cref="Box3DSoaKind.Removed"/> is free (reused once a step has completed).</summary>
@@ -966,8 +969,11 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 18;
+    private const uint ExpectedAbi = 19;
     private nint _handle;
+
+    /// <summary>The gravity (m/s^2) this world was created with; native has no setter, so this copy cannot disagree.</summary>
+    public (float X, float Y, float Z) Gravity { get; }
 
     /// <summary>
     /// <paramref name="factCapacity"/> bounds each kind of per-step contact fact (default 4 x capacity; 0 or less is refused);
@@ -1000,6 +1006,7 @@ public sealed class Box3DSoaWorld : IDisposable
 
         var caps = particles.GetValueOrDefault();
         Check(Box3DSoaNative.ymir_box3d_soa_create(capacity, jointCapacity, gravityX, gravityY, gravityZ, factCapacity ?? checked(capacity * 4), hitThreshold, particles.HasValue ? &caps : null, out _handle));
+        Gravity = (gravityX, gravityY, gravityZ);
     }
 
     /// <summary>Fails closed when the native library is not the ABI this build expects, in either direction.</summary>

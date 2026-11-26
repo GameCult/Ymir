@@ -8,11 +8,11 @@ Box3D decides every physical outcome; Ymir creates bodies, steps the world and e
 `ymir_box3d_session_*` (`ymir_box3d.c`) is the planar Aetheria session: gravity is zero, Y is locked,
 only yaw rotates (`motionLocks.linearY/angularX/angularZ`), and state leaves by `copy_bodies` into an
 array of structs. A body cannot fall or tumble there, and every read is a copy. The SoA world is a
-separate native object (`ymir_box3d_soa.c`, ABI 18) so the Aetheria session's contract is untouched.
+separate native object (`ymir_box3d_soa.c`, ABI 19) so the Aetheria session's contract is untouched.
 
 ## Contract
 
-- Native (ABI 18): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
+- Native (ABI 19): `ymir_box3d_soa_create(capacity, joint_capacity, gravity, fact_capacity, hit_threshold, particle_capacities*) /
   create_particles / destroy_particles / create_distances / create_bends / create_sensors / attach(n, desc*) / set_pinned(n, handles, pinned) / remove / set_material / free_slots /
   add_body / add_joint / step / get_view / get_facts / set_anchor_target / destroy_joint / set_joint_thresholds / remove_body / free_joint_slots / free_body_slots / apply_impulse / cast_ray_closest / destroy`. `add_body` takes one descriptor (sphere, capsule, box, static box, anchor; position,
   rotation, velocity, size, density, friction, restitution, rolling resistance, material id, parent, limb). Capacities are fixed at creation,
@@ -46,7 +46,7 @@ separate native object (`ymir_box3d_soa.c`, ABI 18) so the Aetheria session's co
   average: heavy balls in a pile alternate between about 1.5 and 0.5 m g dt from step to step, so a consumer
   must not threshold a single step; average over steps or use `contact_impulse / dt` as a load estimate over a
   window), `contact_count`
-  (touching contacts) and `material_id` (the body's `material_id`, also set as the shape's Box3D user
+  (touching contacts), `mass` (kg, Box3D's `b3Body_GetMass` copied once at create; 0 for static, kinematic, anchor and removed lanes) and `material_id` (the body's `material_id`, also set as the shape's Box3D user
   material). `stepNormalImpulse` is the GameCult Box3D fork's observed field (see `box3d-parity.md`); it is
   the normal channel only, since Box3D exposes no tangent impulse. Sleep is off in SoA worlds, so manifolds
   hold no stale values; if sleep is ever enabled, zero the lanes of sleeping bodies. The hit fact's `impulse`

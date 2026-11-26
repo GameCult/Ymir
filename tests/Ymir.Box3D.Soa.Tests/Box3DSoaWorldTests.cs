@@ -206,4 +206,59 @@ public sealed unsafe class Box3DSoaWorldTests
         var view = default(Box3DSoaView);
         Assert.Throws<InvalidOperationException>(() => view.PositionY.Length);
     }
+
+    // Box3D's own mass is the owner; the formulas below live here only as the oracle of it.
+    [Fact]
+    public void Mass_is_density_times_the_shapes_volume()
+    {
+        const float rho = 800f, r = 0.3f, h = 0.45f;
+        using var world = new Box3DSoaWorld(capacity: 4);
+        var sphere = world.AddSphere(1, (0f, 1f, 0f), r, rho);
+        var capsule = world.AddCapsule(2, (3f, 1f, 0f), r, h, rho);
+        var box = world.AddBox(3, (6f, 1f, 0f), (0.2f, 0.3f, 0.5f), rho);
+        var view = world.View;
+        Assert.Equal(rho * 4f / 3f * MathF.PI * r * r * r, view.Mass[sphere], rho * 4f / 3f * MathF.PI * r * r * r * 1e-5f);
+        var capsuleVolume = MathF.PI * r * r * 2f * h + 4f / 3f * MathF.PI * r * r * r;
+        Assert.Equal(rho * capsuleVolume, view.Mass[capsule], rho * capsuleVolume * 1e-5f);
+        var boxVolume = 8f * 0.2f * 0.3f * 0.5f;
+        Assert.Equal(rho * boxVolume, view.Mass[box], rho * boxVolume * 1e-5f);
+    }
+
+    [Fact]
+    public void Static_and_removed_lanes_read_zero_mass()
+    {
+        using var world = new Box3DSoaWorld(capacity: 4);
+        var ground = world.AddStaticBox(1, (0f, -0.5f, 0f), (5f, 0.5f, 5f));
+        var ball = world.AddSphere(2, (0f, 2f, 0f), 0.5f, 1000f);
+        var view = world.View;
+        Assert.Equal(0f, view.Mass[ground]);
+        Assert.True(view.Mass[ball] > 0f);
+        world.RemoveBody(ball);
+        Assert.Equal(0f, view.Mass[ball]);
+    }
+
+    [Fact]
+    public void A_hung_capsules_joint_carries_mass_times_gravity()
+    {
+        using var world = new Box3DSoaWorld(capacity: 4, jointCapacity: 2);
+        var pin = world.AddStaticBox(1, (0f, 5f, 0f), (0.1f, 0.1f, 0.1f));
+        var capsule = world.AddCapsule(2, (0f, 4f, 0f), 0.05f, 0.4f, 1000f);
+        var joint = world.AddJoint(Box3DSoaJointKind.Spherical, pin, capsule, (0f, 5f, 0f), (0f, 0f, 1f));
+        var view = world.View;
+        for (var i = 0; i < 180; i++) world.Step(Dt);
+        var g = world.Gravity;
+        var weight = view.Mass[capsule] * MathF.Sqrt(g.X * g.X + g.Y * g.Y + g.Z * g.Z);
+        var load = MathF.Sqrt(view.JointConstraintForceX[joint] * view.JointConstraintForceX[joint] +
+                              view.JointConstraintForceY[joint] * view.JointConstraintForceY[joint] +
+                              view.JointConstraintForceZ[joint] * view.JointConstraintForceZ[joint]);
+        Assert.Equal(weight, load, weight * 0.01f);
+    }
+
+    [Fact]
+    public void Gravity_reads_back_the_constructor_arguments()
+    {
+        using (var world = new Box3DSoaWorld(capacity: 1)) Assert.Equal((0f, -10f, 0f), world.Gravity);
+        using (var world = new Box3DSoaWorld(capacity: 1, gravityX: 0f, gravityY: 0f, gravityZ: 0f)) Assert.Equal((0f, 0f, 0f), world.Gravity);
+        using (var world = new Box3DSoaWorld(capacity: 1, gravityX: 1f, gravityY: -9.81f, gravityZ: 2f)) Assert.Equal((1f, -9.81f, 2f), world.Gravity);
+    }
 }

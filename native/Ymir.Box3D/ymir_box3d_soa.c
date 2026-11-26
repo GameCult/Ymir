@@ -62,7 +62,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a retired joint's lane (destroy_joint): never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 18u
+#define YMIR_SOA_ABI_VERSION 19u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -213,6 +213,8 @@ typedef struct ymir_box3d_soa_view
     const float* contact_impulse;
     const int32_t* contact_count;
     const uint64_t* material_id;
+    // mass is kg from Box3D at create (b3Body_GetMass): 0 for static, kinematic and anchor bodies and for removed lanes.
+    const float* mass;
     // Per body lane: counts the removals of that lane. remove_body refuses a handle whose generation is not the lane's, so a stale
     // removal never takes a later body in a reused lane. A removed body's lane reads kind REMOVED and every other lane 0 (stable_id 0, parent -1).
     const uint32_t* body_generation;
@@ -460,6 +462,7 @@ typedef struct ymir_box3d_soa_world
     int32_t* limb;
     int32_t* contact_count;
     uint64_t* material_id;
+    float* mass;
     uint32_t* body_generation;
     uint64_t* body_removed_at; // step_count when the lane was removed; reusable once a step has passed
     float* size; // 3 arrays of `capacity` floats, lane-major; written once in add_body
@@ -644,6 +647,7 @@ static void ymir_soa_free(ymir_box3d_soa_world* world)
     free(world->limb);
     free(world->contact_count);
     free(world->material_id);
+    free(world->mass);
     free(world->body_generation);
     free(world->body_removed_at);
     free(world->size);
@@ -715,6 +719,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
     world->limb = (int32_t*)calloc(n, sizeof(int32_t));
     world->contact_count = (int32_t*)calloc(n, sizeof(int32_t));
     world->material_id = (uint64_t*)calloc(n, sizeof(uint64_t));
+    world->mass = (float*)calloc(n, sizeof(float));
     world->body_generation = (uint32_t*)calloc(n, sizeof(uint32_t));
     world->body_removed_at = (uint64_t*)calloc(n, sizeof(uint64_t));
     world->size = (float*)calloc(n * 3, sizeof(float));
@@ -751,7 +756,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_create(
             return YMIR_SOA_OUT_OF_MEMORY;
         }
     }
-    if (world->contact_count == NULL || world->material_id == NULL || world->body_generation == NULL || world->body_removed_at == NULL || world->begin_facts == NULL ||
+    if (world->contact_count == NULL || world->material_id == NULL || world->mass == NULL || world->body_generation == NULL || world->body_removed_at == NULL || world->begin_facts == NULL ||
         world->end_facts == NULL || world->hit_facts == NULL || world->overload_facts == NULL || world->contact_scratch == NULL ||
         world->body_removed_facts == NULL || world->body_removed_pending == NULL || world->joint_removed_facts == NULL ||
         world->joint_removed_pending == NULL || world->retired_shapes == NULL ||
@@ -974,6 +979,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_add_body(
     world->limb[i] = d->limb;
     world->contact_count[i] = 0;
     world->material_id[i] = ymir_soa_is_anchor(d->kind) ? 0 : d->material_id;
+    world->mass[i] = ymir_soa_is_dynamic(d->kind) ? b3Body_GetMass(body) : 0.0f; // the shapes exist above, so Box3D's mass is final
     /* Publish only the components the kind uses; unused ones read 0 whatever the caller passed. */
     int used = ymir_soa_is_anchor(d->kind) ? 0 : d->kind == YMIR_SOA_KIND_SPHERE ? 1 : d->kind == YMIR_SOA_KIND_CAPSULE ? 2 : 3;
     for (int k = 0; k < 3; k++)
@@ -1229,6 +1235,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_remove_body(ymir_box3d_soa_world* w
     world->limb[lane] = 0;
     world->contact_count[lane] = 0;
     world->material_id[lane] = 0;
+    world->mass[lane] = 0.0f;
     world->body_removed_at[lane] = world->step_count;
     world->body_generation[lane] += 1;
     for (int k = 0; k < 3; ++k)
@@ -1910,6 +1917,7 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_get_view(const ymir_box3d_soa_world
         .contact_impulse = base + YMIR_SOA_CONTACT_IMPULSE_LANE * n,
         .contact_count = world->contact_count,
         .material_id = world->material_id,
+        .mass = world->mass,
         .body_generation = world->body_generation,
         .joint_generation = world->joint_generation,
         .particle_impulse_x = base + (YMIR_SOA_PARTICLE_IMPULSE_LANE + 0) * n,
