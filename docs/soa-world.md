@@ -139,7 +139,7 @@ separate native object (`ymir_box3d_soa.c`, ABI 17) so the Aetheria session's co
     phase, material})` takes the lowest free lanes; `destroy_particles(n, handles)` removes every constraint that touches them;
     `create_distances(n, desc{a, b, rest (< 0 = rest-pose length), compliance})`; `create_bends(n, desc{e1, e2, compliance
     (< 0 = soft pass off), max_angle (< 0 = no limit)})`, refused unless the two distances share exactly one particle and the
-    bend does something; `attach(n, desc{kind body|static, flags, particle, body, point, compliance}*)` (a batch like `create_distances`: every desc validated, the lowest free lanes by cursor, one derivation, backed out whole on a refusal); `remove(type distance|bend|
+    bend does something; `attach(n, desc{kind body|static, flags, particle, body, point, compliance}*)` (a batch like `create_distances`: every desc validated, the lowest free lanes by cursor, one derivation, backed out whole on a refusal: a batch equals N single attaches only when accepted, since N singles keep the attachments accepted before a refused one); `remove(type distance|bend|
     attachment, n, handles)`; `set_material(index, desc{friction, viscosity (>= 0), material_id})`; `free_slots(lane set)`. A distance takes
     the bends over it with it. Ymir never removes a constraint or releases an attachment on a load: tear, cut, gib and release
     are the caller's say-so.

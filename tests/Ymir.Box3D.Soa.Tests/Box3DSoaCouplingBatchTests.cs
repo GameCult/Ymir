@@ -118,6 +118,10 @@ public sealed partial class Box3DSoaCouplingTests
         return $"{v.AttachmentCount}|{v.TetherCount}|{StateHash(v):x16}|{string.Join(",", v.AttachmentKind.ToArray())}|{string.Join(",", v.AttachmentGeneration.ToArray())}";
     }
 
+    // A batch is atomic and N single Attach calls are not: on a refusal the batch leaves the world as it was, while a loop of singles keeps the
+    // attachments accepted before the refused one. So "a batch equals N singles" holds for an accepted batch (the tests above), and a refused batch
+    // is pinned on its own below. The status can also differ when a bad desc and too few free lanes meet: the batch validates first (INVALID_ARGUMENT),
+    // singles reach FULL at the overflow. Callers that tolerated a late refusal in a loop lose the whole batch.
     private static void AssertRefusedWhole(Box3DSoaWorld world, Box3DSoaAttachmentDesc[] batch, string status, string what)
     {
         var before = Snapshot(world);
@@ -234,6 +238,46 @@ public sealed partial class Box3DSoaCouplingTests
         Assert.True(one.Deviation < OneWayDeviation, "the one-way particle left its point: " + line);
     }
 
+    /// <summary>
+    /// A 10-particle rope sliding at 3 m/s, its first particle tethered to box <c>a</c>, with the tether solved on its own (the particle-tether branch)
+    /// or against a plain second tether on box <c>b</c> (the pair-tether branch). Returns the worst of box <c>a</c>'s impulse lane magnitude plus its
+    /// speed over 60 ticks: what the rope books on the box.
+    /// </summary>
+    private static float TetherLoad(bool oneWay, bool pair)
+    {
+        using var world = Box3DSoaParticleTests.World(bodies: 4, particles: 32, distances: 32, bends: 8, attachments: 8, tethers: 600, gravityY: 0f);
+        var ps = new Box3DSoaParticleHandle[10];
+        world.CreateParticles(Graph.Line((0f, 0f, 0f), (Spacing, 0f, 0f), 10).Select(q => new Box3DSoaParticleDesc(q, ParticleMass, ParticleRadius, velocity: (3f, 0f, 0f))).ToArray(), ps);
+        world.CreateDistances(Enumerable.Range(0, 9).Select(i => new Box3DSoaDistanceDesc(ps[i], ps[i + 1])).ToArray());
+        var a = world.AddBox(1, (-0.3f, 0f, 0f), (0.1f, 0.1f, 0.1f), 125f);
+        var b = world.AddBox(2, (9 * Spacing + 0.3f, 0f, 0f), (0.1f, 0.1f, 0.1f), 125f);
+        world.Attach([new Box3DSoaAttachmentDesc(Box3DSoaAttachKind.Body, ps[0], a, (0.3f, 0f, 0f), tether: true, oneWay: oneWay)]);
+        if (pair) world.Attach([new Box3DSoaAttachmentDesc(Box3DSoaAttachKind.Body, ps[9], b, (-0.3f, 0f, 0f), tether: true)]);
+        Assert.True(world.View.TetherCount > 0);
+        var worst = 0f; var v = world.View;
+        for (var i = 0; i < 60; i++)
+        {
+            world.Step(Dt, Sub);
+            worst = MathF.Max(worst, MathF.Sqrt(Sq(v.ParticleImpulseX[a]) + Sq(v.ParticleImpulseY[a]) + Sq(v.ParticleImpulseZ[a])) + MathF.Abs(v.VelocityX[a]));
+        }
+        return worst;
+    }
+
+    [Fact]
+    public void A_one_way_tether_books_nothing_on_its_body_in_either_tether_branch()
+    {
+        // end_w and end_push carry the ONE_WAY guard for solve_attachments and for both tether branches. Pinned only through solve_attachments, the
+        // guard could move out of them and the tethers would load the box again.
+        var plain = TetherLoad(false, false); var one = TetherLoad(true, false);
+        var plainPair = TetherLoad(false, true); var onePair = TetherLoad(true, true);
+        var line = $"ONE_WAY_TETHER box load, particle-tether: plain {F(plain)} one-way {F(one)}; pair-tether: plain {F(plainPair)} one-way {F(onePair)}";
+        Console.Error.WriteLine(line);
+        Reading(line);
+        Assert.True(plain > OneWayTetherLoad && plainPair > OneWayTetherLoad, "without the flag the tether did not load the box: " + line);
+        Assert.True(one < OneWayTetherLoad, "a one-way particle tether loaded its body: " + line);
+        Assert.True(onePair < OneWayTetherLoad, "a one-way pair tether loaded its body: " + line);
+    }
+
     [Fact]
     public void A_one_way_attachment_is_refused_on_a_world_point()
     {
@@ -242,7 +286,27 @@ public sealed partial class Box3DSoaCouplingTests
         world.CreateParticles([new Box3DSoaParticleDesc((0f, 1f, 0f), ParticleMass, ParticleRadius)], p);
         Assert.Throws<InvalidOperationException>(() => world.Attach(Box3DSoaAttachKind.Static, p[0], point: (0f, 1f, 0f), oneWay: true));
         Assert.Equal(0, world.View.AttachmentCount);
-        Assert.Throws<InvalidOperationException>(() => world.Attach([new Box3DSoaAttachmentDesc { Kind = 0, Flags = 8u, Particle = p[0], Body = 0 }])); // an unknown bit
+    }
+
+    [Fact]
+    public void A_flag_bit_outside_the_known_mask_is_refused()
+    {
+        // The world is valid in every other respect (a live body, a live particle, a legal point and compliance), so only the unknown bit can refuse it.
+        // The managed single Attach cannot send a bit, the descriptor can. Bit 8 is the next bit after ONE_WAY (lodur:ruling:ymir-new-flag-value-no-abi-bump).
+        using var world = Box3DSoaParticleTests.World(bodies: 2, particles: 4, distances: 1, bends: 1, attachments: 4, tethers: 4, gravityY: 0f);
+        var p = new Box3DSoaParticleHandle[1];
+        world.CreateParticles([new Box3DSoaParticleDesc((0f, 1f, 0f), ParticleMass, ParticleRadius)], p);
+        var body = world.AddCapsule(1, (0f, 0f, 0f), 0.05f, 0.1f, 1000f);
+        // the same desc with a known flag is taken, so the refusal below is the bit and nothing else
+        var valid = new Box3DSoaAttachmentDesc(Box3DSoaAttachKind.Body, p[0], body, (0f, 1f, 0f), oneWay: true);
+        var taken = new Box3DSoaConstraintHandle[1];
+        world.Attach([valid], taken);
+        Assert.Equal(1, world.View.AttachmentCount);
+        world.Remove(taken);
+        Box3DSoaParticleTests.Run(world, 1);
+        var unknown = valid;
+        unknown.Flags = 8u;
+        AssertRefusedWhole(world, [unknown], "1", "an unknown flag bit"); // status INVALID_ARGUMENT, no lane changed
     }
 
     /// <summary>One Fella's flesh in the probe's counts: 661 particles (a 22 x 30 sheet and one more), a distance per sheet link, every particle attached to one of 19 bones.</summary>
@@ -330,4 +394,8 @@ public sealed partial class Box3DSoaCouplingTests
     //   Mr  a rederive per desc: cost only (the cost line), unclaimed.
     // OneWayDeviation: shipped worst 0 (-> 5e-7), least claimed mutant Mw 2.17828e-3, separation 4357; bound sqrt(5e-7 x 2.17828e-3).
     private const float OneWayDeviation = 3.3e-5f;
+    // OneWayTetherLoad: shipped worst 0 (-> 5e-7), least claimed mutant Mtether 0.77 (pair branch; 0.93 particle branch), separation 1.5e6; bound sqrt(5e-7 x 0.77).
+    //   Mtether  the ONE_WAY guard moved out of end_w/end_push into solve_attachments alone: only A_one_way_tether_books_nothing_* fails.
+    //   Mmask    the unknown-bit clause deleted: only A_flag_bit_outside_the_known_mask_is_refused fails.
+    private const float OneWayTetherLoad = 6e-4f;
 }
