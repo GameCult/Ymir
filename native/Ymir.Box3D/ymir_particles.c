@@ -108,6 +108,8 @@ static size_t layout(ymir_particles* p, unsigned char* base)
     CARVE(rest_x, float, np); CARVE(rest_y, float, np); CARVE(rest_z, float, np);
     CARVE(phase, uint32_t, np); CARVE(material, uint32_t, np); CARVE(particle_live, uint32_t, np);
     CARVE(particle_generation, uint32_t, np); CARVE(particle_removed_at, uint64_t, np); CARVE(component, int32_t, np);
+    CARVE(pinned, uint32_t, np); CARVE(anchor, int32_t, np); CARVE(w, float, np); CARVE(act, int32_t, np); CARVE(kin, int32_t, np);
+    CARVE(act_att, int32_t, na); CARVE(act_dist, int32_t, nd); CARVE(act_bend, int32_t, nb);
     CARVE(held_start, int32_t, np); CARVE(held_count, int32_t, np); CARVE(limb_body, int32_t, np); CARVE(held_body, int32_t, na);
     CARVE(density, float, np); CARVE(support_body, int32_t, np); CARVE(support_particle, int32_t, np);
     CARVE(nbr, int32_t, (int64_t)p->fluid_capacity * YMIR_FLUID_NEIGHBOURS); CARVE(nbr_start, int32_t, np); CARVE(nbr_count, int32_t, np);
@@ -612,6 +614,78 @@ static int has_pair(const ymir_particles* p, int32_t a, const int32_t* label)
     return 0;
 }
 
+// The only writer of the active lists, the counts, anchor and w. Called at the end of rederive_topology (every topology command) and by
+// set_pinned: the step walks only these, so what a step visits is decided at command time and never tested per lane. A distance or bend
+// is active when one of its particles is unpinned; a pinned particle it reaches is kinematic (the step holds it on its anchor), and the
+// bend's three particles all count, since a bend reads b against the centroid of a and c.
+static void rederive_active(ymir_particles* p)
+{
+    int32_t np = p->particle_count;
+    for (int32_t i = 0; i < np; ++i)
+    {
+        p->anchor[i] = -1;
+        p->w[i] = p->particle_live[i] && !p->pinned[i] ? p->inv_mass[i] : 0.0f;
+        p->done[i] = 0; // scratch: marks the kinematic
+    }
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        int32_t i = p->att_particle[a];
+        if (p->att_kind[a] != YMIR_ATTACH_REMOVED && !(p->att_flags[a] & YMIR_ATTACH_FLAG_TETHER) && p->anchor[i] < 0)
+        {
+            p->anchor[i] = a;
+        }
+    }
+    int32_t n = 0;
+    for (int32_t i = 0; i < np; ++i)
+    {
+        if (p->particle_live[i] && !p->pinned[i])
+        {
+            p->act[n++] = i;
+        }
+    }
+    p->act_n = n;
+    n = 0;
+    for (int32_t a = 0; a < p->attachment_count; ++a)
+    {
+        if (p->att_kind[a] != YMIR_ATTACH_REMOVED && !p->pinned[p->att_particle[a]])
+        {
+            p->act_att[n++] = a;
+        }
+    }
+    p->act_att_n = n;
+    n = 0;
+    for (int32_t e = 0; e < p->distance_count; ++e)
+    {
+        int32_t i = p->dist_a[e], j = p->dist_b[e];
+        if (p->dist_live[e] && (!p->pinned[i] || !p->pinned[j]))
+        {
+            p->act_dist[n++] = e;
+            p->done[i] = p->done[j] = 1;
+        }
+    }
+    p->act_dist_n = n;
+    n = 0;
+    for (int32_t k = 0; k < p->bend_count; ++k)
+    {
+        int32_t a = p->bend_a[k], b = p->bend_b[k], c = p->bend_c[k];
+        if (p->bend_live[k] && (!p->pinned[a] || !p->pinned[b] || !p->pinned[c]))
+        {
+            p->act_bend[n++] = k;
+            p->done[a] = p->done[b] = p->done[c] = 1;
+        }
+    }
+    p->act_bend_n = n;
+    n = 0;
+    for (int32_t i = 0; i < np; ++i)
+    {
+        if (p->particle_live[i] && p->pinned[i] && p->done[i])
+        {
+            p->kin[n++] = i;
+        }
+    }
+    p->kin_n = n;
+}
+
 // The only writer of the tether lanes and the component lane. Called at the end of every topology command. The
 // tether count is known from the component sizes before anything is written: a derivation that would not fit is
 // refused with every lane as it was.
@@ -635,6 +709,7 @@ static int32_t rederive_topology(ymir_particles* p, int mode, const int32_t* lan
             p->held_count[lanes[k]] = 0;
             p->limb_body[lanes[k]] = -1;
         }
+        rederive_active(p);
         return YMIR_PARTICLES_OK;
     }
     int32_t np = p->particle_count;
@@ -900,6 +975,7 @@ static int32_t rederive_topology(ymir_particles* p, int mode, const int32_t* lan
         }
     }
     p->tether_count = nt;
+    rederive_active(p);
     return YMIR_PARTICLES_OK;
 }
 
@@ -1011,7 +1087,7 @@ int32_t ymir_particles_destroy_particles(ymir_particles* p, int32_t n, const ymi
         p->vel_x[i] = p->vel_y[i] = p->vel_z[i] = 0.0f;
         p->rest_x[i] = p->rest_y[i] = p->rest_z[i] = 0.0f;
         p->radius[i] = p->inv_mass[i] = 0.0f;
-        p->phase[i] = p->material[i] = 0;
+        p->phase[i] = p->material[i] = p->pinned[i] = 0;
         p->density[i] = p->lambda[i] = 0.0f;
         p->support_body[i] = p->support_particle[i] = -1;
         p->particle_live[i] = 0;
@@ -1460,9 +1536,10 @@ static void grid_sort(ymir_particles* p, float inv_cell, int solids, uint32_t ma
 {
     int32_t buckets = (int32_t)mask + 1;
     memset(p->cell_start, 0, sizeof(int32_t) * (size_t)(buckets + 1));
-    for (int32_t i = 0; i < p->particle_count; ++i)
+    for (int32_t k = 0; k < p->act_n; ++k)
     {
-        if (!p->particle_live[i] || (solids && (p->phase[i] & (YMIR_PHASE_FLUID | YMIR_PHASE_NO_PARTICLE_CONTACT))))
+        int32_t i = p->act[k];
+        if (solids && (p->phase[i] & (YMIR_PHASE_FLUID | YMIR_PHASE_NO_PARTICLE_CONTACT)))
         {
             continue;
         }
@@ -1476,9 +1553,10 @@ static void grid_sort(ymir_particles* p, float inv_cell, int solids, uint32_t ma
         p->cell_start[c + 1] += p->cell_start[c];
         p->cell_fill[c] = 0;
     }
-    for (int32_t i = 0; i < p->particle_count; ++i)
+    for (int32_t k = 0; k < p->act_n; ++k)
     {
-        if (p->particle_live[i] && !(solids && (p->phase[i] & (YMIR_PHASE_FLUID | YMIR_PHASE_NO_PARTICLE_CONTACT))))
+        int32_t i = p->act[k];
+        if (!(solids && (p->phase[i] & (YMIR_PHASE_FLUID | YMIR_PHASE_NO_PARTICLE_CONTACT))))
         {
             uint32_t c = cell_hash(p->cell_x[i], p->cell_y[i], p->cell_z[i], mask);
             p->sorted[p->cell_start[c] + p->cell_fill[c]++] = i;
@@ -1493,9 +1571,10 @@ static void build_grid(ymir_particles* p)
 {
     float rmax = 0.0f;
     int32_t members = 0;
-    for (int32_t i = 0; i < p->particle_count; ++i)
+    for (int32_t k = 0; k < p->act_n; ++k)
     {
-        if (p->particle_live[i] && !(p->phase[i] & (YMIR_PHASE_FLUID | YMIR_PHASE_NO_PARTICLE_CONTACT)))
+        int32_t i = p->act[k];
+        if (!(p->phase[i] & (YMIR_PHASE_FLUID | YMIR_PHASE_NO_PARTICLE_CONTACT)))
         {
             rmax = vmax(rmax, p->radius[i]);
             ++members;
@@ -1548,7 +1627,7 @@ static int touching(const ymir_particles* p, int32_t i, int32_t j, v3 xi, v3* d,
     *d = vsub(xi, P(p, p->pp_x, p->pp_y, p->pp_z, j));
     *md = p->radius[i] + p->radius[j];
     *r2 = vdot(*d, *d);
-    *wsum = p->inv_mass[i] + p->inv_mass[j];
+    *wsum = p->w[i] + p->w[j];
     return *r2 < *md * *md && *r2 >= 1e-12f && *wsum != 0.0f && collides(p, i, j);
 }
 
@@ -1566,9 +1645,10 @@ typedef int (*pair_fn)(ymir_particles* p, void* ctx, int32_t i, int32_t j);
 
 YMIR_INLINE void walk_half(ymir_particles* p, pair_fn fn, void* ctx)
 {
-    for (int32_t i = 0; i < p->particle_count; ++i)
+    for (int32_t k = 0; k < p->act_n; ++k)
     {
-        if (!p->particle_live[i] || (p->phase[i] & (YMIR_PHASE_FLUID | YMIR_PHASE_NO_PARTICLE_CONTACT))) // the grid holds neither
+        int32_t i = p->act[k];
+        if (p->phase[i] & (YMIR_PHASE_FLUID | YMIR_PHASE_NO_PARTICLE_CONTACT)) // the grid holds neither
         {
             continue;
         }
@@ -1607,8 +1687,8 @@ static int contact_pair(ymir_particles* p, void* ctx, int32_t i, int32_t j) // 1
     }
     float rr = sqrtf(r2), depth = (md - rr) / rr;
     float weight = 1.0f / (float)(p->contacts[i] > p->contacts[j] ? p->contacts[i] : p->contacts[j]);
-    v3 di = vmul(d, weight * (p->inv_mass[i] / wsum) * depth);
-    v3 dj = vmul(d, weight * (p->inv_mass[j] / wsum) * depth);
+    v3 di = vmul(d, weight * (p->w[i] / wsum) * depth);
+    v3 dj = vmul(d, weight * (p->w[j] / wsum) * depth);
     p->dp_x[i] += di.x; p->dp_y[i] += di.y; p->dp_z[i] += di.z;
     p->dp_x[j] -= dj.x; p->dp_y[j] -= dj.y; p->dp_z[j] -= dj.z;
     return 1;
@@ -1621,8 +1701,9 @@ static int contact_pair(ymir_particles* p, void* ctx, int32_t i, int32_t j) // 1
 // sum is the same on every run. No pair list is kept: its size is not bounded by the particle count.
 static void particle_contacts(ymir_particles* p)
 {
-    for (int32_t i = 0; i < p->particle_count; ++i)
+    for (int32_t k = 0; k < p->act_n; ++k)
     {
+        int32_t i = p->act[k];
         p->contacts[i] = 0;
         p->dp_x[i] = p->dp_y[i] = p->dp_z[i] = 0.0f;
     }
@@ -1630,14 +1711,12 @@ static void particle_contacts(ymir_particles* p)
     {
         walk_half(p, contact_pair, &pass);
     }
-    for (int32_t i = 0; i < p->particle_count; ++i)
+    for (int32_t k = 0; k < p->act_n; ++k)
     {
-        if (p->particle_live[i])
-        {
-            p->pp_x[i] += p->dp_x[i];
-            p->pp_y[i] += p->dp_y[i];
-            p->pp_z[i] += p->dp_z[i];
-        }
+        int32_t i = p->act[k];
+        p->pp_x[i] += p->dp_x[i];
+        p->pp_y[i] += p->dp_y[i];
+        p->pp_z[i] += p->dp_z[i];
     }
 }
 
@@ -1671,7 +1750,7 @@ static v3 spiky(v3 d, float r, float h)
 // Macklin et al. 2016): equal and opposite momentum at any mass ratio, equal masses unchanged, a static end takes nothing.
 static void density_correct(ymir_particles* p, int32_t i, int32_t j)
 {
-    float wsum = p->inv_mass[i] + p->inv_mass[j];
+    float wsum = p->w[i] + p->w[j];
     if (wsum == 0.0f)
     {
         return;
@@ -1683,7 +1762,7 @@ static void density_correct(ymir_particles* p, int32_t i, int32_t j)
         return;
     }
     v3 corr = vmul(spiky(d, sqrtf(r2), h), l / n0_of(p, h));
-    v3 di = vmul(corr, p->inv_mass[i]), dj = vmul(corr, p->inv_mass[j]);
+    v3 di = vmul(corr, p->w[i]), dj = vmul(corr, p->w[j]);
     p->dp_x[i] += di.x; p->dp_y[i] += di.y; p->dp_z[i] += di.z;
     p->dp_x[j] -= dj.x; p->dp_y[j] -= dj.y; p->dp_z[j] -= dj.z;
 }
@@ -1695,24 +1774,22 @@ static void density_correct(ymir_particles* p, int32_t i, int32_t j)
 static float fluid_grid(ymir_particles* p)
 {
     float rmax = 0.0f, rfmax = 0.0f;
-    for (int32_t i = 0; i < p->particle_count; ++i)
+    for (int32_t k = 0; k < p->act_n; ++k)
     {
-        if (p->particle_live[i])
-        {
-            rmax = vmax(rmax, p->radius[i]);
-            rfmax = (p->phase[i] & YMIR_PHASE_FLUID) ? vmax(rfmax, p->radius[i]) : rfmax;
-        }
+        int32_t i = p->act[k];
+        rmax = vmax(rmax, p->radius[i]);
+        rfmax = (p->phase[i] & YMIR_PHASE_FLUID) ? vmax(rfmax, p->radius[i]) : rfmax;
     }
     float inv_cell = 1.0f / (4.0f * rfmax);
     p->fluid_rings = (int32_t)ceilf(2.0f * (rfmax + rmax) * inv_cell);
     grid_sort(p, inv_cell, 0, p->table_mask);
-    for (int32_t q = 0; q < p->live_particles; ++q)
+    for (int32_t q = 0; q < p->act_n; ++q) // the lanes grid_sort placed
     {
         int32_t j = p->sorted[q];
         p->sx[q] = p->pp_x[j];
         p->sy[q] = p->pp_y[j];
         p->sz[q] = p->pp_z[j];
-        p->sw[q] = p->inv_mass[j];
+        p->sw[q] = p->w[j];
         p->sphase[q] = p->phase[j];
     }
     memset(p->cell_fill, 0, sizeof(int32_t) * ((size_t)p->table_mask + 1)); // the buckets' visit stamps, pass A
@@ -1738,7 +1815,7 @@ static void fluid_density(ymir_particles* p)
     }
     float rmax = fluid_grid(p);
     int32_t rings = p->fluid_rings, used = 0, arena = p->fluid_capacity * YMIR_FLUID_NEIGHBOURS;
-    for (int32_t qi = 0; qi < p->live_particles; ++qi)
+    for (int32_t qi = 0; qi < p->act_n; ++qi)
     {
         if (!(p->sphase[qi] & YMIR_PHASE_FLUID))
         {
@@ -1746,7 +1823,7 @@ static void fluid_density(ymir_particles* p)
         }
         int32_t i = p->sorted[qi];
         v3 xi = {p->sx[qi], p->sy[qi], p->sz[qi]}, gsum = {0.0f, 0.0f, 0.0f};
-        float h0 = 4.0f * p->radius[i], n0 = n0_of(p, h0), n = poly6(0.0f, h0), ssum = 0.0f, wi = p->inv_mass[i];
+        float h0 = 4.0f * p->radius[i], n0 = n0_of(p, h0), n = poly6(0.0f, h0), ssum = 0.0f, wi = p->w[i];
         float reach = 2.0f * (p->radius[i] + rmax), reach2 = reach * reach;
         int32_t buf[YMIR_FLUID_CANDIDATES], m = 0, hits = 0, stamp = qi + 1;
         for (int32_t da = -rings; da <= rings; ++da)
@@ -1876,7 +1953,7 @@ static void fluid_density(ymir_particles* p)
 // pair that entered reach since is missed: smoothing, not a constraint.
 static void viscosity_pair(ymir_particles* p, int32_t i, int32_t j)
 {
-    float wsum = p->inv_mass[i] + p->inv_mass[j];
+    float wsum = p->w[i] + p->w[j];
     if (wsum == 0.0f)
     {
         return;
@@ -1889,7 +1966,7 @@ static void viscosity_pair(ymir_particles* p, int32_t i, int32_t j)
         return;
     }
     v3 dv = vmul(vsub(P(p, p->vel_x, p->vel_y, p->vel_z, j), P(p, p->vel_x, p->vel_y, p->vel_z, i)), c * poly6(r2, h) / n0_of(p, h));
-    v3 di = vmul(dv, 2.0f * p->inv_mass[i] / wsum), dj = vmul(dv, 2.0f * p->inv_mass[j] / wsum);
+    v3 di = vmul(dv, 2.0f * p->w[i] / wsum), dj = vmul(dv, 2.0f * p->w[j] / wsum);
     p->dp_x[i] += di.x; p->dp_y[i] += di.y; p->dp_z[i] += di.z;
     p->dp_x[j] -= dj.x; p->dp_y[j] -= dj.y; p->dp_z[j] -= dj.z;
 }
@@ -2063,16 +2140,17 @@ static int held_by(const ymir_particles* p, int32_t i, int32_t k)
 static void body_contacts(phase* f)
 {
     ymir_particles* p = f->p;
-    for (int32_t i = 0; i < p->particle_count; ++i)
+    for (int32_t m = 0; m < p->act_n; ++m)
     {
-        if (!p->particle_live[i] || p->inv_mass[i] == 0.0f)
+        int32_t i = p->act[m];
+        if (p->w[i] == 0.0f)
         {
             continue;
         }
         int fluid = (p->phase[i] & YMIR_PHASE_FLUID) != 0;
         float mu = p->mat_friction[p->material[i]];
         float r = p->radius[i];
-        float wi = p->inv_mass[i];
+        float wi = p->w[i];
         for (int32_t k = 0; k < p->body_count; ++k)
         {
             ymir_particle_proxy* b = p->proxies + k;
@@ -2158,13 +2236,9 @@ static void book(const phase* f, int32_t e, int32_t near_i, int32_t far_i, v3 im
 static void solve_attachments(phase* f)
 {
     ymir_particles* p = f->p;
-    for (int32_t a = 0; a < p->attachment_count; ++a)
+    for (int32_t m = 0; m < p->act_att_n; ++m)
     {
-        if (p->att_kind[a] == YMIR_ATTACH_REMOVED)
-        {
-            continue;
-        }
-        int32_t i = p->att_particle[a];
+        int32_t a = p->act_att[m], i = p->att_particle[a];
         v3 at = end_point(p, a);
         v3 d = vsub(P(p, p->pp_x, p->pp_y, p->pp_z, i), at);
         float len = vlen(d);
@@ -2173,13 +2247,13 @@ static void solve_attachments(phase* f)
             continue;
         }
         v3 n = vmul(d, 1.0f / len);
-        float den = p->inv_mass[i] + end_w(p, a, at, n) + p->att_compliance[a] / (f->h * f->h);
+        float den = p->w[i] + end_w(p, a, at, n) + p->att_compliance[a] / (f->h * f->h);
         if (den == 0.0f)
         {
             continue;
         }
         float dl = -len / den;
-        put(p->pp_x, p->pp_y, p->pp_z, i, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, i), vmul(n, p->inv_mass[i] * dl)));
+        put(p->pp_x, p->pp_y, p->pp_z, i, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, i), vmul(n, p->w[i] * dl)));
         end_push(f, a, at, vmul(n, -dl));
         add_force(p, a, vmul(n, dl * f->k));
     }
@@ -2190,14 +2264,10 @@ static void solve_attachments(phase* f)
 static void solve_distances(phase* f)
 {
     ymir_particles* p = f->p;
-    for (int32_t e = 0; e < p->distance_count; ++e)
+    for (int32_t m = 0; m < p->act_dist_n; ++m)
     {
-        if (!p->dist_live[e])
-        {
-            continue;
-        }
-        int32_t i = p->dist_a[e], j = p->dist_b[e];
-        float wi = p->inv_mass[i], wj = p->inv_mass[j], alpha = p->dist_compliance[e] / (f->h * f->h);
+        int32_t e = p->act_dist[m], i = p->dist_a[e], j = p->dist_b[e];
+        float wi = p->w[i], wj = p->w[j], alpha = p->dist_compliance[e] / (f->h * f->h);
         v3 d = vsub(P(p, p->pp_x, p->pp_y, p->pp_z, j), P(p, p->pp_x, p->pp_y, p->pp_z, i));
         float len = vlen(d);
         if (len < 1e-9f || wi + wj + alpha == 0.0f)
@@ -2219,14 +2289,10 @@ static void solve_distances(phase* f)
 static void solve_bends(phase* f)
 {
     ymir_particles* p = f->p;
-    for (int32_t k = 0; k < p->bend_count; ++k)
+    for (int32_t m = 0; m < p->act_bend_n; ++m)
     {
-        if (!p->bend_live[k])
-        {
-            continue;
-        }
-        int32_t a = p->bend_a[k], b = p->bend_b[k], c = p->bend_c[k];
-        float wa = p->inv_mass[a], wb = p->inv_mass[b], wc = p->inv_mass[c];
+        int32_t k = p->act_bend[m], a = p->bend_a[k], b = p->bend_b[k], c = p->bend_c[k];
+        float wa = p->w[a], wb = p->w[b], wc = p->w[c];
         v3 ja = {0.0f, 0.0f, 0.0f}, jc = {0.0f, 0.0f, 0.0f};
         for (int pass = 0; pass < 2; ++pass)
         {
@@ -2316,13 +2382,13 @@ static void solve_tethers(phase* f)
             continue;
         }
         v3 n = vmul(d, 1.0f / len);
-        float den = p->inv_mass[j] + end_w(p, a, at, n);
+        float den = p->w[j] + end_w(p, a, at, n);
         if (den == 0.0f)
         {
             continue;
         }
         float dl = -(len - bound) / den;
-        put(p->pp_x, p->pp_y, p->pp_z, j, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, j), vmul(n, p->inv_mass[j] * dl)));
+        put(p->pp_x, p->pp_y, p->pp_z, j, vadd(P(p, p->pp_x, p->pp_y, p->pp_z, j), vmul(n, p->w[j] * dl)));
         end_push(f, a, at, vmul(n, -dl));
         add_force(p, a, vmul(n, dl * f->k)); // the force on the particles, toward the attachment
         put(p->tacc_x, p->tacc_y, p->tacc_z, t, vmul(n, dl));
@@ -2382,6 +2448,11 @@ void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, floa
     }
     phase f = {p, h, 1.0f / h, 1.0f / (h * h)};
     v3 g = {gx, gy, gz};
+    for (int32_t m = 0; m < p->kin_n; ++m) // a kinematic particle is where its anchor is at this substep's start pose
+    {
+        int32_t i = p->kin[m];
+        put(p->pos_x, p->pos_y, p->pos_z, i, end_point(p, p->anchor[i]));
+    }
     for (int32_t k = 0; k < p->body_count; ++k)
     {
         ymir_particle_proxy* b = p->proxies + k;
@@ -2410,18 +2481,20 @@ void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, floa
             q[c] *= inv;
         }
     }
-    for (int32_t i = 0; i < p->particle_count; ++i)
+    for (int32_t m = 0; m < p->kin_n; ++m) // ... and where it is at the predicted pose, which the constraints read
     {
-        if (!p->particle_live[i])
-        {
-            continue;
-        }
+        int32_t i = p->kin[m];
+        put(p->pp_x, p->pp_y, p->pp_z, i, end_point(p, p->anchor[i]));
+    }
+    for (int32_t m = 0; m < p->act_n; ++m)
+    {
+        int32_t i = p->act[m];
         if (p->phase[i] & YMIR_PHASE_FLUID)
         {
             p->support_body[i] = p->support_particle[i] = -1; // this substep's contacts write them again
         }
         v3 x = P(p, p->pos_x, p->pos_y, p->pos_z, i);
-        if (p->inv_mass[i] > 0.0f)
+        if (p->w[i] > 0.0f)
         {
             v3 v = vadd(P(p, p->vel_x, p->vel_y, p->vel_z, i), vmul(g, h));
             put(p->vel_x, p->vel_y, p->vel_z, i, v);
@@ -2440,18 +2513,21 @@ void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, floa
     solve_bends(&f);
     solve_tethers(&f);
     body_contacts(&f);
-    for (int32_t i = 0; i < p->particle_count; ++i)
+    for (int32_t m = 0; m < p->act_n; ++m)
     {
-        if (!p->particle_live[i])
-        {
-            continue;
-        }
+        int32_t i = p->act[m];
         v3 x = P(p, p->pos_x, p->pos_y, p->pos_z, i), y = P(p, p->pp_x, p->pp_y, p->pp_z, i);
-        if (p->inv_mass[i] > 0.0f)
+        if (p->w[i] > 0.0f)
         {
             put(p->vel_x, p->vel_y, p->vel_z, i, vmul(vsub(y, x), f.inv_h));
         }
         put(p->pos_x, p->pos_y, p->pos_z, i, y);
+    }
+    for (int32_t m = 0; m < p->kin_n; ++m) // the kinematic particle's velocity is the anchor's over the substep
+    {
+        int32_t i = p->kin[m];
+        put(p->vel_x, p->vel_y, p->vel_z, i, vmul(vsub(P(p, p->pp_x, p->pp_y, p->pp_z, i), P(p, p->pos_x, p->pos_y, p->pos_z, i)), f.inv_h));
+        put(p->pos_x, p->pos_y, p->pos_z, i, P(p, p->pp_x, p->pp_y, p->pp_z, i));
     }
     if (p->live_fluid > 0 && viscous_material(p))
     {

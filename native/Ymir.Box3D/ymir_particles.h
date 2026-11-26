@@ -179,6 +179,7 @@ typedef struct ymir_particles
     int32_t tether_count;                                                 // derived: the live tethers
     int32_t body_count;                                                   // bodies filled in `proxies` this step
     int32_t live_particles;
+    int32_t act_n, kin_n, act_dist_n, act_bend_n, act_att_n; // derived (rederive_active): the lengths of act, kin, act_dist, act_bend and act_att
     int32_t fluid_rings;    // derived by fluid_density: rings of kernel cells (4 rfmax) that hold a kernel pair, 0 without fluid
     int32_t fluid_overflow; // kernel neighbours past a fluid particle's list in the last step, summed over substeps: a sensor
     int32_t wet_capacity, wet_count; // wet patches: the capacity and the high-water mark
@@ -191,6 +192,13 @@ typedef struct ymir_particles
     float *rest_x, *rest_y, *rest_z;
     uint32_t *phase, *material, *particle_live, *particle_generation;
     uint64_t* particle_removed_at;
+    uint32_t* pinned; // command-owned (set_pinned writes it; destroy_particles frees it to 0): a pinned particle is dormant, on no step walk, its pos and vel stale until wake; a reader draws it from its anchor
+    // Derived by rederive_active alone, at command time; a step never writes them. act: the live unpinned particles; kin: the pinned particles an active
+    // distance or bend reaches (the step sets their pos and pp from their anchor); act_dist and act_bend: the live constraints with an unpinned particle;
+    // act_att: the live attachments of unpinned particles. All in lane order, so with nothing pinned they are every live lane and w is inv_mass.
+    int32_t *act, *kin, *act_dist, *act_bend, *act_att;
+    int32_t* anchor; // derived: the lane of the particle's lowest live non-TETHER attachment (BODY or STATIC), -1 for none
+    float* w;        // derived: the inverse mass the step reads: 0 for a pinned or free lane, else inv_mass
     int32_t* component; // derived: the lowest lane of the particle's distance-connected component
     int32_t *held_start, *held_count; // derived (rederive_topology): the slice of held_body that lists the bodies particle i is attached to (BODY attachments), contact skips them
     int32_t* held_body;               // derived, attachment capacity: the live BODY attachments' bodies grouped by particle, in attachment lane order
