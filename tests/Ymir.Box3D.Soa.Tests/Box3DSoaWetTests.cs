@@ -320,6 +320,62 @@ public sealed partial class Box3DSoaFluidTests
     }
 
     [Fact]
+    public void Settle_refusal_undoes_a_merge_it_made()
+    {
+        // One lane taken by a floor patch. The batch is a floor drop that merges into it, then a drop of material 1 that finds no lane and no live patch of its material anywhere: FULL.
+        // The merge must go back: every lane is as it was.
+        using var world = FluidWorld(16, gravityY: -9.81f, wets: 1);
+        world.AddStaticBox(1, (0f, -0.5f, 0f), (2f, 0.5f, 2f), friction: 0.3f);
+        world.AddStaticBox(2, (0.5f, 0.1f, 0f), (0.1f, 0.1f, 0.1f), friction: 0.3f);
+        world.CreateParticles([Fluid((-0.5f, R, 0f)), Fluid((-0.45f, R, 0f)), Fluid((0.5f, 0.2f + R, 0f), material: 1u)]);
+        for (var tick = 0; tick < 20; tick++) world.Step(1f / 60f, Sub);
+        world.Settle([Handle(world, 0)]);
+        var before = WorldBytes(world.View);
+        Assert.Throws<InvalidOperationException>(() => world.Settle([Handle(world, 1), Handle(world, 2)]));
+        Assert.True(before.AsSpan().SequenceEqual(WorldBytes(world.View)), "a refused batch left a merge behind");
+        Assert.Equal(DropVolume, world.View.WetPatchVolume[0], 1e-9f);
+    }
+
+    [Fact]
+    public void A_drop_with_no_patch_on_its_support_pools_into_the_patch_nearest_in_world_position()
+    {
+        // Two lanes, both taken: a floor patch A (floor at y -0.5, point 1.7 m left of the drop's body) and a pedestal patch B (body at x -0.4, 0.6 m from the drop). In each body's own frame
+        // A (-1.7, 0.5, 0) is nearer the drop's world point (-1, 0.2, 0) than B (0, 0.1, 0); in the world B is. Only the body's pose puts B first.
+        using var world = FluidWorld(16, gravityY: -9.81f, wets: 2);
+        world.AddStaticBox(1, (0f, -0.5f, 0f), (4f, 0.5f, 2f), friction: 0.3f);
+        world.AddStaticBox(2, (-0.4f, 0.1f, 0f), (0.1f, 0.1f, 0.1f), friction: 0.3f);
+        world.AddStaticBox(3, (-1.0f, 0.1f, 0f), (0.1f, 0.1f, 0.1f), friction: 0.3f);
+        world.CreateParticles([Fluid((-1.7f, R, 0f)), Fluid((-0.4f, 0.2f + R, 0f)), Fluid((-1.0f, 0.2f + R, 0f))]);
+        for (var tick = 0; tick < 20; tick++) world.Step(1f / 60f, Sub);
+        Assert.Equal(2, world.View.SupportBody[2]); // body lanes: floor 0, pedestal 1, the drop's box 2
+        world.Settle([Handle(world, 0), Handle(world, 1)]);
+        Assert.Equal(0, world.FreeWetSlots);
+        Assert.Equal(1, world.View.WetBody[1]);
+        world.Settle([Handle(world, 2)]);
+        Assert.Equal(DropVolume, world.View.WetPatchVolume[0], 1e-9f);
+        Assert.Equal(2f * DropVolume, world.View.WetPatchVolume[1], 1e-9f);
+    }
+
+    [Fact]
+    public void A_drop_equidistant_from_two_patches_pools_into_the_lower_lane()
+    {
+        // Floor patches A (x -0.5, lane 0) and B (x +0.5, lane 1), no lane free; the drop on a pedestal at x 0 is the same distance from both, and the lowest lane takes it.
+        using var world = FluidWorld(16, gravityY: -9.81f, wets: 2);
+        world.AddStaticBox(1, (0f, -0.5f, 0f), (2f, 0.5f, 2f), friction: 0.3f);
+        world.AddStaticBox(2, (0f, 0.1f, 0f), (0.1f, 0.1f, 0.1f), friction: 0.3f);
+        world.CreateParticles([Fluid((-0.5f, R, 0f)), Fluid((0.5f, R, 0f)), Fluid((0f, 0.2f + R, 0f))]);
+        for (var tick = 0; tick < 20; tick++) world.Step(1f / 60f, Sub);
+        world.Settle([Handle(world, 0), Handle(world, 1)]);
+        var v = world.View;
+        var da = Math.Abs(v.WetX[0]) - Math.Abs(v.WetX[1]);
+        Assert.Equal(0.0, da, 1e-6); // the scene is a tie
+        world.Settle([Handle(world, 2)]);
+        v = world.View;
+        Assert.Equal(2f * DropVolume, v.WetPatchVolume[0], 1e-9f);
+        Assert.Equal(DropVolume, v.WetPatchVolume[1], 1e-9f);
+    }
+
+    [Fact]
     public void Settle_refusal_unwinds_a_patch_it_created()
     {
         // One lane; the floor drop (material 0) creates the patch, then the pedestal drop (material 1) finds no lane and no live patch of its material anywhere: FULL. The created patch and the count go back.
