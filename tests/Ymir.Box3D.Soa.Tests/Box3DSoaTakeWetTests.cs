@@ -197,6 +197,72 @@ public sealed partial class Box3DSoaFluidTests
         Assert.Equal(1, Enumerable.Range(0, world.View.WetCount).Count(w => world.View.WetLive[w] != 0)); // only C is left
     }
 
+    [Theory]
+    [InlineData(1f / 3f)]
+    [InlineData(1e-6f)]
+    [InlineData(1e-9f)]
+    public void TakeWet_taken_is_what_left_the_patches(float share)
+    {
+        // A sensor over A and B: taken is the patches' own loss (float rounding included), not the ask.
+        var (world, s) = TakeFloor((-0.2f, 0.15f));
+        using var _ = world;
+        var pooled = world.View.SensorWetVolume[s[0]];
+        var before = world.View.WetPatchVolume.ToArray();
+        var taken = new float[1];
+        world.TakeWet(s, [pooled * share], taken);
+        var after = world.View.WetPatchVolume;
+        double lost = 0;
+        for (var w = 0; w < before.Length; w++) lost += (double)before[w] - after[w];
+        Assert.Equal((float)lost, taken[0]);
+    }
+
+    [Fact]
+    public void TakeWet_a_kill_takes_the_whole_pool()
+    {
+        var (world, s) = TakeFloor((-0.2f, 0.15f));
+        using var _ = world;
+        var pooled = world.View.SensorWetVolume[s[0]];
+        var taken = new float[1];
+        world.TakeWet(s, [pooled * 2f], taken);
+        Assert.Equal(pooled, taken[0], pooled * 1e-6f);
+    }
+
+    [Fact]
+    public void TakeWet_a_patch_an_earlier_sensor_killed_is_not_killed_again()
+    {
+        // the second sphere also holds A, which the first took to nothing: A's dead lane keeps its centre, and the walk must pass over it
+        var (world, s) = TakeFloor((-0.3f, 0.05f), (-0.2f, 0.15f));
+        using var _ = world;
+        var gen = world.View.WetGeneration.ToArray();
+        var live = world.View.WetLive.ToArray();
+        var taken = new float[2];
+        world.TakeWet(s, [10f, 10f], taken);
+        Assert.True(taken[0] > 0f);
+        Assert.True(taken[1] > 0f);
+        var killed = 0;
+        for (var w = 0; w < gen.Length; w++)
+        {
+            if (live[w] != 0 && world.View.WetLive[w] == 0)
+            {
+                killed++;
+                Assert.Equal(gen[w] + 1, world.View.WetGeneration[w]);
+            }
+            else Assert.Equal(gen[w], world.View.WetGeneration[w]);
+        }
+        Assert.True(killed > 0);
+    }
+
+    [Fact]
+    public void TakeWet_rederives_the_wet_index_once()
+    {
+        // A command ends in one rederive_wet; a kill never repairs the index mid-call (pinned on the source, as Remove_wet_never_reaches_the_topology_derivation is).
+        var source = NativeSource("ymir_particles.c").Replace("\r\n", "\n");
+        var at = source.IndexOf("int32_t ymir_particles_take_wet(", StringComparison.Ordinal);
+        Assert.True(at > 0);
+        var body = source.Substring(at, source.IndexOf("ymir_particles_create_sensors(", at, StringComparison.Ordinal) - at);
+        Assert.Equal(1, System.Text.RegularExpressions.Regex.Matches(body, @"rederive_wet\(").Count);
+    }
+
     [Fact]
     public void TakeWet_refusals_change_nothing()
     {

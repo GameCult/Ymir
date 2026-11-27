@@ -1411,7 +1411,7 @@ public sealed class Box3DSoaWorld : IDisposable
     {
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         if (!patches.IsEmpty && patches.Length < particles.Length) throw new ArgumentException("One handle per particle.", nameof(patches));
-        var native = new Box3DSoaParticleHandle[particles.Length];
+        Span<Box3DSoaParticleHandle> native = particles.Length <= 16 ? stackalloc Box3DSoaParticleHandle[particles.Length] : new Box3DSoaParticleHandle[particles.Length];
         fixed (Box3DSoaParticleHandle* h = particles)
         fixed (Box3DSoaParticleHandle* o = native)
             Check(Box3DSoaNative.ymir_box3d_soa_settle(_handle, particles.Length, h, patches.IsEmpty ? null : o));
@@ -1422,7 +1422,7 @@ public sealed class Box3DSoaWorld : IDisposable
     /// <summary>
     /// Takes up to <paramref name="volumes"/>[k] m^3 of pooled liquid from the wet patches sensor k reads (the patches whose centres lie in its sphere, at the bodies' poses now), every patch the
     /// same fraction, so no lane order decides which gives; a patch taken to nothing is removed. Sensors apply in call order, a later one seeing an earlier one's take.
-    /// <paramref name="taken"/> (or empty) receives the volume that left per sensor. Refuses the whole batch, changing nothing, for a stale or removed sensor, a sensor named twice,
+    /// <paramref name="taken"/> (or empty) receives the summed volume that left the patches per sensor (float rounding can leave it below the ask, or 0). Refuses the whole batch, changing nothing, for a stale or removed sensor, a sensor named twice,
     /// or a volume that is not finite or is negative; throws <see cref="ArgumentException"/> for a handle that is not a sensor, unequal lengths, or a non-empty <paramref name="taken"/> shorter than the sensors.
     /// Readings change at the next step's end. Which liquid is breathed, and when, is the caller's policy.
     /// </summary>
@@ -1431,7 +1431,7 @@ public sealed class Box3DSoaWorld : IDisposable
         ObjectDisposedException.ThrowIf(_handle == 0, this);
         if (sensors.Length != volumes.Length) throw new ArgumentException("One volume per sensor.", nameof(volumes));
         if (!taken.IsEmpty && taken.Length < sensors.Length) throw new ArgumentException("One taken per sensor.", nameof(taken));
-        var native = new Box3DSoaParticleHandle[sensors.Length];
+        Span<Box3DSoaParticleHandle> native = sensors.Length <= 16 ? stackalloc Box3DSoaParticleHandle[sensors.Length] : new Box3DSoaParticleHandle[sensors.Length];
         for (var i = 0; i < sensors.Length; i++)
         {
             if (sensors[i].Type != Box3DSoaConstraintType.Sensor) throw new ArgumentException("Sensors only.", nameof(sensors));

@@ -308,7 +308,7 @@ int32_t ymir_particles_settle(ymir_particles* p, int32_t n, const ymir_handle* h
 // sensor, a sensor named twice, and a volume that is not finite or is < 0. Then per sensor in call order: W is the pooled volume of the patches whose centres lie in the
 // sensor's sphere (the walk the reading sums, at the proxies' pose now), f = W > 0 ? min(1, volume / W) : 0, and every patch in the sphere keeps (1 - f) of its volume
 // (radius recomputed; a patch at f == 1 is removed as remove(WET)): proportional, so no lane order decides which patch gives. A later sensor sees an earlier one's take.
-// `taken` (NULL or n floats) receives per sensor the volume that left (m^3), W * f. Readings change at the next step's end; none is written here. One rederive_wet when anything changed.
+// `taken` (NULL or n floats) receives per sensor the summed volume that left the patches (m^3): float rounding can leave it below the ask, or 0. Readings change at the next step's end; none is written here. One rederive_wet at the end when anything changed.
 int32_t ymir_particles_take_wet(ymir_particles* p, int32_t n, const ymir_handle* sensors, const float* volumes, uint64_t step_count, float* taken);
 // Creates liquid sensors in the lowest free lanes. Refuses whole (INVALID_ARGUMENT) a body outside [0, body_count), a radius that is not finite and > 0, or a
 // non-finite point; FULL when there are not n free lanes; nothing changes. A sensor only reads: its volume moves nothing.
