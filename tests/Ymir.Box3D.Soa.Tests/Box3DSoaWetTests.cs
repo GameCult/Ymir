@@ -166,10 +166,15 @@ public sealed partial class Box3DSoaFluidTests
         Refused(floorB, flight);             // no support
         Refused(floorB, gone[0]);            // a stale handle
         Refused(floorB, floorB);             // named twice
-        Refused(floorB, pedestal);           // the floor drop would merge, the pedestal drop finds no lane and no patch on its support: FULL, all undone
-        world.Settle([floorB]);              // and without the pedestal drop it merges
+        var centre = (world.View.WetX[0], world.View.WetY[0], world.View.WetZ[0]);
+        world.Settle([pedestal]);            // no lane and no patch on the pedestal: it adds its volume to the floor patch, whose centre stays
         Assert.Equal(1, LivePatches(world.View));
         Assert.Equal(2f * DropVolume, world.View.WetPatchVolume[0], 1e-9f);
+        Assert.Equal(centre, (world.View.WetX[0], world.View.WetY[0], world.View.WetZ[0]));
+        Assert.Equal(0, world.View.WetBody[0]);
+        world.Settle([floorB]);              // and a floor drop merges as before
+        Assert.Equal(1, LivePatches(world.View));
+        Assert.Equal(3f * DropVolume, world.View.WetPatchVolume[0], 1e-9f);
     }
 
     [Fact]
@@ -293,13 +298,35 @@ public sealed partial class Box3DSoaFluidTests
     }
 
     [Fact]
+    public void Settle_with_no_lane_and_no_patch_on_its_support_pools_into_the_nearest_patch_in_the_world()
+    {
+        // Two lanes, both taken by floor patches of material 0 at x -0.5 and x 0.9. A pedestal drop (its own support, no patch) at x 0.5 adds its volume to the nearer, lane 1,
+        // and moves no centre; the sum of the volumes is conserved.
+        using var world = FluidWorld(16, gravityY: -9.81f, wets: 2);
+        world.AddStaticBox(1, (0f, -0.5f, 0f), (2f, 0.5f, 2f), friction: 0.3f);
+        world.AddStaticBox(2, (0.5f, 0.1f, 0f), (0.1f, 0.1f, 0.1f), friction: 0.3f);
+        world.CreateParticles([Fluid((-0.5f, R, 0f)), Fluid((0.9f, R, 0f)), Fluid((0.5f, 0.2f + R, 0f))]);
+        for (var tick = 0; tick < 20; tick++) world.Step(1f / 60f, Sub);
+        world.Settle([Handle(world, 0), Handle(world, 1)]);
+        Assert.Equal(0, world.FreeWetSlots);
+        var v = world.View;
+        var before = (v.WetX[0], v.WetY[0], v.WetZ[0], v.WetX[1], v.WetY[1], v.WetZ[1]);
+        world.Settle([Handle(world, 2)]);
+        v = world.View;
+        Assert.Equal(DropVolume, v.WetPatchVolume[0], 1e-9f);
+        Assert.Equal(2f * DropVolume, v.WetPatchVolume[1], 1e-9f);
+        Assert.Equal(before, (v.WetX[0], v.WetY[0], v.WetZ[0], v.WetX[1], v.WetY[1], v.WetZ[1]));
+        Assert.Equal(2, LivePatches(v));
+    }
+
+    [Fact]
     public void Settle_refusal_unwinds_a_patch_it_created()
     {
-        // One lane; the floor drop creates the patch, then the pedestal drop finds no lane and no patch on its support: FULL. The created patch and the count go back.
+        // One lane; the floor drop (material 0) creates the patch, then the pedestal drop (material 1) finds no lane and no live patch of its material anywhere: FULL. The created patch and the count go back.
         using var world = FluidWorld(16, gravityY: -9.81f, wets: 1);
         world.AddStaticBox(1, (0f, -0.5f, 0f), (2f, 0.5f, 2f), friction: 0.3f);
         world.AddStaticBox(2, (0.5f, 0.1f, 0f), (0.1f, 0.1f, 0.1f), friction: 0.3f);
-        world.CreateParticles([Fluid((-0.5f, R, 0f)), Fluid((0.5f, 0.2f + R, 0f)), Fluid((-0.45f, R, 0f))]);
+        world.CreateParticles([Fluid((-0.5f, R, 0f)), Fluid((0.5f, 0.2f + R, 0f), material: 1u), Fluid((-0.45f, R, 0f))]);
         for (var tick = 0; tick < 20; tick++) world.Step(1f / 60f, Sub);
         Assert.Equal(0, world.View.WetCount);
         var before = WorldBytes(world.View);

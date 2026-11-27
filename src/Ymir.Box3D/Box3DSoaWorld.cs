@@ -1398,9 +1398,9 @@ public sealed class Box3DSoaWorld : IDisposable
 
     /// <summary>
     /// Settles fluid particles into wet patches and destroys them: each drop (volume (2 r)^3) joins the lowest patch on its support whose disc
-    /// holds its contact point, else takes the lowest free lane, else joins the nearest patch on that support. A drop's support is its
+    /// holds its contact point, else takes the lowest free lane, else joins the nearest patch on that support, else adds its volume to the nearest patch of its material anywhere (that patch's centre stays). A drop's support is its
     /// last step's <see cref="Box3DSoaView.SupportBody"/>, else <see cref="Box3DSoaView.SupportParticle"/>. Refuses the whole batch, changing
-    /// nothing, for a dead or non-fluid particle, one without a support, a particle named twice, or no lane and no patch to join.
+    /// nothing, for a dead or non-fluid particle, one without a support, a particle named twice, or no lane and no live patch of its material to join.
     /// <paramref name="patches"/> (or empty) receives the patch each drop landed in. Which particles settle is the caller's policy.
     /// </summary>
     public unsafe void Settle(ReadOnlySpan<Box3DSoaParticleHandle> particles, Span<Box3DSoaConstraintHandle> patches = default)

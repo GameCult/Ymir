@@ -301,8 +301,8 @@ int32_t ymir_particles_remove(ymir_particles* p, uint32_t type, int32_t n, const
 int32_t ymir_particles_set_pinned(ymir_particles* p, int32_t n, const ymir_handle* h, uint32_t pinned);
 // Settles the named fluid particles into wet patches and destroys them. Each reads its support from the last step (support_body, else
 // support_particle) and its contact point from the proxies the caller has just filled; a drop's volume is (2 r)^3. Refuses whole
-// (INVALID_ARGUMENT) a dead or non-fluid particle or one with no support, FULL when a drop finds no lane and no patch to merge into, before any
-// change. `out` (NULL or n handles) receives the patch each drop landed in.
+// (INVALID_ARGUMENT) a dead or non-fluid particle or one with no support, FULL when a drop finds no lane and no live patch of its material anywhere to merge into, before any
+// change. A drop that finds no lane and no patch on its support adds its volume to the nearest patch of its material in the world (the patch's centre stays). `out` (NULL or n handles) receives the patch each drop landed in.
 int32_t ymir_particles_settle(ymir_particles* p, int32_t n, const ymir_handle* h, uint64_t step_count, ymir_handle* out);
 // Creates liquid sensors in the lowest free lanes. Refuses whole (INVALID_ARGUMENT) a body outside [0, body_count), a radius that is not finite and > 0, or a
 // non-finite point; FULL when there are not n free lanes; nothing changes. A sensor only reads: its volume moves nothing.

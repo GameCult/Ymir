@@ -2870,6 +2870,39 @@ int32_t ymir_particles_settle(ymir_particles* p, int32_t n, const ymir_handle* h
                 into = nearest; // no lane left: the nearest patch on this support takes it
             }
         }
+        int foreign = 0;
+        if (into < 0)
+        {
+            // No lane and no patch on this support: the pool of the nearest patch of this material, by world distance, grows by the drop's volume
+            // (its centre stays where it is: the drop's point is in another support's frame). Only when the material has no live patch at all is it FULL.
+            v3 at = P(p, p->pos_x, p->pos_y, p->pos_z, i);
+            float best = 0.0f;
+            for (int32_t w = 0; w < p->wet_count; ++w)
+            {
+                if (!p->wet_live[w] || p->wet_material[w] != material)
+                {
+                    continue;
+                }
+                v3 c = {p->wet_x[w], p->wet_y[w], p->wet_z[w]};
+                v3 world;
+                if (p->wet_body[w] >= 0)
+                {
+                    const ymir_particle_proxy* b = p->proxies + p->wet_body[w];
+                    world = vadd((v3){b->position[0], b->position[1], b->position[2]}, qrot(b->rotation, c));
+                }
+                else
+                {
+                    world = vadd(P(p, p->pos_x, p->pos_y, p->pos_z, p->wet_particle[w]), c);
+                }
+                float d = vlen(vsub(at, world));
+                if (into < 0 || d < best)
+                {
+                    into = w;
+                    best = d;
+                }
+            }
+            foreign = into >= 0;
+        }
         if (into < 0)
         {
             status = YMIR_PARTICLES_FULL;
@@ -2895,6 +2928,10 @@ int32_t ymir_particles_settle(ymir_particles* p, int32_t n, const ymir_handle* h
             {
                 p->wet_count = into + 1;
             }
+        }
+        else if (foreign)
+        {
+            p->wet_volume[into] += volume;
         }
         else
         {
