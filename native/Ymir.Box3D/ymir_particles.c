@@ -2601,10 +2601,28 @@ void ymir_particles_substep(ymir_particles* p, float h, float gx, float gy, floa
     }
 }
 
+static float wet_disc_radius(float volume);
+
+// A patch keeps the fraction keep of its volume: its radius follows, and it dies at a kept volume of 0.
+static void take_from_wet(ymir_particles* p, int32_t w, float keep, uint64_t step_count)
+{
+    float kept = p->wet_volume[w] * keep;
+    if (!(kept > 0.0f))
+    {
+        kill_wet(p, w, step_count);
+        return;
+    }
+    p->wet_volume[w] = kept;
+    p->wet_radius[w] = wet_disc_radius(kept);
+}
+
 // The volume of the live wet patches whose centre lies within r of the world point c. A body's patches go through the wet cut's index: the sphere is taken into the
 // body's frame (where its patches' centres are), culled against the box of the body's discs, and only centres within r of its x are walked, in the index's order
 // (bodies ascending, then centre x). Patches on solid particles have no index and are summed after, in wet lane order, at their particle's position.
-static float pooled_volume(const ymir_particles* p, v3 c, float r)
+// The one sphere test of the wet patches: the sensor's reading walks it with keep 1 (read only); take_wet walks it again with keep < 1, which also scales
+// every patch it visits by keep (recomputing its radius) and kills one whose kept volume is 0. Returns the volume inside before any change.
+// A kill resets the lane, so the index is stale after a walk that killed: the caller rederives before the next walk.
+static float pooled_walk(ymir_particles* p, v3 c, float r, float keep, uint64_t step_count)
 {
     float total = 0.0f;
     float r2 = r * r;
@@ -2642,6 +2660,10 @@ static float pooled_volume(const ymir_particles* p, v3 c, float r)
             if (vdot(d, d) <= r2)
             {
                 total += p->wet_volume[w];
+                if (keep < 1.0f)
+                {
+                    take_from_wet(p, w, keep, step_count);
+                }
             }
         }
     }
@@ -2656,10 +2678,21 @@ static float pooled_volume(const ymir_particles* p, v3 c, float r)
             if (vdot(d, d) <= r2)
             {
                 total += p->wet_volume[w];
+                if (keep < 1.0f)
+                {
+                    take_from_wet(p, w, keep, step_count);
+                }
             }
         }
     }
     return total;
+}
+
+// A sensor's centre in the world: its point on its body at the pose the last substep (or the caller's gather) left the proxy in.
+static v3 sensor_centre(const ymir_particles* p, int32_t s)
+{
+    const ymir_particle_proxy* b = p->proxies + p->sensor_body[s];
+    return vadd((v3){b->position[0], b->position[1], b->position[2]}, qrot(b->rotation, (v3){p->sensor_x[s], p->sensor_y[s], p->sensor_z[s]}));
 }
 
 // Each live sensor reads the liquid inside it: the sum, in lane order, of (2 r)^3 over the live fluid particles whose centre lies within its sphere, against the
@@ -2676,10 +2709,9 @@ static void read_sensors(ymir_particles* p)
         float pooled = 0.0f;
         if (p->sensor_body[s] < p->body_count)
         {
-            const ymir_particle_proxy* b = p->proxies + p->sensor_body[s];
-            v3 c = vadd((v3){b->position[0], b->position[1], b->position[2]}, qrot(b->rotation, (v3){p->sensor_x[s], p->sensor_y[s], p->sensor_z[s]}));
+            v3 c = sensor_centre(p, s);
             float r2 = p->sensor_radius[s] * p->sensor_radius[s];
-            pooled = pooled_volume(p, c, p->sensor_radius[s]);
+            pooled = pooled_walk(p, c, p->sensor_radius[s], 1.0f, 0);
             for (int32_t i = 0; p->live_fluid > 0 && i < p->particle_count; ++i)
             {
                 if (!p->particle_live[i] || !(p->phase[i] & YMIR_PHASE_FLUID))
@@ -2970,6 +3002,66 @@ int32_t ymir_particles_settle(ymir_particles* p, int32_t n, const ymir_handle* h
     }
     rederive_wet(p);
     return ymir_particles_destroy_particles(p, n, h, step_count);
+}
+
+int32_t ymir_particles_take_wet(ymir_particles* p, int32_t n, const ymir_handle* sensors, const float* volumes, uint64_t step_count, float* taken)
+{
+    if (p == NULL || n < 0 || (n > 0 && (sensors == NULL || volumes == NULL)))
+    {
+        return YMIR_PARTICLES_INVALID_ARGUMENT;
+    }
+    for (int32_t k = 0; k < n; ++k)
+    {
+        if (!sensor_ok(p, sensors[k].lane, sensors[k].generation) || !isfinite(volumes[k]) || volumes[k] < 0.0f)
+        {
+            return YMIR_PARTICLES_INVALID_ARGUMENT;
+        }
+        for (int32_t j = 0; j < k; ++j)
+        {
+            if (sensors[j].lane == sensors[k].lane)
+            {
+                return YMIR_PARTICLES_INVALID_ARGUMENT;
+            }
+        }
+    }
+    int stale = 0; // a take may have killed a lane the index still lists (its centre reset): the next sensor rederives before it walks
+    for (int32_t k = 0; k < n; ++k)
+    {
+        int32_t s = sensors[k].lane;
+        if (taken != NULL)
+        {
+            taken[k] = 0.0f;
+        }
+        if (p->sensor_body[s] >= p->body_count || volumes[k] == 0.0f)
+        {
+            continue;
+        }
+        if (stale)
+        {
+            rederive_wet(p);
+            stale = 0;
+        }
+        v3 c = sensor_centre(p, s);
+        float r = p->sensor_radius[s];
+        float w = pooled_walk(p, c, r, 1.0f, step_count);
+        float f = w > 0.0f ? fminf(1.0f, volumes[k] / w) : 0.0f;
+        float keep = 1.0f - f;
+        if (!(keep < 1.0f)) // nothing to take, or a fraction below float's reach: the walk would change nothing
+        {
+            continue;
+        }
+        pooled_walk(p, c, r, keep, step_count);
+        stale = 1;
+        if (taken != NULL)
+        {
+            taken[k] = w * f;
+        }
+    }
+    if (stale)
+    {
+        rederive_wet(p);
+    }
+    return YMIR_PARTICLES_OK;
 }
 
 int32_t ymir_particles_create_sensors(ymir_particles* p, int32_t n, const ymir_sensor_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out)

@@ -62,7 +62,7 @@ enum
     YMIR_SOA_JOINT_REMOVED = 4 // a retired joint's lane (destroy_joint): never accepted by add_joint
 };
 
-#define YMIR_SOA_ABI_VERSION 20u
+#define YMIR_SOA_ABI_VERSION 21u
 
 // A body to create. `size` by kind: sphere {radius}, capsule {radius, half_length} (segment along
 // local Y), box and static box {half_x, half_y, half_z}. `parent` is the lane index of an earlier body
@@ -1826,6 +1826,17 @@ YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_settle(ymir_box3d_soa_world* world,
     }
     ymir_soa_gather_proxies(world);
     return ymir_particles_settle(world->particles, n, h, world->step_count, out);
+}
+
+// Takes pooled liquid out of the wet patches liquid sensors read (see ymir_particles_take_wet): the proxies are refreshed first, so the spheres are where the bodies are now.
+YMIR_EXPORT int32_t YMIR_CALL ymir_box3d_soa_take_wet(ymir_box3d_soa_world* world, int32_t n, const ymir_handle* sensors, const float* volumes, float* taken)
+{
+    if (world == NULL || world->particles == NULL)
+    {
+        return YMIR_SOA_INVALID_ARGUMENT;
+    }
+    ymir_soa_gather_proxies(world);
+    return ymir_particles_take_wet(world->particles, n, sensors, volumes, world->step_count, taken);
 }
 
 // Pins or wakes particles (see ymir_particles_set_pinned): the proxies are refreshed first, so a wake lands on the anchor's point at the bodies' poses now.

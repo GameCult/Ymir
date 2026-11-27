@@ -689,6 +689,10 @@ internal static unsafe partial class Box3DSoaNative
 
     [LibraryImport(Library)]
     [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
+    internal static partial int ymir_box3d_soa_take_wet(nint world, int n, Box3DSoaParticleHandle* sensors, float* volumes, float* taken);
+
+    [LibraryImport(Library)]
+    [UnmanagedCallConv(CallConvs = [typeof(System.Runtime.CompilerServices.CallConvCdecl)])]
     internal static partial int ymir_box3d_soa_remove(nint world, uint type, int n, Box3DSoaParticleHandle* handles);
 
     [LibraryImport(Library)]
@@ -974,7 +978,7 @@ public readonly unsafe struct Box3DSoaView
 /// </summary>
 public sealed class Box3DSoaWorld : IDisposable
 {
-    private const uint ExpectedAbi = 20;
+    private const uint ExpectedAbi = 21;
     private nint _handle;
 
     /// <summary>The gravity (m/s^2) this world was created with; native has no setter, so this copy cannot disagree.</summary>
@@ -1413,6 +1417,30 @@ public sealed class Box3DSoaWorld : IDisposable
             Check(Box3DSoaNative.ymir_box3d_soa_settle(_handle, particles.Length, h, patches.IsEmpty ? null : o));
         for (var i = 0; i < patches.Length && i < native.Length; i++)
             patches[i] = new Box3DSoaConstraintHandle(Box3DSoaConstraintType.Wet, native[i].Lane, native[i].Generation);
+    }
+
+    /// <summary>
+    /// Takes up to <paramref name="volumes"/>[k] m^3 of pooled liquid from the wet patches sensor k reads (the patches whose centres lie in its sphere, at the bodies' poses now), every patch the
+    /// same fraction, so no lane order decides which gives; a patch taken to nothing is removed. Sensors apply in call order, a later one seeing an earlier one's take.
+    /// <paramref name="taken"/> (or empty) receives the volume that left per sensor. Refuses the whole batch, changing nothing, for a stale or removed sensor, a sensor named twice,
+    /// or a volume that is not finite or is negative; throws <see cref="ArgumentException"/> for a handle that is not a sensor, unequal lengths, or a non-empty <paramref name="taken"/> shorter than the sensors.
+    /// Readings change at the next step's end. Which liquid is breathed, and when, is the caller's policy.
+    /// </summary>
+    public unsafe void TakeWet(ReadOnlySpan<Box3DSoaConstraintHandle> sensors, ReadOnlySpan<float> volumes, Span<float> taken = default)
+    {
+        ObjectDisposedException.ThrowIf(_handle == 0, this);
+        if (sensors.Length != volumes.Length) throw new ArgumentException("One volume per sensor.", nameof(volumes));
+        if (!taken.IsEmpty && taken.Length < sensors.Length) throw new ArgumentException("One taken per sensor.", nameof(taken));
+        var native = new Box3DSoaParticleHandle[sensors.Length];
+        for (var i = 0; i < sensors.Length; i++)
+        {
+            if (sensors[i].Type != Box3DSoaConstraintType.Sensor) throw new ArgumentException("Sensors only.", nameof(sensors));
+            native[i] = new Box3DSoaParticleHandle(sensors[i].Lane, sensors[i].Generation);
+        }
+        fixed (Box3DSoaParticleHandle* h = native)
+        fixed (float* v = volumes)
+        fixed (float* t = taken)
+            Check(Box3DSoaNative.ymir_box3d_soa_take_wet(_handle, native.Length, h, v, taken.IsEmpty ? null : t));
     }
 
     /// <summary>

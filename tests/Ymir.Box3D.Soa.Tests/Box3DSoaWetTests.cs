@@ -453,7 +453,7 @@ public sealed partial class Box3DSoaFluidTests
         Assert.Contains("rederive_wet(p);", branch);
         Assert.DoesNotContain("rederive_topology", branch);
         Assert.DoesNotContain("TOPO_", branch);
-        Assert.Equal(4, System.Text.RegularExpressions.Regex.Matches(source, @"[^_]rederive_wet\(p\);").Count); // settle, remove(WET), release_body (a removed body takes its patches), and destroy when a destroyed solid takes its patches (particle_wet_mu goes dry again)
+        Assert.Equal(6, System.Text.RegularExpressions.Regex.Matches(source, @"[^_]rederive_wet\(p\);").Count); // settle, take_wet (twice: before a later sensor walks over a lane a take killed, and at the end), remove(WET), release_body (a removed body takes its patches), and destroy when a destroyed solid takes its patches (particle_wet_mu goes dry again)
     }
 
     // ---- determinism ----------------------------------------------------------------------------------------

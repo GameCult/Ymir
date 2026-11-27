@@ -208,7 +208,7 @@ typedef struct ymir_particles
     float* density;     // sensor: a fluid particle's number density over its rest density n_i / n0 in the last substep it ran, else 0
 
     // wet lanes: a patch of settled liquid on one support, a body (wet_body, its point in the body frame) or a solid particle (wet_particle, point 0);
-    // one of the two is -1, and a free lane holds -1 in both. Written by settle, remove and destroy_particles only; the step never touches them.
+    // one of the two is -1, and a free lane holds -1 in both. Written by settle, take_wet, remove and destroy_particles only; the step never touches them.
     int32_t *wet_body, *wet_particle;
     float *wet_x, *wet_y, *wet_z, *wet_radius, *wet_volume; // wet_volume m^3; wet_radius = sqrt(volume / (pi YMIR_WET_FILM))
     uint32_t *wet_material, *wet_live, *wet_generation;
@@ -304,6 +304,12 @@ int32_t ymir_particles_set_pinned(ymir_particles* p, int32_t n, const ymir_handl
 // (INVALID_ARGUMENT) a dead or non-fluid particle or one with no support, FULL when a drop finds no lane and no live patch of its material anywhere to merge into, before any
 // change. A drop that finds no lane and no patch on its support adds its volume to the nearest patch of its material in the world (the patch's centre stays). `out` (NULL or n handles) receives the patch each drop landed in.
 int32_t ymir_particles_settle(ymir_particles* p, int32_t n, const ymir_handle* h, uint64_t step_count, ymir_handle* out);
+// Takes pooled liquid out of the wet patches a liquid sensor reads. Refuses whole (INVALID_ARGUMENT, nothing changed) n < 0, a NULL array with n > 0, a stale or dead
+// sensor, a sensor named twice, and a volume that is not finite or is < 0. Then per sensor in call order: W is the pooled volume of the patches whose centres lie in the
+// sensor's sphere (the walk the reading sums, at the proxies' pose now), f = W > 0 ? min(1, volume / W) : 0, and every patch in the sphere keeps (1 - f) of its volume
+// (radius recomputed; a patch at f == 1 is removed as remove(WET)): proportional, so no lane order decides which patch gives. A later sensor sees an earlier one's take.
+// `taken` (NULL or n floats) receives per sensor the volume that left (m^3), W * f. Readings change at the next step's end; none is written here. One rederive_wet when anything changed.
+int32_t ymir_particles_take_wet(ymir_particles* p, int32_t n, const ymir_handle* sensors, const float* volumes, uint64_t step_count, float* taken);
 // Creates liquid sensors in the lowest free lanes. Refuses whole (INVALID_ARGUMENT) a body outside [0, body_count), a radius that is not finite and > 0, or a
 // non-finite point; FULL when there are not n free lanes; nothing changes. A sensor only reads: its volume moves nothing.
 int32_t ymir_particles_create_sensors(ymir_particles* p, int32_t n, const ymir_sensor_desc* d, int32_t body_count, uint64_t step_count, ymir_handle* out);
