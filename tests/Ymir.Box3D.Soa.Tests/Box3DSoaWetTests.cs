@@ -357,6 +357,32 @@ public sealed partial class Box3DSoaFluidTests
     }
 
     [Fact]
+    public void A_drop_with_no_patch_on_its_support_pools_into_the_patch_on_a_rotated_body()
+    {
+        // A capsule lying on its side (rotated 90 degrees about z) with a patch on its top at x -1.25, a floor patch at x -2.0, no lane free; a pedestal drop at x -1.6 pools into the capsule
+        // patch, 0.35 m away in the world (0.70 and 0.85 m if the body's rotation is left out or applied backwards).
+        using var world = FluidWorld(16, gravityY: -9.81f, wets: 2);
+        world.AddStaticBox(1, (0f, -0.5f, 0f), (4f, 0.5f, 2f), friction: 0.6f);
+        var s = MathF.Sqrt(0.5f);
+        var capsule = world.AddCapsule(2, (-1.0f, 0.1f, 0f), 0.1f, 0.3f, 1000f, rotation: (0f, 0f, s, s), friction: 0.6f);
+        world.AddStaticBox(3, (-1.6f, 0.1f, 0f), (0.1f, 0.1f, 0.1f), friction: 0.6f);
+        world.CreateParticles([Fluid((-2.0f, R, 0f)), Fluid((-1.25f, 0.2f + 2 * R, 0f)), Fluid((-1.6f, 0.2f + R, 0f))]);
+        for (var tick = 0; tick < 30; tick++) world.Step(1f / 60f, Sub);
+        var v = world.View;
+        Assert.Equal(0, v.SupportBody[0]);
+        Assert.Equal((int)capsule.Lane, v.SupportBody[1]);
+        Assert.Equal(2, v.SupportBody[2]);
+        world.Settle([Handle(world, 0), Handle(world, 1)]);
+        Assert.Equal(0, world.FreeWetSlots);
+        v = world.View;
+        int onCapsule = v.WetBody[0] == capsule.Lane ? 0 : 1, onFloor = 1 - onCapsule;
+        world.Settle([Handle(world, 2)]);
+        v = world.View;
+        Assert.Equal(DropVolume, v.WetPatchVolume[onFloor], 1e-9f);
+        Assert.Equal(2f * DropVolume, v.WetPatchVolume[onCapsule], 1e-9f);
+    }
+
+    [Fact]
     public void A_drop_equidistant_from_two_patches_pools_into_the_lower_lane()
     {
         // Floor patches A (x -0.5, lane 0) and B (x +0.5, lane 1), no lane free; the drop on a pedestal at x 0 is the same distance from both, and the lowest lane takes it.
